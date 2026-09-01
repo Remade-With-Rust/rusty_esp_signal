@@ -1,0 +1,30 @@
+[package]
+name = "rusty_esp_signal"
+description = "The radio-application layer remade in Rust: Wi-Fi CSI radar (presence/motion), LoRa point-to-point over lora-phy, BLE provisioning and telemetry over trouble-host, Wi-Fi station/AP lifecycle and ESP-NOW framing — every frame mID-signed. Memory safe, no_std core."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+readme = "../../README.md"
+documentation = "https://docs.rs/rusty_esp_signal"
+keywords = ["esp32", "embedded", "no-std", "mata", "remade-with-rust"]
+categories = ["embedded", "no-std", "hardware-support"]
+
+[features]
+default = ["std"]
+std = ["rusty_esp_signal-core/std", "rusty_esp_signal-esp/std"]
+alloc = ["rusty_esp_signal-core/alloc"]
+# Track B: bare metal, esp-hal + Embassy.
+esp-hal = ["rusty_esp_signal-esp/esp-hal"]
+# Track A: std on ESP-IDF via esp-idf-svc.
+esp-idf = ["rusty_esp_signal-esp/esp-idf"]
+
+[dependencies]
+rusty_esp_signal-core = { workspace = true }
+rusty_esp_signal-esp = { workspace = true }
+
+[lints]
+workspace = true

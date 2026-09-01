@@ -1,0 +1,38 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# Per-chip firmware examples are their own cargo projects: each needs its own
+# target, linker script and (for Xtensa) toolchain. They are never workspace
+# members. See firmware/README.md.
+exclude = ["firmware/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Remade-With-Rust/rusty_esp_signal"
+homepage = "https://www.mata.network/"
+authors = ["Remade With Rust"]
+rust-version = "1.85"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
+[workspace.dependencies]
+# Internal crates carry BOTH path and version so the set publishes to crates.io
+# in lockstep (the rusty_time pattern).
+rusty_esp_signal-core = { path = "crates/rusty_esp_signal-core", version = "0.1.0", default-features = false }
+rusty_esp_signal-esp = { path = "crates/rusty_esp_signal-esp", version = "0.1.0", default-features = false }
+
+# Siblings in the Janus family are consumed BY GIT URL so this repo deploys on
+# its own. Inside the Janus umbrella folder, `.cargo/config.toml` patches the
+# URL to the sibling checkout, so local edits are visible without a push.
+rusty_esp_core = { git = "https://github.com/Remade-With-Rust/rusty_esp_core", default-features = false }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

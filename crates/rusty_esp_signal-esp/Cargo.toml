@@ -1,0 +1,31 @@
+[package]
+name = "rusty_esp_signal-esp"
+description = "Chip backends for rusty_esp_signal: the WRAP crate. `esp-hal` (Track B, no_std + Embassy) or `esp-idf` (Track A, std on ESP-IDF). The only crate in the workspace allowed a fenced unsafe block, and only at a DMA or FFI boundary."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/rusty_esp_signal-esp"
+keywords = ["esp32", "embedded", "esp-hal", "esp-idf", "remade-with-rust"]
+categories = ["embedded", "no-std", "hardware-support"]
+
+[features]
+default = []
+std = ["rusty_esp_signal-core/std"]
+alloc = ["rusty_esp_signal-core/alloc"]
+# Track B — bare metal: esp-hal + Embassy. The esp-hal / esp-radio / esp-alloc
+# dependencies land behind this feature with the first driver, pinned to the
+# versions recorded in the plan.
+esp-hal = ["alloc"]
+# Track A — std on ESP-IDF via esp-idf-svc. Same rule.
+esp-idf = ["std"]
+
+[dependencies]
+rusty_esp_signal-core = { workspace = true }
+
+[lints]
+workspace = true

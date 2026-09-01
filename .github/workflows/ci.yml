@@ -1,0 +1,57 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Sibling Janus repos are consumed by git URL and are PRIVATE until each is
+  # market-ready. Cargo fetches them through the git CLI, which honours the
+  # token rewrite below. Set the repository secret JANUS_GIT_TOKEN to a
+  # fine-grained PAT (or GitHub App token) with read access to the siblings.
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  JANUS_GIT_TOKEN: ${{ secrets.JANUS_GIT_TOKEN }}
+
+jobs:
+  host:
+    name: host (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authorise private sibling fetches
+        if: ${{ env.JANUS_GIT_TOKEN != '' }}
+        shell: bash
+        run: git config --global url."https://x-access-token:${JANUS_GIT_TOKEN}@github.com/".insteadOf "https://github.com/"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  no_std:
+    name: no_std (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - riscv32imac-unknown-none-elf   # ESP32-C6 / C61 / H2 class
+          - riscv32imafc-unknown-none-elf  # ESP32-P4 class
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authorise private sibling fetches
+        if: ${{ env.JANUS_GIT_TOKEN != '' }}
+        shell: bash
+        run: git config --global url."https://x-access-token:${JANUS_GIT_TOKEN}@github.com/".insteadOf "https://github.com/"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo check -p rusty_esp_signal-core --no-default-features --target ${{ matrix.target }}
+      - run: cargo check -p rusty_esp_signal-core --no-default-features --features alloc --target ${{ matrix.target }}
