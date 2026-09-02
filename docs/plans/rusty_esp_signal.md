@@ -9,7 +9,7 @@ over the esp-rs radio stack it does not try to replace.
 Family plan: Janus `docs/plans/janus-mission.md`. Layer 1 · connectivity.
 Depends on `rusty_esp_core` and `rusty_esp_mid` (session authentication).
 
-Written 2026-09-01. Status: **S0 shipped on the host (2026-09-02); S1 needs the boards.** Numbers in `docs/LEDGER.md`.
+Written 2026-09-01. Status: **S0 shipped on the host and every Track B chip backend written and compiling (2026-09-02); S1-S6 need the boards.** Numbers in `docs/LEDGER.md`.
 
 ---
 
@@ -65,6 +65,23 @@ signature per LoRa frame is airtime nobody has.
 
 ### `rusty_esp_signal-esp`
 
+**Shipped 2026-09-02** (`src/hal/` plus the two esp-free modules), each
+feature pulling only what it uses:
+
+| module | feature | ingests | wraps |
+|---|---|---|---|
+| `hal::rng` | `esp-hal` | entropy for keys and ephemerals | esp-hal `Trng` behind the core's `Rng` seam |
+| `hal::ld2410` | `esp-hal` | mmWave reports | an async `UartRx` into the core `Parser` |
+| `hal::csi` | `esp-radio` | Wi-Fi CSI | `WifiCsiInfo` borrowed into `CsiFrame`, no copy |
+| `hal::link` | `esp-radio` | ESP-NOW datagrams | the handshake and sealed frames over `EspNowSender`/`Receiver` |
+| `hal::station` | `esp-radio` | Wi-Fi events | `WifiController` driving `StationPolicy` |
+| `lora` | `lora` | LoRa packets | `Params` mapped to `lora-phy`; the P2P link |
+| `ble` | `ble` | GATT writes | the core's table as `trouble-host` services |
+
+`lora` and `ble` touch no esp crate - they are generic over the modem and the
+HCI controller - so a firmware can take either without the radio stack. The
+chip feature is always the firmware's.
+
 | Feature | Backend |
 |---|---|
 | `esp-hal` (Track B, the primary track for this package) | esp-radio 1.0-beta (`wifi`, `esp_now`, `ble` controller, `csi`), `esp-csi-rs` collector, `trouble-host` GATT server, `lora-phy` over `esp_hal::spi` + Embassy |
@@ -89,7 +106,7 @@ crates when any one exceeds a few thousand lines, not before.
 
 | # | Deliverable | Kill test |
 |---|---|---|
-| **S0** ✅ host 2026-09-02 | core: CSI features + presence/motion detectors on recorded captures; LD2410 parser with fixtures; `Envelope` + `Session` + replay window with tests; GATT table; riscv32 green. **Shipped:** all of it plus `wifi::StationPolicy`, `lora` airtime/duty/beacon; 78 + 3 tests | detectors reproduce esp-csi's reference verdicts on its published captures within a stated margin; a replayed frame is rejected; a frame with a bad tag is rejected before any parse |
+| **S0** ✅ host 2026-09-02 (backends + 3 C6 firmware build 2026-09-02) | core: CSI features + presence/motion detectors on recorded captures; LD2410 parser with fixtures; `Envelope` + `Session` + replay window with tests; GATT table; riscv32 green. **Shipped:** all of it plus `wifi::StationPolicy`, `lora` airtime/duty/beacon; 78 + 3 tests | detectors reproduce esp-csi's reference verdicts on its published captures within a stated margin; a replayed frame is rejected; a frame with a bad tag is rejected before any parse |
 | **S1** | C6 ↔ C6 ESP-NOW authenticated link (Track B) | 1000 frames each way; loss, replay-rejected and bad-tag counters recorded; a third unadopted C6 cannot join |
 | **S2** (J4) | CSI presence on C6 (and S3) in a room | matches a hand-labelled 10-minute recording at a stated accuracy; false-positive rate stated |
 | **S3** | BLE provisioning over `trouble-host`; the manifest readable over GATT | a phone provisions Wi-Fi from a Web Bluetooth page — no app-store app; credentials never appear in a log |
@@ -146,3 +163,6 @@ ledger says so until a module and a modem have run.
 | 2026-09-02 | Presence thresholds come from data, not guesses: `on` = 1.5 × the empty-room ceiling measured on the C6 dataset (28 ‰ → 42), `off` just above it (32), hold 3 s; held-out captures confirm. The first guess (60 / 30) read a walker present 32 % of the time. |
 | 2026-09-02 | The external CSI oracle is a public CC BY 4.0 dataset (Universidad de Cuenca, ESP32-C6); our own hand-labelled recording is the S2 item. |
 | 2026-09-02 | Git siblings carry a `version` beside the URL (cargo-deny wildcards); the per-repo patch names only `rusty_esp_mid-core`. |
+| 2026-09-02 | The chip feature is selected by the firmware, never the `-esp` library: esp-hal refuses to build without exactly one, and a library that picked one would fix the chip for every consumer. The library is therefore compiled only as part of a firmware. |
+| 2026-09-02 | Backend features are decomposed by what each uses: `esp-hal` (TRNG, LD2410) < `esp-radio` (CSI, ESP-NOW, station); `lora` and `ble` stand alone with no esp dependency, so a LoRa-only or BLE-only firmware does not pull the Wi-Fi blobs. |
+| 2026-09-02 | Track B on the C6 is built with **stable** Rust and `riscv32imac-unknown-none-elf`; espup is needed only for Xtensa parts. |

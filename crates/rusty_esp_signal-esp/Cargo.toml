@@ -17,15 +17,41 @@ categories = ["embedded", "no-std", "hardware-support"]
 default = []
 std = ["rusty_esp_signal-core/std"]
 alloc = ["rusty_esp_signal-core/alloc"]
-# Track B — bare metal: esp-hal + Embassy. The esp-hal / esp-radio / esp-alloc
-# dependencies land behind this feature with the first driver, pinned to the
-# versions recorded in the plan.
-esp-hal = ["alloc"]
-# Track A — std on ESP-IDF via esp-idf-svc. Same rule.
+# Track B — bare metal: esp-hal + Embassy. The chip feature (esp32c6, …) is
+# selected by the FIRMWARE, never here: esp-hal refuses to build without exactly
+# one, and a library that picked one would fix the chip for every consumer. So
+# this crate is compiled only as part of a firmware, which supplies the chip.
+esp-hal = ["alloc", "dep:esp-hal", "dep:embassy-time"]
+# The esp-radio backends (CSI, the ESP-NOW link, the station policy). Separate
+# from `esp-hal` because esp-radio needs the firmware's chip feature and pulls
+# the Wi-Fi/BLE blobs: a LoRa-only or LD2410-only firmware must not pay for it.
+esp-radio = ["esp-hal", "dep:esp-radio", "dep:embassy-futures"]
+# LoRa (lora-phy) and BLE (trouble-host) touch no esp crate at all — they are
+# generic over the modem and the HCI controller — so they stand alone and a
+# firmware can take one without the radio stack.
+lora = ["alloc", "dep:lora-phy"]
+ble = ["alloc", "dep:trouble-host", "dep:bt-hci", "dep:embassy-sync", "dep:static_cell"]
+# Track A — std on ESP-IDF via esp-idf-svc. Reserved; the signal radios are
+# Track B first (esp-radio has the CSI, ESP-NOW and BLE the plan names).
 esp-idf = ["std"]
 
 [dependencies]
 rusty_esp_signal-core = { workspace = true }
+
+# Track B — all optional, pulled in only by the features above. No chip feature
+# here (see the `esp-hal` feature note). esp-radio's radio features ARE set
+# here (they are chip-independent): the backends this crate ships need them.
+esp-hal = { version = "=1.1.2", default-features = false, features = ["unstable"], optional = true }
+esp-radio = { version = "=1.0.0-beta.0", default-features = false, features = ["wifi", "esp-now", "csi", "ble", "unstable"], optional = true }
+embassy-time = { version = "0.5", optional = true }
+embassy-futures = { version = "0.1", optional = true }
+trouble-host = { version = "=0.6.0", default-features = false, features = ["gatt", "peripheral"], optional = true }
+bt-hci = { version = "0.8", default-features = false, optional = true }
+# The trouble-host GATT macros expand to references to these two crates, so a
+# crate that invokes them must depend on them by name.
+embassy-sync = { version = "0.7", optional = true }
+static_cell = { version = "2", optional = true }
+lora-phy = { version = "=3.0.1", optional = true }
 
 [lints]
 workspace = true

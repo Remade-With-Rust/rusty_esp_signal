@@ -1,0 +1,43 @@
+[package]
+name = "c6-lora-p2p"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "Janus J4 firmware, Track B (no_std/esp-hal), ESP32-C6 + SX1262: an authenticated LoRa point-to-point link — the core's MAC'd envelope over lora-phy, region duty cycle enforced."
+
+[[bin]]
+name = "c6-lora-p2p"
+path = "src/main.rs"
+test = false
+bench = false
+doctest = false
+
+[dependencies]
+esp-hal = { version = "=1.1.2", features = ["esp32c6", "unstable", "rt"] }
+esp-rtos = { version = "=0.3.0", features = ["esp32c6", "embassy"] }
+esp-alloc = "=0.10.0"
+esp-bootloader-esp-idf = { version = "=0.5.0", features = ["esp32c6"] }
+# lora-phy logs through defmt unconditionally, so a defmt global logger must be
+# linked: esp-println's defmt-espflash provides it.
+esp-println = { version = "=0.17.0", features = ["esp32c6", "defmt-espflash"] }
+esp-backtrace = { version = "=0.19.0", features = ["esp32c6", "panic-handler", "defmt"] }
+defmt = "0.3"
+embassy-executor = "0.10"
+embassy-time = "0.5"
+
+lora-phy = "=3.0.1"
+embedded-hal-bus = { version = "0.3", features = ["async"] }
+
+rusty_esp_signal-core = { path = "../../crates/rusty_esp_signal-core", default-features = false, features = ["alloc"] }
+rusty_esp_signal-esp = { path = "../../crates/rusty_esp_signal-esp", default-features = false, features = ["esp-hal", "lora"] }
+rusty_esp_mid-core = { git = "https://github.com/Remade-With-Rust/rusty_esp_mid", version = "0.1", default-features = false, features = ["alloc"] }
+rusty_esp_core = { git = "https://github.com/Remade-With-Rust/rusty_esp_core", version = "0.1", default-features = false, features = ["alloc"] }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[workspace]

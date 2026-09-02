@@ -88,13 +88,64 @@ the guess, set the working point.
 | clippy `--all-targets -D warnings`, `cargo fmt --check` | clean |
 | `riscv32imac-unknown-none-elf` core-only and `alloc` | check green |
 
+## S1 groundwork - the Track B backends and their firmware (2026-09-02)
+
+The radios are now **ingested**, not just interpreted: `rusty_esp_signal-esp`
+carries a backend per signal type and three ESP32-C6 firmware projects compile
+them. Machine: Windows 11, **stable** Rust 1.98.0 with the
+`riscv32imac-unknown-none-elf` target - Track B on a RISC-V part needs no
+espup, unlike the Xtensa firmware in the other Janus repos.
+
+Pins (exact, `=`): esp-hal 1.1.2, esp-radio 1.0.0-beta.0, esp-rtos 0.3.0,
+esp-alloc 0.10.0, esp-bootloader-esp-idf 0.5.0, esp-println 0.17.0,
+esp-backtrace 0.19.0, embassy-executor 0.10, embassy-time 0.5,
+trouble-host 0.6.0, bt-hci 0.8, lora-phy 3.0.1, embedded-hal-bus 0.3.
+
+| firmware | radios compiled in | release ELF | warnings |
+|---|---|---|---|
+| `c6-mesh-node` | ESP-NOW authenticated link, Wi-Fi CSI, LD2410 UART, Wi-Fi station policy | **1 744 812 B** | 0 |
+| `c6-lora-p2p` | LoRa P2P (SX1262 over SPI) | **339 592 B** | 0 |
+| `c6-ble-provision` | BLE GATT server (provisioning, manifest, telemetry) | **932 836 B** | 0 |
+
+All three link (`cargo build --release`, `opt-level = "s"`, fat LTO,
+`codegen-units = 1`, `panic = "abort"`). The host workspace is unchanged: 78
+unit + 3 oracle tests, clippy clean, because the backends are behind features
+the host build does not enable.
+
+Four things this cost, worth writing down:
+
+- **The chip feature belongs to the firmware, never the library.** esp-hal
+  refuses to build without exactly one, so `rusty_esp_signal-esp` names none
+  and is compiled only as part of a firmware, which supplies it through
+  cargo's feature unification.
+- **The backend features are decomposed by what they actually use.**
+  `esp-radio` (CSI, ESP-NOW, station) is separate from `esp-hal` (TRNG,
+  LD2410), and `lora` / `ble` touch no esp crate at all - they are generic
+  over the modem and the HCI controller. A LoRa-only firmware that pulled
+  esp-radio failed to build for want of a chip feature; that is why.
+- **lora-phy 3.0.1 logs through defmt unconditionally** and its defmt
+  dependency is not optional, so a firmware linking it must provide a
+  `#[defmt::global_logger]` (esp-println's `defmt-espflash`, referenced with
+  `use esp_println as _;` or it is garbage-collected) **and** a
+  `defmt::timestamp!`. Two undefined symbols at link, in that order.
+- **`trouble-host`'s GATT macros** expand to references to `embassy-sync` and
+  `static_cell`, which the invoking crate must depend on by name; arrays over
+  32 bytes have no `Default` impl, so those characteristics need an explicit
+  `value = [0u8; N]`; and the generated items are undocumented, so the macro
+  block sits in a module with `#[allow(missing_docs)]`.
+
 ## Not yet measured
 
-- **Anything on a radio.** S1's C6 ↔ C6 ESP-NOW link (1000 frames each way
-  with loss, replay-rejected and bad-tag counters), S2's presence in a room
-  against our own hand-labelled recording, S3's BLE provisioning from a
-  phone, S4's LoRa range/RSSI/PER table, S5's LD2410 against the module's
-  own serial tool, S6's 24-hour reconnect soak.
+- **Anything on a radio.** The three firmwares above build but **none has
+  been flashed**: S1's C6 ↔ C6 ESP-NOW link (1000 frames each way with loss,
+  replay-rejected and bad-tag counters), S2's presence in a room against our
+  own hand-labelled recording, S3's BLE provisioning from a phone, S4's LoRa
+  range/RSSI/PER table, S5's LD2410 against the module's own serial tool,
+  S6's 24-hour reconnect soak.
+- **Anything about the backends' behaviour.** A compile proves the types
+  agree with esp-radio, `lora-phy` and `trouble-host`; it says nothing about
+  whether a handshake completes over a real ESP-NOW datagram, whether the
+  CSI callback keeps up, or whether a phone can write the credential TLV.
 - The LD2410 parser is verified against the protocol document's example
   frames, not against a module.
 - LoRa time-on-air is verified against Semtech's published calculator

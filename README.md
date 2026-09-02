@@ -44,8 +44,24 @@ clippy clean, `riscv32imac` / `riscv32imafc` checks green, `cargo deny` clean.
   beacon.
 
 Each signal type answers to its own standard and was tested against its own
-external oracle; the table is in the plan (§4b). Nothing has run on a radio
-yet. S1 (C6 ↔ C6 ESP-NOW) is next and needs the boards.
+external oracle; the table is in the plan (§4b).
+
+**The chip backends are written and compile (2026-09-02).**
+`rusty_esp_signal-esp` carries one backend per signal type - the hardware TRNG
+behind the core's `Rng` seam, the ESP-NOW transport under the authenticated
+session, a CSI frame borrowed into the detector, an LD2410 UART reader, the
+Wi-Fi station policy, a `lora-phy` P2P link, and a `trouble-host` GATT server
+built from the core's table - and three ESP32-C6 firmware projects compile them
+on **stable** Rust (Track B on RISC-V needs no espup):
+
+| firmware | radios | ELF |
+|---|---|---|
+| `c6-mesh-node` | ESP-NOW, CSI, LD2410, station | 1 744 812 B |
+| `c6-lora-p2p` | LoRa (SX1262) | 339 592 B |
+| `c6-ble-provision` | BLE GATT | 932 836 B |
+
+**Nothing has been flashed.** A build proves the types agree with the radio
+crates; every on-radio number (S1-S6) waits for boards.
 
 ## What it is
 

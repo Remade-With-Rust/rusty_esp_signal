@@ -1,0 +1,41 @@
+[package]
+name = "c6-ble-provision"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "Janus J4 firmware, Track B (no_std/esp-hal), ESP32-C6: BLE Wi-Fi provisioning — the core's GATT table served over trouble-host, credentials decoded into rusty_esp_signal-core."
+
+[[bin]]
+name = "c6-ble-provision"
+path = "src/main.rs"
+test = false
+bench = false
+doctest = false
+
+[dependencies]
+esp-hal = { version = "=1.1.2", features = ["esp32c6", "unstable", "rt"] }
+esp-radio = { version = "=1.0.0-beta.0", features = ["esp32c6", "ble", "unstable"] }
+esp-rtos = { version = "=0.3.0", features = ["esp32c6", "esp-radio", "embassy"] }
+esp-alloc = "=0.10.0"
+esp-bootloader-esp-idf = { version = "=0.5.0", features = ["esp32c6"] }
+esp-println = { version = "=0.17.0", features = ["esp32c6"] }
+esp-backtrace = { version = "=0.19.0", features = ["esp32c6", "panic-handler", "println"] }
+embassy-executor = "0.10"
+embassy-time = "0.5"
+embassy-futures = "0.1"
+trouble-host = { version = "=0.6.0", features = ["gatt", "peripheral"] }
+bt-hci = "0.8"
+static_cell = "2"
+
+rusty_esp_signal-core = { path = "../../crates/rusty_esp_signal-core", default-features = false, features = ["alloc"] }
+rusty_esp_signal-esp = { path = "../../crates/rusty_esp_signal-esp", default-features = false, features = ["ble"] }
+rusty_esp_core = { git = "https://github.com/Remade-With-Rust/rusty_esp_core", version = "0.1", default-features = false, features = ["alloc"] }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[workspace]
