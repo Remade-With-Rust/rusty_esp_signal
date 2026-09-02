@@ -55,3 +55,26 @@ jobs:
           targets: ${{ matrix.target }}
       - run: cargo check -p rusty_esp_signal-core --no-default-features --target ${{ matrix.target }}
       - run: cargo check -p rusty_esp_signal-core --no-default-features --features alloc --target ${{ matrix.target }}
+
+  firmware:
+    name: firmware (${{ matrix.project }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - c6-mesh-node
+          - c6-lora-p2p
+          - c6-ble-provision
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authorise private sibling fetches
+        if: ${{ env.JANUS_GIT_TOKEN != '' }}
+        shell: bash
+        run: git config --global url."https://x-access-token:${JANUS_GIT_TOKEN}@github.com/".insteadOf "https://github.com/"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: riscv32imac-unknown-none-elf
+      # Track B on a RISC-V part builds on stable; espup is only for Xtensa.
+      - run: cargo build --release
+        working-directory: firmware/${{ matrix.project }}
