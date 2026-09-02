@@ -5,3 +5,6 @@ firmware/*/.embuild
 *.log
 .DS_Store
 Thumbs.db
+
+# Umbrella-only sibling patches (generated in the Janus checkout, see docs/plans/janus-mission.md section 9)
+/.cargo/config.toml
