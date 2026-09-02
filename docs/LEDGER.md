@@ -51,6 +51,19 @@ because their quiet gaps (the subject pausing) are correctly absent under a
 per-file label. Per-frame hand labels — the J4 kill test's "stated
 accuracy" — need a recording of our own and are not claimed here.
 
+The fixed-point wander against an independent float implementation
+(`tools/csi_wander_oracle.py`: `hypot`, `sqrt`, no integer tricks), frame
+by frame over the two fixtures (`fixed_point_wander_tracks_the_float_oracle`):
+
+| fixture | frames | mean (fixed − float) | max \|fixed − float\| |
+|---|---|---|---|
+| `c6_empty_room_iter1` | 2 951 | −0.845 ‰ | 1.645 ‰ (frame 8: 25 vs 26.645) |
+| `c6_walking_person_iter1` | 2 951 | −0.768 ‰ | 1.550 ‰ (frame 2 749: 32 vs 33.550) |
+
+The chip rounds down at every step (integer square root, integer division)
+and reads under the float value by under a permille on average; the test
+holds the mean inside (−1.5, 0] and the maximum under 2 ‰.
+
 Two things worth recording. Whole-number amplitudes were too coarse: at the
 dataset's amplitudes (20–40) integer rounding alone put a ~11 ‰ floor on the
 wander, a third of the empty room's real signal; two fractional bits on the
@@ -68,8 +81,9 @@ the guess, set the working point.
 | `link`: reordering inside the 64-frame window; a frame older than the window; sequence-space exhaustion; expiry | accepted / refused / `Denied` / `expired` as specified |
 | `link`: a stranger's DID (policy says no) on either side; a tampered `Accept`; a forged `Confirm`; an impostor without the device key | `Denied`, `Crypto`, `Crypto`, `Crypto` |
 | `link` wire sizes | `Hello` 84 B, `Accept` 100 B, `Confirm` 18 B, envelope overhead 23 B → 227 B of payload in a 250 B ESP-NOW datagram |
+| `link` golden vectors from an independent implementation (`tools/link_golden.py`: Python `hmac` + `hashlib`) | envelope tag for a fixed key/header/payload and the HKDF key schedule split (`k_i2r`, `k_r2i`, `k_confirm`, id) match byte for byte, through `Session::seal` |
 | `radar::csi` unit tests (isqrt over 70 000 values, layouts, features, hysteresis timing to the frame, layout-change reset) | pass |
-| unit tests, `rusty_esp_signal-core` | **76** pass (ble 7 · link 15 · lora 16 · csi 5 · ld2410 22 · wifi 11) + **2** capture-oracle tests |
+| unit tests, `rusty_esp_signal-core` | **78** pass (ble 7 · link 17 · lora 16 · csi 5 · ld2410 22 · wifi 11) + **3** capture-oracle tests |
 | `cargo deny check` (advisories, bans, licenses, sources) | clean — every git sibling pinned by version |
 | clippy `--all-targets -D warnings`, `cargo fmt --check` | clean |
 | `riscv32imac-unknown-none-elf` core-only and `alloc` | check green |

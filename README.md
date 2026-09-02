@@ -21,7 +21,7 @@ plan. "Scaffold" means scaffold.
 
 **S0 shipped on the host (2026-09-02).** The whole radio-application core
 exists in `no_std`, `forbid(unsafe)`, fixed-size memory, and is tested against
-external oracles before any radio: **76 unit tests + 2 capture-oracle tests**,
+external oracles before any radio: **78 unit tests + 3 capture-oracle tests**,
 clippy clean, `riscv32imac` / `riscv32imafc` checks green, `cargo deny` clean.
 
 - `radar::csi` — presence from Wi-Fi CSI in fixed point; on a labelled
@@ -43,8 +43,9 @@ clippy clean, `riscv32imac` / `riscv32imafc` checks green, `cargo deny` clean.
   to the microsecond), region limits, a duty-cycle budget, the discovery
   beacon.
 
-Nothing has run on a radio yet. S1 (C6 ↔ C6 ESP-NOW) is next and needs the
-boards.
+Each signal type answers to its own standard and was tested against its own
+external oracle; the table is in the plan (§4b). Nothing has run on a radio
+yet. S1 (C6 ↔ C6 ESP-NOW) is next and needs the boards.
 
 ## What it is
 

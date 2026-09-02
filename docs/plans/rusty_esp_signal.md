@@ -89,13 +89,33 @@ crates when any one exceeds a few thousand lines, not before.
 
 | # | Deliverable | Kill test |
 |---|---|---|
-| **S0** ✅ host 2026-09-02 | core: CSI features + presence/motion detectors on recorded captures; LD2410 parser with fixtures; `Envelope` + `Session` + replay window with tests; GATT table; riscv32 green. **Shipped:** all of it plus `wifi::StationPolicy`, `lora` airtime/duty/beacon; 76 + 2 tests | detectors reproduce esp-csi's reference verdicts on its published captures within a stated margin; a replayed frame is rejected; a frame with a bad tag is rejected before any parse |
+| **S0** ✅ host 2026-09-02 | core: CSI features + presence/motion detectors on recorded captures; LD2410 parser with fixtures; `Envelope` + `Session` + replay window with tests; GATT table; riscv32 green. **Shipped:** all of it plus `wifi::StationPolicy`, `lora` airtime/duty/beacon; 78 + 3 tests | detectors reproduce esp-csi's reference verdicts on its published captures within a stated margin; a replayed frame is rejected; a frame with a bad tag is rejected before any parse |
 | **S1** | C6 ↔ C6 ESP-NOW authenticated link (Track B) | 1000 frames each way; loss, replay-rejected and bad-tag counters recorded; a third unadopted C6 cannot join |
 | **S2** (J4) | CSI presence on C6 (and S3) in a room | matches a hand-labelled 10-minute recording at a stated accuracy; false-positive rate stated |
 | **S3** | BLE provisioning over `trouble-host`; the manifest readable over GATT | a phone provisions Wi-Fi from a Web Bluetooth page — no app-store app; credentials never appear in a log |
 | **S4** | LoRa P2P on two SX1262 nodes with signed session + MAC'd frames | a range/RSSI/PER table at SF7 and SF12; ledger row |
 | **S5** | LD2410C over UART | reports match the module's own serial tool for 10 minutes |
 | **S6** | `StationPolicy`: reconnect back-off, AP fallback → provisioning, RSSI telemetry | a 24-hour soak with the reconnect counter recorded |
+
+## 4b. Standards and oracles — one per signal type
+
+Every radio has its own standard and its own external oracle; what they
+share is the crate, the envelope and the verdict. Nothing here needs a
+scaffold of its own: each signal type is a module with its own tests and its
+own oracle, and grows a feature-gated backend in `-esp` plus a firmware
+example when its milestone comes.
+
+| signal type | the standard it answers to | host oracle (S0, done) | on-radio kill test (needs boards) |
+|---|---|---|---|
+| **Wi-Fi CSI presence** | IEEE 802.11 OFDM subcarrier layout; Espressif's `wifi_csi_info_t` byte order (ESP-IDF Wi-Fi driver guide) | a public labelled ESP32-C6 capture (Universidad de Cuenca, CC BY 4.0): held-out empty room 0 / 2 951 frames present, walking 86 % / 61 %; a float replica of the wander (`tools/csi_wander_oracle.py`) tracks the fixed-point chip code frame by frame | S2: our own hand-labelled 10-minute room recording; accuracy and false-positive rate stated |
+| **LD2410 mmWave** | Hi-Link "HLK-LD2410 Serial Communication Protocol" V1.02 and the LD2410C V1.00 edition | the documents' own report, ACK and command frames (with two length typos in V1.02 corrected and noted); a 12.8 KB junk stream with spliced frames | S5: 10 minutes against the module's own serial tool |
+| **ESP-NOW link** | Espressif ESP-NOW (250 B v1 payload, 20 peers); our `link` protocol (Noise-KK shape, HKDF-SHA256, HMAC-SHA256/16) | wire format pinned by an independent Python `hmac`/`hashlib` implementation (`tools/link_golden.py`); every refusal path tested; RustCrypto primitives carry their own RFC 4231 / 5869 vectors | S1: 1 000 frames each way between two C6s; loss, replay-rejected and bad-tag counters; a third unadopted C6 cannot join |
+| **LoRa P2P** | Semtech SX126x/SX127x time-on-air formula; ETSI EN 300 220 (EU868 duty cycle), FCC §15.247 (US915 dwell), LoRaWAN RP002 regional tables | Semtech calculator values exact to the microsecond (41 216 µs SF7, 991 232 µs SF12); region limits from the cited documents; beacon vector | S4: range / RSSI / PER table at SF7 and SF12 on two SX1262 nodes |
+| **BLE GATT** | Bluetooth Core Specification (characteristic property bits, ATT 512-byte values); RFC 4122 UUID text form | property bit values and the hyphenated UUID string asserted; table uniqueness | S3: a phone provisions Wi-Fi from a Web Bluetooth page; credentials never appear in a log |
+| **Wi-Fi station** | IEEE 802.11-2020 Annex J (passphrase 8–63 printable ASCII or 64 hex PSK) | the three credential shapes, redacted `Debug`, the exact back-off sequence 1 → 60 s | S6: a 24-hour soak with the reconnect counter recorded |
+
+The LD2410 and LoRa rows are verified against documents, not devices; the
+ledger says so until a module and a modem have run.
 
 ## 5. Measurement
 

@@ -65,8 +65,13 @@ pub const VERSION: u8 = 1;
 pub const TAG_LEN: usize = 16;
 /// `ver | session (2) | seq (4)`.
 pub const HEADER_LEN: usize = 7;
-/// An ESP-NOW datagram: the smallest MTU a link here has.
+/// An ESP-NOW datagram: the smallest MTU a link here has. ESP-IDF's ESP-NOW
+/// documentation: a v1.0 vendor-specific action frame carries at most 250
+/// bytes of payload (v2.0 on newer chips allows 1470, which v1 peers cannot
+/// receive), and a device keeps at most 20 paired peers.
 pub const MAX_FRAME: usize = 250;
+/// ESP-NOW's paired-peer table size (ESP-IDF `ESP_NOW_MAX_TOTAL_PEER_NUM`).
+pub const ESP_NOW_MAX_PEERS: usize = 20;
 /// Payload that fits an ESP-NOW datagram after the envelope's 23 bytes.
 pub const MAX_PAYLOAD: usize = MAX_FRAME - HEADER_LEN - TAG_LEN;
 /// Bytes of nonce each side contributes.
@@ -638,14 +643,22 @@ fn derive(
     ikm[..32].copy_from_slice(&me.shared_secret(their_did)?);
     let shared = diffie_hellman(my_eph.to_nonzero_scalar(), their_eph.as_affine());
     ikm[32..].copy_from_slice(shared.raw_secret_bytes());
+    let keys = expand_keys(&ikm, nonce_i, nonce_r);
+    ikm.zeroize();
+    keys
+}
+
+/// The key schedule: `HKDF-SHA256(salt = nonce_i || nonce_r, ikm, INFO)`
+/// split as `k_i2r | k_r2i | k_confirm | id`. Pinned by the golden test
+/// against an independent Python implementation.
+fn expand_keys(ikm: &[u8; 64], nonce_i: &[u8], nonce_r: &[u8]) -> Result<Keys> {
     let mut salt = [0u8; 2 * NONCE_LEN];
     salt[..NONCE_LEN].copy_from_slice(nonce_i);
     salt[NONCE_LEN..].copy_from_slice(nonce_r);
 
-    let hk = hkdf::Hkdf::<Sha256>::new(Some(&salt), &ikm);
+    let hk = hkdf::Hkdf::<Sha256>::new(Some(&salt), ikm);
     let mut okm = [0u8; OKM_LEN];
     hk.expand(INFO, &mut okm).map_err(|_| Error::Crypto)?;
-    ikm.zeroize();
 
     let mut keys = Keys {
         k_i2r: [0u8; KEY_LEN],
@@ -1017,6 +1030,81 @@ mod tests {
         assert_eq!(w.highest(), Some(1_000_000));
         assert!(w.would_accept(999_999));
         assert!(!w.would_accept(1_000_000));
+    }
+
+    /// The wire format pinned by an independent implementation:
+    /// `tools/link_golden.py` (Python `hmac` + `hashlib`, no Rust in the
+    /// loop) produced these constants. If they ever change here, the wire
+    /// changed and `VERSION` must bump.
+    #[test]
+    fn golden_envelope_tag_matches_python_hmac() {
+        let key: [u8; KEY_LEN] = core::array::from_fn(|i| i as u8 + 1);
+        let mut frame = [0u8; HEADER_LEN + 5];
+        frame[0] = VERSION;
+        frame[1..3].copy_from_slice(&0xBEEFu16.to_be_bytes());
+        frame[3..7].copy_from_slice(&7u32.to_be_bytes());
+        frame[7..].copy_from_slice(b"janus");
+        let tag = mac(&key, &[&frame]).unwrap();
+        assert_eq!(
+            tag,
+            [
+                0xe7, 0x7f, 0x2e, 0x16, 0x0f, 0x22, 0xe1, 0x15, 0xb7, 0xc4, 0x8a, 0x9b, 0x5d, 0x68,
+                0x61, 0x91
+            ]
+        );
+        assert!(verify(&key, &[&frame], &tag));
+        // And through `Session::seal` itself, so the header layout is pinned too.
+        let mut s = Session {
+            id: 0xBEEF,
+            peer: DeviceKey::from_seed_for_tests("golden", "x").did(),
+            k_send: key,
+            k_recv: key,
+            send_seq: 7,
+            exhausted: false,
+            window: ReplayWindow::new(),
+            established: Micros::ZERO,
+            lifetime: DEFAULT_LIFETIME,
+            counters: Counters::default(),
+        };
+        let mut out = [0u8; MAX_FRAME];
+        let n = s.seal(b"janus", &mut out).unwrap();
+        assert_eq!(&out[..HEADER_LEN + 5], &frame);
+        assert_eq!(&out[HEADER_LEN + 5..n], &tag);
+    }
+
+    #[test]
+    fn golden_key_schedule_matches_python_hkdf() {
+        let mut ikm = [0u8; 64];
+        ikm[..32].fill(0x11);
+        ikm[32..].fill(0x22);
+        let nonce_i: [u8; NONCE_LEN] = core::array::from_fn(|i| 0xA0 + i as u8);
+        let nonce_r: [u8; NONCE_LEN] = core::array::from_fn(|i| 0xB0 + i as u8);
+        let keys = expand_keys(&ikm, &nonce_i, &nonce_r).unwrap();
+        assert_eq!(
+            keys.k_i2r,
+            [
+                0x75, 0x23, 0x04, 0x97, 0x03, 0xf0, 0x66, 0x7e, 0xe0, 0x91, 0xe9, 0xa4, 0xf0, 0xed,
+                0xd9, 0xc3, 0x81, 0xc0, 0xcb, 0xe5, 0x4b, 0x43, 0x65, 0x00, 0x6f, 0x49, 0xf5, 0x8f,
+                0xe3, 0x38, 0x80, 0x45
+            ]
+        );
+        assert_eq!(
+            keys.k_r2i,
+            [
+                0x8f, 0x5b, 0x39, 0xf3, 0x4b, 0x57, 0x4d, 0x7f, 0x7d, 0x60, 0x50, 0xad, 0xb4, 0xe8,
+                0x2b, 0x08, 0xf8, 0x14, 0xf7, 0xd9, 0x63, 0x05, 0xee, 0x96, 0x17, 0x3b, 0x34, 0x70,
+                0xf5, 0xae, 0xcf, 0x55
+            ]
+        );
+        assert_eq!(
+            keys.k_confirm,
+            [
+                0x85, 0xad, 0x78, 0xb3, 0x60, 0xf7, 0xf7, 0xaa, 0x03, 0xf6, 0xdc, 0xe8, 0xd9, 0xa8,
+                0x40, 0xb0, 0xfc, 0xc5, 0x49, 0xa7, 0xce, 0x72, 0x4a, 0xd5, 0x93, 0xa7, 0xad, 0xcc,
+                0x63, 0x31, 0x19, 0xb1
+            ]
+        );
+        assert_eq!(keys.id, 0x1c04);
     }
 
     #[test]

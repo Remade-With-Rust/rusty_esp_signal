@@ -173,6 +173,63 @@ fn empty_room_and_walking_person_separate_at_the_default_thresholds() {
     assert!(empty.wander_p95 < walk.wander_p95, "{empty:?} vs {walk:?}");
 }
 
+/// The fixed-point wander the chip computes against the float replica in
+/// `tools/csi_wander_oracle.py` (an independent implementation: `hypot`,
+/// `sqrt`, no integer tricks), frame by frame over both fixtures.
+#[test]
+fn fixed_point_wander_tracks_the_float_oracle() {
+    for name in ["c6_empty_room_iter1", "c6_walking_person_iter1"] {
+        let golden = std::fs::read_to_string(fixture(&format!("{name}.wander.txt")))
+            .expect("golden wander series; regenerate with tools/csi_wander_oracle.py");
+        let floats: Vec<f64> = golden
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| l.trim().parse().expect("float"))
+            .collect();
+        let rows = parse(&fixture(&format!("{name}.csv")));
+        let mut det = PresenceDetector::<WINDOW>::new(Config::default());
+        let mut fixed = Vec::with_capacity(rows.len());
+        for (n, row) in rows.iter().enumerate() {
+            let now = Micros(n as u64 * FRAME_MICROS);
+            let f = CsiFrame {
+                timestamp: now,
+                rssi: row.rssi,
+                channel: 6,
+                iq: &row.iq,
+            }
+            .features(&Layout::C6_HT20_NATURAL)
+            .expect("layout");
+            if det.push(&f, now) != Verdict::Warming {
+                fixed.push(f64::from(det.wander()));
+            }
+        }
+        assert_eq!(fixed.len(), floats.len(), "{name}: judged frames");
+        let mut max_abs = 0.0f64;
+        let mut sum = 0.0f64;
+        let mut worst = 0usize;
+        for (i, (x, o)) in fixed.iter().zip(&floats).enumerate() {
+            let d = x - o;
+            sum += d;
+            if d.abs() > max_abs {
+                max_abs = d.abs();
+                worst = i;
+            }
+        }
+        let mean = sum / floats.len() as f64;
+        println!(
+            "{name}: fixed vs float wander over {} frames: mean delta {mean:+.3} permille, max |delta| {max_abs:.3} at frame {worst} (fixed {} vs float {:.3})",
+            floats.len(),
+            fixed[worst],
+            floats[worst]
+        );
+        // The chip rounds down at every step (integer sqrt, integer
+        // division), so it reads at or just under the float value: measured
+        // mean −0.85 / −0.77 ‰, max 1.65 ‰ on the two fixtures (ledger).
+        assert!(mean <= 0.0 && mean > -1.5, "{name}: mean delta {mean}");
+        assert!(max_abs < 2.0, "{name}: max |delta| {max_abs}");
+    }
+}
+
 #[test]
 fn held_out_captures_transfer() {
     let Some(dir) = std::env::var_os("JANUS_CSI_HELDOUT_DIR") else {
