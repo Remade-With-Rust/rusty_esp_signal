@@ -9,7 +9,7 @@ over the esp-rs radio stack it does not try to replace.
 Family plan: Janus `docs/plans/janus-mission.md`. Layer 1 · connectivity.
 Depends on `rusty_esp_core` and `rusty_esp_mid` (session authentication).
 
-Written 2026-09-01. Status: **scaffold.**
+Written 2026-09-01. Status: **S0 shipped on the host (2026-09-02); S1 needs the boards.** Numbers in `docs/LEDGER.md`.
 
 ---
 
@@ -89,7 +89,7 @@ crates when any one exceeds a few thousand lines, not before.
 
 | # | Deliverable | Kill test |
 |---|---|---|
-| **S0** | core: CSI features + presence/motion detectors on recorded captures; LD2410 parser with fixtures; `Envelope` + `Session` + replay window with tests; GATT table; riscv32 green | detectors reproduce esp-csi's reference verdicts on its published captures within a stated margin; a replayed frame is rejected; a frame with a bad tag is rejected before any parse |
+| **S0** ✅ host 2026-09-02 | core: CSI features + presence/motion detectors on recorded captures; LD2410 parser with fixtures; `Envelope` + `Session` + replay window with tests; GATT table; riscv32 green. **Shipped:** all of it plus `wifi::StationPolicy`, `lora` airtime/duty/beacon; 76 + 2 tests | detectors reproduce esp-csi's reference verdicts on its published captures within a stated margin; a replayed frame is rejected; a frame with a bad tag is rejected before any parse |
 | **S1** | C6 ↔ C6 ESP-NOW authenticated link (Track B) | 1000 frames each way; loss, replay-rejected and bad-tag counters recorded; a third unadopted C6 cannot join |
 | **S2** (J4) | CSI presence on C6 (and S3) in a room | matches a hand-labelled 10-minute recording at a stated accuracy; false-positive rate stated |
 | **S3** | BLE provisioning over `trouble-host`; the manifest readable over GATT | a phone provisions Wi-Fi from a Web Bluetooth page — no app-store app; credentials never appear in a log |
@@ -121,3 +121,8 @@ crates when any one exceeds a few thousand lines, not before.
 | 2026-09-01 | Sign the session, MAC the frames. P-256 ECDH from `rusty_esp_mid`; HMAC-SHA256/16 per frame. |
 | 2026-09-01 | Detectors are host-developed from recorded captures against an external oracle before any radio work. |
 | 2026-09-01 | 802.15.4 / Thread is out of v1 (owned by the home computer's border-router plan). |
+| 2026-09-02 | The link handshake is Noise-KK-shaped: static P-256 ECDH under both DIDs **plus** an ephemeral ECDH, two nonces, HKDF-SHA256, explicit key confirmation both ways. Implicit authentication replaces per-message signatures (84 / 100 / 18 bytes on the wire); forward secrecy comes free. No encryption in v1 — verdicts and telemetry are authenticated, not secret. |
+| 2026-09-02 | CSI amplitudes carry two fractional bits and the wander's standard deviation four: whole-number amplitudes put an ~11 ‰ floor under the wander at real signal levels, a third of an empty room's signal. |
+| 2026-09-02 | Presence thresholds come from data, not guesses: `on` = 1.5 × the empty-room ceiling measured on the C6 dataset (28 ‰ → 42), `off` just above it (32), hold 3 s; held-out captures confirm. The first guess (60 / 30) read a walker present 32 % of the time. |
+| 2026-09-02 | The external CSI oracle is a public CC BY 4.0 dataset (Universidad de Cuenca, ESP32-C6); our own hand-labelled recording is the S2 item. |
+| 2026-09-02 | Git siblings carry a `version` beside the URL (cargo-deny wildcards); the per-repo patch names only `rusty_esp_mid-core`. |

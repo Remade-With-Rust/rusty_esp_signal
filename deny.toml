@@ -33,4 +33,7 @@ ignore = []
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-git = ["https://github.com/Remade-With-Rust/rusty_esp_core"]
+allow-git = [
+  "https://github.com/Remade-With-Rust/rusty_esp_core",
+  "https://github.com/Remade-With-Rust/rusty_esp_mid",
+]

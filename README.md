@@ -19,8 +19,32 @@ plan. "Scaffold" means scaffold.
 
 ## Status
 
-**M0 — scaffold.** Crate layout, feature ladder and CI gates exist. Nothing here
-runs on a chip yet. The first milestone with a kill test is listed in the plan.
+**S0 shipped on the host (2026-09-02).** The whole radio-application core
+exists in `no_std`, `forbid(unsafe)`, fixed-size memory, and is tested against
+external oracles before any radio: **76 unit tests + 2 capture-oracle tests**,
+clippy clean, `riscv32imac` / `riscv32imafc` checks green, `cargo deny` clean.
+
+- `radar::csi` — presence from Wi-Fi CSI in fixed point; on a labelled
+  ESP32-C6 dataset (empty room vs a person walking, CC BY 4.0) the held-out
+  empty minute reads absent for all 2 951 judged frames and the walking
+  minutes read present for 86 % / 61 % of theirs (`docs/LEDGER.md`).
+- `radar::ld2410` — the HLK-LD2410/LD2410C UART protocol: streaming parser,
+  every command, ACK decoders, verified against the protocol documents'
+  own frames.
+- `link` — the mID-authenticated session (P-256, Noise-KK shape, forward
+  secrecy) and the 23-byte MAC'd envelope every ESP-NOW and LoRa frame
+  travels in; replay window, key confirmation, 15 refusal tests.
+- `wifi` — credentials that never print (redacted `Debug`, zeroised on
+  drop) and the station policy: exponential back-off 1 s → 60 s, fallback
+  to provisioning after ten failures.
+- `ble` — the GATT table (provisioning, manifest, telemetry) as data under
+  the Janus base UUID.
+- `lora` — modem parameters, exact time-on-air (matches Semtech's calculator
+  to the microsecond), region limits, a duty-cycle budget, the discovery
+  beacon.
+
+Nothing has run on a radio yet. S1 (C6 ↔ C6 ESP-NOW) is next and needs the
+boards.
 
 ## What it is
 
