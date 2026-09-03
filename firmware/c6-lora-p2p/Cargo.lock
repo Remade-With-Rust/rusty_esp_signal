@@ -1277,9 +1277,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "mid-signer"
+version = "0.2.0"
+source = "git+https://github.com/Remade-With-Rust/mid?branch=device-signer-leaf#6d42433e5b291ac2c6a03f9bed8109622313d6cd"
+dependencies = [
+ "p256",
+]
+
+[[package]]
 name = "mid-types"
 version = "0.2.0"
-source = "git+https://github.com/Remade-With-Rust/mid?branch=no-std-types#8b7a16dbf2842ee41f8e87c2e39391239e995547"
+source = "git+https://github.com/Remade-With-Rust/mid?branch=device-signer-leaf#6d42433e5b291ac2c6a03f9bed8109622313d6cd"
 dependencies = [
  "serde",
  "serde_json",
@@ -1558,6 +1566,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "bs58",
+ "mid-signer",
  "mid-types",
  "p256",
  "rusty_esp_core",
