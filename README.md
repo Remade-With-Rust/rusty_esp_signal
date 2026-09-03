@@ -39,6 +39,12 @@ clippy clean, `riscv32imac` / `riscv32imafc` checks green, `cargo deny` clean.
   to provisioning after ten failures.
 - `ble` — the GATT table (provisioning, manifest, telemetry) as data under
   the Janus base UUID.
+- `provision` (S3's host half, 2026-09-02) — the provisioning session over
+  that table: a `credentials` write becomes the station policy's join, the
+  `status` byte is the phase and every change a notification, `scan` is the
+  networks strongest first as TLV, the secret never reads back and never
+  prints; `docs/provision.html` is the Web Bluetooth page a phone opens (no
+  app), and a test holds it to the same UUIDs, tags and phase names.
 - `lora` — modem parameters, exact time-on-air (matches Semtech's calculator
   to the microsecond), region limits, a duty-cycle budget, the discovery
   beacon.

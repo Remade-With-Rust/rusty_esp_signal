@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Janus provisioning</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { max-width: 34rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }
+  h1 { font-size: 1.4rem; }
+  button { font: inherit; padding: .5rem 1rem; border-radius: .5rem; border: 1px solid #8884; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  input { font: inherit; padding: .45rem .6rem; width: 100%; box-sizing: border-box; border-radius: .4rem; border: 1px solid #8886; }
+  label { display: block; margin: .8rem 0 .2rem; font-weight: 600; }
+  #networks button { display: block; width: 100%; text-align: left; margin: .25rem 0; }
+  .muted { opacity: .7; font-size: .9rem; }
+  code { font-family: ui-monospace, monospace; word-break: break-all; }
+  #status { font-weight: 700; }
+  #log { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: .85rem; opacity: .8; }
+</style>
+</head>
+<body>
+<h1>Janus device provisioning</h1>
+<p class="muted">Web Bluetooth, no app. Open this page over <code>https://</code> (or <code>localhost</code>) in Chrome or Edge on a phone or laptop, press <em>Connect</em>, pick the device, choose a network, enter its passphrase. The passphrase is written once to the device and never shown, stored or logged by this page.</p>
+
+<button id="connect">Connect</button>
+<p>Device: <code id="did">—</code><br>Ticket: <code id="ticket">—</code><br>Status: <span id="status">not connected</span></p>
+
+<h2>Networks the device can see</h2>
+<div id="networks" class="muted">connect first</div>
+
+<label for="ssid">Network name (SSID)</label>
+<input id="ssid" maxlength="32" autocomplete="off">
+<label for="psk">Passphrase (leave empty for an open network)</label>
+<input id="psk" type="password" maxlength="64" autocomplete="off">
+<p><button id="provision" disabled>Provision</button></p>
+<p id="log"></p>
+
+<script>
+// The Janus GATT table (rusty_esp_signal-core::ble): base UUID
+// 4a616e75-7300-4d41-5441-000000000000 with the 16-bit short id in the last
+// two bytes. Services are NN00, their characteristics NN01, NN02, ...
+const janus = (short) => `4a616e75-7300-4d41-5441-00000000${short.toString(16).padStart(4, '0')}`;
+const SERVICE_PROVISIONING = janus(0x0100); // 4a616e75-7300-4d41-5441-000000000100
+const CHAR_CREDENTIALS     = janus(0x0101); // 4a616e75-7300-4d41-5441-000000000101
+const CHAR_STATUS          = janus(0x0102); // 4a616e75-7300-4d41-5441-000000000102
+const CHAR_SCAN            = janus(0x0103); // 4a616e75-7300-4d41-5441-000000000103
+const SERVICE_MANIFEST     = janus(0x0200); // 4a616e75-7300-4d41-5441-000000000200
+const CHAR_DID             = janus(0x0202); // 4a616e75-7300-4d41-5441-000000000202
+const CHAR_TICKET          = janus(0x0203); // 4a616e75-7300-4d41-5441-000000000203
+
+// TLV tags (rusty_esp_signal-core::wifi and ::provision)
+const TAG_SSID = 1;
+const TAG_PSK = 2;
+const TAG_RSSI = 3;
+const TAG_SECURED = 4;
+
+// wifi::Phase, the one-byte status value
+const PHASES = ['Unprovisioned', 'Connecting', 'Connected', 'Backoff', 'Fallback'];
+
+const $ = (id) => document.getElementById(id);
+const log = (line) => { $('log').textContent += line + '\n'; };
+const utf8 = new TextEncoder();
+const text = new TextDecoder();
+
+let server = null;
+let provisioning = null;
+
+async function connect() {
+  const device = await navigator.bluetooth.requestDevice({
+    filters: [{ services: [SERVICE_PROVISIONING] }],
+    optionalServices: [SERVICE_MANIFEST],
+  });
+  device.addEventListener('gattserverdisconnected', () => {
+    $('status').textContent = 'disconnected';
+    $('provision').disabled = true;
+  });
+  server = await device.gatt.connect();
+  log(`connected to ${device.name || 'a Janus device'}`);
+
+  try {
+    const manifest = await server.getPrimaryService(SERVICE_MANIFEST);
+    const did = await (await manifest.getCharacteristic(CHAR_DID)).readValue();
+    $('did').textContent = text.decode(did);
+    const ticket = await (await manifest.getCharacteristic(CHAR_TICKET)).readValue();
+    $('ticket').textContent = text.decode(ticket);
+  } catch (e) {
+    log(`manifest service not readable: ${e.message}`);
+  }
+
+  provisioning = await server.getPrimaryService(SERVICE_PROVISIONING);
+  const status = await provisioning.getCharacteristic(CHAR_STATUS);
+  showStatus(await status.readValue());
+  await status.startNotifications();
+  status.addEventListener('characteristicvaluechanged', (ev) => showStatus(ev.target.value));
+
+  const scan = await (await provisioning.getCharacteristic(CHAR_SCAN)).readValue();
+  showNetworks(parseScan(new Uint8Array(scan.buffer)));
+  $('provision').disabled = false;
+}
+
+function showStatus(value) {
+  const phase = value.byteLength ? value.getUint8(0) : 0;
+  $('status').textContent = PHASES[phase] ?? `phase ${phase}`;
+}
+
+// scan value: repeated [TAG_SSID len ssid] [TAG_RSSI 1 rssi] [TAG_SECURED 1 flag]
+function parseScan(bytes) {
+  const networks = [];
+  let i = 0;
+  let current = null;
+  while (i + 2 <= bytes.length) {
+    const tag = bytes[i];
+    const len = bytes[i + 1];
+    const value = bytes.subarray(i + 2, i + 2 + len);
+    if (value.length < len) break;
+    if (tag === TAG_SSID) {
+      current = { ssid: text.decode(value), raw: value, rssi: null, secured: false };
+      networks.push(current);
+    } else if (tag === TAG_RSSI && current && len === 1) {
+      current.rssi = new Int8Array(value.buffer, value.byteOffset, 1)[0];
+    } else if (tag === TAG_SECURED && current && len === 1) {
+      current.secured = value[0] !== 0;
+    }
+    i += 2 + len;
+  }
+  return networks;
+}
+
+function showNetworks(networks) {
+  const box = $('networks');
+  box.textContent = '';
+  box.classList.remove('muted');
+  if (!networks.length) {
+    box.textContent = 'none seen yet — the device scans when provisioning opens';
+    return;
+  }
+  for (const n of networks) {
+    const b = document.createElement('button');
+    b.textContent = `${n.ssid}  ${n.rssi ?? '?'} dBm  ${n.secured ? 'secured' : 'open'}`;
+    b.addEventListener('click', () => { $('ssid').value = n.ssid; $('psk').focus(); });
+    box.appendChild(b);
+  }
+}
+
+// credentials value: [TAG_SSID len ssid] [TAG_PSK len psk] — wifi::Credentials::encode
+function encodeCredentials(ssid, psk) {
+  const s = utf8.encode(ssid);
+  const p = utf8.encode(psk);
+  if (s.length < 1 || s.length > 32) throw new Error('SSID must be 1 to 32 bytes');
+  if (!(p.length === 0 || (p.length >= 8 && p.length <= 63) || p.length === 64)) {
+    throw new Error('passphrase must be 8 to 63 characters, or 64 hex digits, or empty');
+  }
+  const out = new Uint8Array(2 + s.length + 2 + p.length);
+  out[0] = TAG_SSID; out[1] = s.length; out.set(s, 2);
+  out[2 + s.length] = TAG_PSK; out[3 + s.length] = p.length; out.set(p, 4 + s.length);
+  return out;
+}
+
+async function provision() {
+  try {
+    const tlv = encodeCredentials($('ssid').value, $('psk').value);
+    const creds = await provisioning.getCharacteristic(CHAR_CREDENTIALS);
+    await creds.writeValueWithResponse(tlv);
+    tlv.fill(0);
+    $('psk').value = '';
+    log(`credentials written for "${$('ssid').value}" — watching the status`);
+  } catch (e) {
+    log(`provisioning failed: ${e.message}`);
+  }
+}
+
+$('connect').addEventListener('click', () => connect().catch((e) => log(`connect failed: ${e.message}`)));
+$('provision').addEventListener('click', provision);
+if (!navigator.bluetooth) {
+  log('this browser has no Web Bluetooth; use Chrome or Edge, over https');
+  $('connect').disabled = true;
+}
+</script>
+</body>
+</html>

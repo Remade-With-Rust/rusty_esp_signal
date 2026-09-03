@@ -150,3 +150,15 @@ Four things this cost, worth writing down:
   frames, not against a module.
 - LoRa time-on-air is verified against Semtech's published calculator
   values, not against a modem.
+
+## S3 host half: the provisioning session and page (host, 2026-09-02)
+
+| Gate | Result |
+|---|---|
+| A `credentials` write → `Action::Connect`, status `Connecting` notified; `Connected` event → notified once, a repeat is silent; `Debug` of the session never contains the passphrase | **pass** |
+| A malformed write changes nothing (`InvalidFormat`); writes to `status`, `scan` and any other table characteristic are `Denied`; an unknown UUID is `Unsupported`; `credentials` never reads back (`Denied`); a zero-length status read reports the byte it needs | pass |
+| Restore from storage joins; new credentials while joined re-join; `forget` wipes, resets the policy and opens provisioning | pass |
+| `ScanList`: insert by strength with eviction of the weakest, TLV round trip, whole entries only into a short buffer; eight 32-byte names → six fit the 240-byte characteristic | pass |
+| `docs/provision.html` names the same seven UUIDs, four TLV tags and five phase names as the crate, and never logs the secret (`include_str!` test) | pass |
+
+Core: **83 unit + 3 capture-oracle tests** (6 new), clippy `-D warnings`, `riscv32imac` no_std check, `cargo deny`. The page has not been driven against a board: that is S3's board half.

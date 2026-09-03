@@ -36,6 +36,7 @@ pub use rusty_esp_mid_core as mid;
 pub mod ble;
 pub mod link;
 pub mod lora;
+pub mod provision;
 pub mod radar;
 pub mod wifi;
 
@@ -46,6 +47,7 @@ pub mod prelude {
     pub use crate::ble::{Characteristic, GattTable, Props, Service};
     pub use crate::link::{Envelope, Handshake, Session};
     pub use crate::lora::{Beacon, DutyCycle, Params as LoraParams, Region};
+    pub use crate::provision::{Provisioner, ScanEntry, ScanList};
     pub use crate::radar::csi::{CsiFrame, Features, PresenceDetector, Verdict};
     pub use crate::radar::ld2410::{Parser as Ld2410Parser, Report as Ld2410Report};
     pub use crate::wifi::{Action, Credentials, Event, Phase, StationPolicy};
