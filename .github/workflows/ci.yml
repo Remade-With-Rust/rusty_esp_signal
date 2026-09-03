@@ -35,6 +35,21 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authorise private sibling fetches
+        if: ${{ env.JANUS_GIT_TOKEN != '' }}
+        shell: bash
+        run: git config --global url."https://x-access-token:${JANUS_GIT_TOKEN}@github.com/".insteadOf "https://github.com/"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-deny
+      # Licences, the no-C ban list, advisories and the git allow-list: the
+      # posture deny.toml states, checked on every push rather than by hand.
+      - run: cargo deny check
+
   no_std:
     name: no_std (${{ matrix.target }})
     runs-on: ubuntu-latest
