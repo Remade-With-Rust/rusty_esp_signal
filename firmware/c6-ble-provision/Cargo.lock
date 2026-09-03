@@ -1367,6 +1367,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
+name = "libm"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+
+[[package]]
 name = "linked_list_allocator"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1420,6 +1426,15 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "mid-types"
+version = "0.2.0"
+source = "git+https://github.com/Remade-With-Rust/mid?branch=no-std-types#8b7a16dbf2842ee41f8e87c2e39391239e995547"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "nb"
@@ -1713,11 +1728,20 @@ name = "rusty_esp_core"
 version = "0.1.0"
 
 [[package]]
+name = "rusty_esp_dsp"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "rusty_esp_core",
+]
+
+[[package]]
 name = "rusty_esp_mid-core"
 version = "0.1.0"
 dependencies = [
  "base64",
  "bs58",
+ "mid-types",
  "p256",
  "rusty_esp_core",
  "serde",
@@ -1733,6 +1757,7 @@ dependencies = [
  "hmac",
  "p256",
  "rusty_esp_core",
+ "rusty_esp_dsp",
  "rusty_esp_mid-core",
  "sha2",
  "zeroize",

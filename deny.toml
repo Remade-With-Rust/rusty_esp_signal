@@ -35,5 +35,8 @@ unknown-registry = "deny"
 unknown-git = "deny"
 allow-git = [
   "https://github.com/Remade-With-Rust/rusty_esp_core",
+  "https://github.com/Remade-With-Rust/rusty_esp_dsp",
   "https://github.com/Remade-With-Rust/rusty_esp_mid",
+  # rusty_esp_mid-core brings the mID wire types in from the upstream branch
+  "https://github.com/Remade-With-Rust/mid",
 ]

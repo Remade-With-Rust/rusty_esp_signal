@@ -413,20 +413,9 @@ impl<const W: usize> PresenceDetector<W> {
     }
 }
 
-/// Integer square root, `floor(sqrt(v))`.
-#[must_use]
-pub const fn isqrt(v: u32) -> u32 {
-    if v < 2 {
-        return v;
-    }
-    let mut x = v;
-    let mut y = x.div_ceil(2);
-    while y < x {
-        x = y;
-        y = (x + v / x) / 2;
-    }
-    x
-}
+/// Integer square root, `floor(sqrt(v))` — `rusty_esp_dsp`'s (moved there in
+/// D0, 2026-09-02), at the path this module always had.
+pub use rusty_esp_dsp::int::isqrt;
 
 #[cfg(test)]
 mod tests {
@@ -437,15 +426,6 @@ mod tests {
             buf[2 * k] = 0; // imaginary
             buf[2 * k + 1] = a; // real
         }
-    }
-
-    #[test]
-    fn isqrt_is_floor_sqrt() {
-        for v in 0..70_000u32 {
-            let r = isqrt(v);
-            assert!(r * r <= v && (r + 1) * (r + 1) > v, "v={v} r={r}");
-        }
-        assert_eq!(isqrt(u32::MAX), 65_535);
     }
 
     #[test]

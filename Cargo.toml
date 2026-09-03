@@ -32,6 +32,7 @@ rusty_esp_signal-esp = { path = "crates/rusty_esp_signal-esp", version = "0.1.0"
 # its own. Inside the Janus umbrella folder, `.cargo/config.toml` patches the
 # URL to the sibling checkout, so local edits are visible without a push.
 rusty_esp_core = { git = "https://github.com/Remade-With-Rust/rusty_esp_core", version = "0.1", default-features = false }
+rusty_esp_dsp = { version = "0.1", git = "https://github.com/Remade-With-Rust/rusty_esp_dsp", default-features = false }
 rusty_esp_mid-core = { git = "https://github.com/Remade-With-Rust/rusty_esp_mid", version = "0.1", default-features = false }
 
 # Crypto — RustCrypto only, the same majors as rusty_esp_mid so one P-256 and
