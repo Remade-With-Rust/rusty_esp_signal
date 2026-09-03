@@ -44,7 +44,10 @@ clippy clean, `riscv32imac` / `riscv32imafc` checks green, `cargo deny` clean.
   `status` byte is the phase and every change a notification, `scan` is the
   networks strongest first as TLV, the secret never reads back and never
   prints; `docs/provision.html` is the Web Bluetooth page a phone opens (no
-  app), and a test holds it to the same UUIDs, tags and phase names.
+  app), and a test holds it to the same UUIDs, tags and phase names. The
+  `c6-ble-provision` firmware now serves that session over `trouble-host`
+  (status and scan published before advertising, the phase notified after
+  a write) and builds: 936 896 B ELF on the C6.
 - `lora` — modem parameters, exact time-on-air (matches Semtech's calculator
   to the microsecond), region limits, a duty-cycle budget, the discovery
   beacon.

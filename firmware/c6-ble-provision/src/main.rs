@@ -17,6 +17,9 @@ use embassy_futures::join::join;
 use esp_backtrace as _;
 use esp_hal::timer::timg::TimerGroup;
 use esp_println::println;
+use rusty_esp_signal_core::esp_core::Micros;
+use rusty_esp_signal_core::provision::Provisioner;
+use rusty_esp_signal_core::wifi::StationPolicy;
 use rusty_esp_signal_esp::ble::{JanusServer, Served, assert_uuids, serve};
 use static_cell::StaticCell;
 use trouble_host::prelude::*;
@@ -57,15 +60,19 @@ async fn main(_spawner: embassy_executor::Spawner) {
     let server = JanusServer::new_default("janus").expect("gatt server");
 
     println!("c6-ble-provision advertising as 'janus'");
-    let mut on_credentials = |creds: rusty_esp_signal_core::wifi::Credentials| {
-        // Never print the passphrase: Credentials' Debug redacts it.
-        println!("provisioned: {:?}", creds);
-    };
+    // The core's session: the credentials, the station policy and the scan
+    // list, in one object. This firmware has no Wi-Fi stack, so the policy's
+    // `Connect` is printed rather than executed and the scan list stays empty.
+    let mut provisioner: Provisioner = Provisioner::new(StationPolicy::default());
+    let now = || Micros(embassy_time::Instant::now().as_micros());
 
     let _ = join(runner.run(), async {
         loop {
-            match serve(&mut peripheral, &server, "janus", &mut on_credentials).await {
-                Ok(Served::Provisioned) => println!("credentials accepted"),
+            match serve(&mut peripheral, &server, "janus", &mut provisioner, now).await {
+                Ok(Served::Provisioned(action)) => {
+                    // Never the passphrase: the session's Debug redacts it.
+                    println!("provisioned: {:?} -> {:?}", provisioner, action);
+                }
                 Ok(Served::Disconnected) => println!("peer disconnected"),
                 Err(_) => println!("ble error; re-advertising"),
             }

@@ -161,4 +161,4 @@ Four things this cost, worth writing down:
 | `ScanList`: insert by strength with eviction of the weakest, TLV round trip, whole entries only into a short buffer; eight 32-byte names → six fit the 240-byte characteristic | pass |
 | `docs/provision.html` names the same seven UUIDs, four TLV tags and five phase names as the crate, and never logs the secret (`include_str!` test) | pass |
 
-Core: **83 unit + 3 capture-oracle tests** (6 new), clippy `-D warnings`, `riscv32imac` no_std check, `cargo deny`. The page has not been driven against a board: that is S3's board half.
+Core: **83 unit + 3 capture-oracle tests** (6 new), clippy `-D warnings`, `riscv32imac` no_std check, `cargo deny`. The `-esp` crate with `ble` checks and lints clean on the host (the trouble-host feature list now names `derive` and `default-packet-pool` itself instead of inheriting them from the firmware). `c6-ble-provision` with the session wired in: **builds, 936 896 B ELF**, 37 s cold. The page has not been driven against a board: that is S3's board half.
