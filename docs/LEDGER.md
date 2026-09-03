@@ -162,3 +162,16 @@ Four things this cost, worth writing down:
 | `docs/provision.html` names the same seven UUIDs, four TLV tags and five phase names as the crate, and never logs the secret (`include_str!` test) | pass |
 
 Core: **83 unit + 3 capture-oracle tests** (6 new), clippy `-D warnings`, `riscv32imac` no_std check, `cargo deny`. The `-esp` crate with `ble` checks and lints clean on the host (the trouble-host feature list now names `derive` and `default-packet-pool` itself instead of inheriting them from the firmware). `c6-ble-provision` with the session wired in: **builds, 936 896 B ELF**, 37 s cold. The page has not been driven against a board: that is S3's board half.
+
+## The no-panic gate (host, 2026-09-02)
+
+Every parser that takes bytes from a wire, a store or a bus must return an
+error on bad input, never panic — the house rule made a test:
+`tests/no_panic.rs` feeds each one random inputs from an LCG (the same corpus
+on every machine) and mutations of a valid encoding (bit flips, overwrites,
+truncation, extension, insertion, removal), under `catch_unwind` so a failure
+names the parser and prints the input.
+
+| covered | result |
+|---|---|
+| `Credentials::decode`, `ScanEntry::decode`, `ScanList::decode` (20 000), `link::Envelope::parse` and `lora::Beacon::decode` (30 000), the LD2410 `Frame` / `Report` / `Ack` parsers and the streaming `Parser` (20 000 mutated report frames) | no finding |
