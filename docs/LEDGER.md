@@ -195,5 +195,13 @@ on ESP-IDF can be provisioned from a phone without a second track.
 | `unsafe` in `idf/ble.rs` | none — the FFI boundary is esp-idf-svc's |
 | host gates (`cargo test --workspace`, clippy `-D warnings`, fmt, deny) | **89 tests, 0 failed**; clippy, fmt and deny clean — the `esp-idf` feature compiles only inside an IDF firmware, so the host never sees the module |
 
-Not run: a radio. The S3 kill test (a phone provisioning from the Web
-Bluetooth page) now has two firmwares waiting for it, one per track.
+~~Not run: a radio.~~ **Run on 2026-09-05, on a plain ESP32.** The same
+backend, inside espino's generated C6 firmware, provisioned an AI-Thinker
+ESP32-CAM from Chrome over Web Bluetooth (this page, served by
+`espino serve` at `/provision`): the device joined 7.5 s after the write and
+notified the phase back, and the next boot joined alone. Two defects in this
+crate came out of it and are fixed here — the name moved to the scan
+response because a 128-bit service UUID and a name do not both fit in a
+31-byte advertisement, and the GATT attributes are added one at a time so
+`status`'s CCCD lands behind `status` rather than behind `scan`. Rows in
+espino's ledger. The S3 kill test still waits for the XIAO.

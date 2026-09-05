@@ -66,8 +66,21 @@ struct Connection {
     subscribed: bool,
 }
 
+/// Which attribute follows the one whose event just arrived. The table is
+/// built one attribute at a time so each descriptor lands behind its own
+/// characteristic.
+enum Next {
+    Status,
+    Cccd,
+    Done,
+}
+
 struct State<const N: usize> {
     gatt_if: Option<GattInterface>,
+    /// The phase byte and the scan list the table is started with, kept from
+    /// `start_service` until the attributes that carry them are added.
+    phase_byte: u8,
+    scan_value: Vec<u8>,
     service: Option<Handle>,
     credentials: Option<Handle>,
     status: Option<Handle>,
@@ -128,6 +141,8 @@ impl<const N: usize> BleProvisioning<N> {
             name: name.to_owned(),
             state: Arc::new(Mutex::new(State {
                 gatt_if: None,
+                phase_byte: 0,
+                scan_value: Vec::new(),
                 service: None,
                 credentials: None,
                 status: None,
@@ -274,9 +289,18 @@ impl<const N: usize> BleProvisioning<N> {
             } => {
                 self.check_gatt(status)?;
                 if descr_uuid == BtUuid::uuid16(CCCD) {
-                    let mut st = self.lock();
-                    if st.service == Some(service_handle) {
-                        st.status_cccd = Some(attr_handle);
+                    let mine = {
+                        let mut st = self.lock();
+                        if st.service == Some(service_handle) {
+                            st.status_cccd = Some(attr_handle);
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if mine {
+                        // the CCCD sits behind `status`; `scan` comes next
+                        self.add_scan(service_handle)?;
                     }
                 }
             }
@@ -327,8 +351,23 @@ impl<const N: usize> BleProvisioning<N> {
                 .unwrap_or(0);
             (st.provisioner.phase().as_u8(), buf[..n].to_vec())
         };
+        {
+            let mut st = self.lock();
+            st.phase_byte = status;
+            st.scan_value = scan;
+        }
         self.gatts.start_service(service)?;
-        // credentials: written by the phone, answered by the app, never readable
+        // One attribute at a time, each added when the last one's event
+        // arrives: a descriptor belongs to whichever characteristic precedes
+        // it in the attribute table, so queueing all three characteristics
+        // first would put `status`'s CCCD behind `scan` and leave `status`
+        // unsubscribable ("GATT Error: Not supported" in a browser).
+        self.add_credentials(service)
+    }
+
+    /// `credentials`: written by the phone, answered by the app, never
+    /// readable. First in the table.
+    fn add_credentials(&self, service: Handle) -> Result<(), EspError> {
         self.gatts.add_characteristic(
             service,
             &GattCharacteristic {
@@ -339,8 +378,12 @@ impl<const N: usize> BleProvisioning<N> {
                 auto_rsp: AutoResponse::ByApp,
             },
             &[],
-        )?;
-        // status: the phase byte, readable and notified
+        )
+    }
+
+    /// `status`: the phase byte, readable and notified. Its CCCD follows it.
+    fn add_status(&self, service: Handle) -> Result<(), EspError> {
+        let phase = self.lock().phase_byte;
         self.gatts.add_characteristic(
             service,
             &GattCharacteristic {
@@ -350,9 +393,13 @@ impl<const N: usize> BleProvisioning<N> {
                 max_len: 1,
                 auto_rsp: AutoResponse::ByGatt,
             },
-            &[status],
-        )?;
-        // scan: the networks seen, strongest first
+            &[phase],
+        )
+    }
+
+    /// `scan`: the networks seen, strongest first. Last, after the CCCD.
+    fn add_scan(&self, service: Handle) -> Result<(), EspError> {
+        let scan = self.lock().scan_value.clone();
         self.gatts.add_characteristic(
             service,
             &GattCharacteristic {
@@ -363,8 +410,7 @@ impl<const N: usize> BleProvisioning<N> {
                 auto_rsp: AutoResponse::ByGatt,
             },
             &scan,
-        )?;
-        Ok(())
+        )
     }
 
     fn characteristic_added(
@@ -373,34 +419,35 @@ impl<const N: usize> BleProvisioning<N> {
         attr: Handle,
         uuid: BtUuid,
     ) -> Result<(), EspError> {
-        let add_cccd = {
+        let next = {
             let mut st = self.lock();
             if st.service != Some(service) {
                 return Ok(());
             }
             if uuid == bt_uuid(core_ble::CHAR_CREDENTIALS) {
                 st.credentials = Some(attr);
-                false
+                Next::Status
             } else if uuid == bt_uuid(core_ble::CHAR_STATUS) {
                 st.status = Some(attr);
-                true
+                Next::Cccd
             } else if uuid == bt_uuid(core_ble::CHAR_SCAN) {
                 st.scan = Some(attr);
-                false
+                Next::Done
             } else {
-                false
+                Next::Done
             }
         };
-        if add_cccd {
-            self.gatts.add_descriptor(
+        match next {
+            Next::Status => self.add_status(service),
+            Next::Cccd => self.gatts.add_descriptor(
                 service,
                 &GattDescriptor {
                     uuid: BtUuid::uuid16(CCCD),
                     permissions: enum_set!(Permission::Read | Permission::Write),
                 },
-            )?;
+            ),
+            Next::Done => Ok(()),
         }
-        Ok(())
     }
 
     fn connected(&self, conn_id: ConnectionId, peer: BdAddr) -> Result<(), EspError> {
