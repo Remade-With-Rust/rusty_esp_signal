@@ -198,19 +198,45 @@ impl<const N: usize> BleProvisioning<N> {
         Ok(())
     }
 
+    /// The advertisement carries the flags and the 128-bit provisioning
+    /// service UUID and nothing else: that is 21 of the 31 bytes a legacy
+    /// advertisement holds (`core_ble::provisioning_adv_len`), and a device
+    /// name never fits in the 8 that remain. Asking for it anyway costs the
+    /// UUID — Bluedroid logs `BTM_BleWriteAdvData, Partial data write into
+    /// ADV` and a browser filtering on the service then never sees the
+    /// device. The name goes in the scan response instead, which a scanner
+    /// reads before it shows anything to a person.
     fn advertise(&self) -> Result<(), EspError> {
         self.gap.set_adv_conf(&AdvConfiguration {
-            include_name: true,
+            include_name: false,
             flag: 2,
             service_uuid: Some(bt_uuid(core_ble::SERVICE_PROVISIONING)),
             ..Default::default()
         })
     }
 
+    /// The device's name, in the scan response an active scanner asks for.
+    fn scan_response(&self) -> Result<(), EspError> {
+        self.gap.set_adv_conf(&AdvConfiguration {
+            set_scan_rsp: true,
+            include_name: true,
+            ..Default::default()
+        })
+    }
+
     fn on_gap(&self, event: BleGapEvent) -> Result<(), EspError> {
-        if let BleGapEvent::AdvertisingConfigured(status) = event {
-            self.check_bt(status)?;
-            self.gap.start_advertising()?;
+        match event {
+            // configured in order: advertisement, then scan response, then
+            // the radio starts — a scanner that sees one sees both.
+            BleGapEvent::AdvertisingConfigured(status) => {
+                self.check_bt(status)?;
+                self.scan_response()?;
+            }
+            BleGapEvent::ScanResponseConfigured(status) => {
+                self.check_bt(status)?;
+                self.gap.start_advertising()?;
+            }
+            _ => {}
         }
         Ok(())
     }

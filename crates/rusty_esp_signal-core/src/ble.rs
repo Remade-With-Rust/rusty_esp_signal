@@ -389,6 +389,37 @@ pub const SERVICES: [Service; 3] = [
     },
 ];
 
+/// How many bytes a legacy BLE advertisement (or one scan response) can
+/// carry: Bluetooth Core Specification 5.4, Vol 6 Part B §2.3.1.3.
+pub const LEGACY_ADV_CAPACITY: usize = 31;
+
+/// The bytes an advertising structure costs: one length byte, one type byte,
+/// and the value (Vol 3 Part C §11).
+#[must_use]
+pub const fn adv_structure_len(value_len: usize) -> usize {
+    2 + value_len
+}
+
+/// What an advertisement carrying the flags, a 128-bit service UUID and a
+/// device name of `name_len` bytes would cost.
+///
+/// A Janus device advertises the provisioning service so a browser can
+/// filter on it, and 3 + 18 of the 31 bytes are gone before the name is
+/// considered: a name longer than [`LEGACY_ADV_NAME_BUDGET`] does not fit,
+/// and a stack asked for it anyway drops part of what it was given (ESP-IDF's
+/// Bluedroid logs `BTM_BleWriteAdvData, Partial data write into ADV` and the
+/// service UUID can be what goes). The name belongs in the scan response,
+/// which a scanner reads before it shows the device.
+#[must_use]
+pub const fn provisioning_adv_len(name_len: usize) -> usize {
+    adv_structure_len(1) + adv_structure_len(16) + adv_structure_len(name_len)
+}
+
+/// The longest device name that still fits in the advertisement beside the
+/// flags and the 128-bit provisioning service UUID: 31 - 3 - 18 - 2.
+pub const LEGACY_ADV_NAME_BUDGET: usize =
+    LEGACY_ADV_CAPACITY - adv_structure_len(1) - adv_structure_len(16) - 2;
+
 /// The Janus GATT table.
 ///
 /// | service      | characteristic | props        | max | value |
@@ -409,6 +440,20 @@ pub const GATT_TABLE: GattTable = GattTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_device_name_does_not_fit_beside_the_service_uuid() {
+        // flags (3) + the 128-bit service UUID (18) = 21 of 31 bytes, so a
+        // name has 8 bytes of value left — shorter than every model name we
+        // advertise. This is why the name goes in the scan response.
+        assert_eq!(LEGACY_ADV_NAME_BUDGET, 8);
+        assert!(provisioning_adv_len(8) <= LEGACY_ADV_CAPACITY);
+        assert!(provisioning_adv_len(9) > LEGACY_ADV_CAPACITY);
+        // the name a generated camera advertises under
+        assert_eq!(provisioning_adv_len("janus/esp32-cam-ble".len()), 42);
+        // …and it fits a scan response of its own with room to spare
+        assert!(adv_structure_len("janus/esp32-cam-ble".len()) <= LEGACY_ADV_CAPACITY);
+    }
     use core::fmt::Write;
 
     /// A fixed-capacity `fmt::Write` sink, so the tests need no allocator.
