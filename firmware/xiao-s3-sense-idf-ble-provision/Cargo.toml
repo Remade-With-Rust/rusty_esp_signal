@@ -1,0 +1,56 @@
+# Janus S3 firmware, Track A — XIAO ESP32-S3 Sense on ESP-IDF: BLE Wi-Fi
+# provisioning over Bluedroid, the same GATT contract the C6 (Track B) serves.
+#
+# A separate cargo project on purpose (Xtensa target, ESP-IDF build, its own
+# toolchain). Build from this directory. See ../README.md.
+
+[package]
+name = "xiao-s3-sense-idf-ble-provision"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.91"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Janus S3 on Track A: the XIAO ESP32-S3 Sense provisioned over BLE (Bluedroid), then joined to Wi-Fi."
+
+[[bin]]
+name = "xiao-s3-sense-idf-ble-provision"
+harness = false # no cargo test harness on the chip
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+debug = true
+opt-level = "z"
+lto = true
+codegen-units = 1
+
+[features]
+default = ["std", "esp-idf-svc/native"]
+std = ["alloc", "esp-idf-svc/binstart", "esp-idf-svc/std"]
+alloc = ["esp-idf-svc/alloc"]
+
+[dependencies]
+log = "0.4"
+anyhow = "1"
+esp-idf-svc = { version = "0.52", default-features = false }
+
+# Janus crates. The core by git URL (the umbrella's .cargo/config.toml patches
+# it to the local checkout); this repo's own crates by path.
+rusty_esp_core = { git = "https://github.com/Remade-With-Rust/rusty_esp_core", default-features = false, features = ["std"] }
+rusty_esp_signal-core = { path = "../../crates/rusty_esp_signal-core", default-features = false, features = ["std"] }
+rusty_esp_signal-esp = { path = "../../crates/rusty_esp_signal-esp", default-features = false, features = ["esp-idf"] }
+
+[build-dependencies]
+embuild = "0.33"
+
+[package.metadata.esp-idf-sys]
+esp_idf_version = "v5.5.1"
+esp_idf_tools_install_dir = "global"
+
+# A standalone cargo project: not a member of the rusty_esp_signal workspace.
+[workspace]

@@ -175,3 +175,25 @@ names the parser and prints the input.
 | covered | result |
 |---|---|
 | `Credentials::decode`, `ScanEntry::decode`, `ScanList::decode` (20 000), `link::Envelope::parse` and `lora::Beacon::decode` (30 000), the LD2410 `Frame` / `Report` / `Ack` parsers and the streaming `Parser` (20 000 mutated report frames) | no finding |
+
+## BLE provisioning on Track A: Bluedroid speaks the same GATT (host, 2026-09-04)
+
+`rusty_esp_signal-esp` gains `idf::ble::BleProvisioning` behind the
+`esp-idf` feature: the core's provisioning service over esp-idf-svc 0.52's
+`EspGatts` / `EspBleGap` — `credentials` WRITE answered by the app (the
+passphrase never rests in Bluedroid's attribute store), `status` READ | NOTIFY
+and `scan` READ answered by the stack from values the module sets, the core's
+`Provisioner` deciding everything, and the station policy's actions handed to
+the firmware over a channel. The S3 firmware
+`firmware/xiao-s3-sense-idf-ble-provision` joins Wi-Fi with the provisioned
+credentials and notifies the phase back. It exists so a Wi-Fi + camera device
+on ESP-IDF can be provisioned from a phone without a second track.
+
+| gate | result |
+|---|---|
+| `cargo build --release` in `firmware/xiao-s3-sense-idf-ble-provision` (`xtensa-esp32s3-espidf`, the esp toolchain, IDF v5.5.1 with `CONFIG_BT_ENABLED` + Bluedroid BLE-only, `CARGO_TARGET_DIR=C:/janus-g`) | **builds on the first try: ELF 1,829,716 B; app image 1,240,928 B, 39.4 % of the XIAO's `factory`** (`espino save-image --app-only`); 6 min 33 s cold, the IDF configure included |
+| `unsafe` in `idf/ble.rs` | none — the FFI boundary is esp-idf-svc's |
+| host gates (`cargo test --workspace`, clippy `-D warnings`, fmt, deny) | **89 tests, 0 failed**; clippy, fmt and deny clean — the `esp-idf` feature compiles only inside an IDF firmware, so the host never sees the module |
+
+Not run: a radio. The S3 kill test (a phone provisioning from the Web
+Bluetooth page) now has two firmwares waiting for it, one per track.

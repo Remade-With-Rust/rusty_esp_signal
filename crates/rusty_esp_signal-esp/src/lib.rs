@@ -75,7 +75,4 @@ pub mod lora;
 pub mod ble;
 
 #[cfg(feature = "esp-idf")]
-pub mod idf {
-    //! Track A backends. Reserved: the signal radios are Track B first
-    //! (esp-radio carries the CSI, ESP-NOW and BLE the plan names).
-}
+pub mod idf;

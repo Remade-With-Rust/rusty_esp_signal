@@ -31,9 +31,11 @@ esp-radio = ["esp-hal", "dep:esp-radio", "dep:embassy-futures"]
 # firmware can take one without the radio stack.
 lora = ["alloc", "dep:lora-phy"]
 ble = ["alloc", "dep:trouble-host", "dep:bt-hci", "dep:embassy-sync", "dep:static_cell"]
-# Track A — std on ESP-IDF via esp-idf-svc. Reserved; the signal radios are
-# Track B first (esp-radio has the CSI, ESP-NOW and BLE the plan names).
-esp-idf = ["std"]
+# Track A — std on ESP-IDF via esp-idf-svc: BLE provisioning over Bluedroid
+# (`idf::ble`), the same GATT contract as `ble` on Track B. Compiled only as
+# part of an ESP-IDF firmware (esp-idf-sys needs the IDF build); the CSI,
+# ESP-NOW and LoRa radios stay Track B for now.
+esp-idf = ["std", "dep:esp-idf-svc", "dep:enumset", "dep:log"]
 
 [dependencies]
 rusty_esp_signal-core = { workspace = true }
@@ -52,6 +54,11 @@ bt-hci = { version = "0.8", default-features = false, optional = true }
 embassy-sync = { version = "0.7", optional = true }
 static_cell = { version = "2", optional = true }
 lora-phy = { version = "=3.0.1", optional = true }
+
+# Track A — pulled in by `esp-idf` only.
+esp-idf-svc = { version = "0.52", default-features = false, features = ["std", "alloc"], optional = true }
+enumset = { version = "1", optional = true }
+log = { version = "0.4", optional = true }
 
 [lints]
 workspace = true

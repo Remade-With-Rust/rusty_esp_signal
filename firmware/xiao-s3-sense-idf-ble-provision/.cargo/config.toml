@@ -1,0 +1,22 @@
+[build]
+target = "xtensa-esp32s3-espidf"
+
+[target.xtensa-esp32s3-espidf]
+linker = "ldproxy"
+runner = "espflash flash --monitor"
+rustflags = ["--cfg", "espidf_time64"]
+
+[unstable]
+build-std = ["std", "panic_abort"]
+build-std-features = ["optimize_for_size"]
+
+[env]
+# embuild finds the project by walking up from the target dir; with
+# CARGO_TARGET_DIR outside the project (a must on Windows) that lands on the
+# wrong directory and every [package.metadata.esp-idf-sys] setting is silently
+# ignored. Pin it.
+CARGO_WORKSPACE_DIR = { value = "", relative = true }
+MCU = "esp32s3"
+ESP_IDF_VERSION = "v5.5.1"
+ESP_IDF_TOOLS_INSTALL_DIR = "global"
+CRATE_CC_NO_DEFAULTS = "1"
