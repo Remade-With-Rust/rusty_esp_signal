@@ -31,11 +31,16 @@ esp-radio = ["esp-hal", "dep:esp-radio", "dep:embassy-futures"]
 # firmware can take one without the radio stack.
 lora = ["alloc", "dep:lora-phy"]
 ble = ["alloc", "dep:trouble-host", "dep:bt-hci", "dep:embassy-sync", "dep:static_cell"]
-# Track A — std on ESP-IDF via esp-idf-svc: BLE provisioning over Bluedroid
-# (`idf::ble`), the same GATT contract as `ble` on Track B. Compiled only as
-# part of an ESP-IDF firmware (esp-idf-sys needs the IDF build); the CSI,
-# ESP-NOW and LoRa radios stay Track B for now.
-esp-idf = ["std", "dep:esp-idf-svc", "dep:enumset", "dep:log"]
+# Track A — std on ESP-IDF via esp-idf-svc. Compiled only as part of an
+# ESP-IDF firmware (esp-idf-sys needs the IDF build); the CSI, ESP-NOW and
+# LoRa radios stay Track B for now. On its own this brings the backends that
+# need nothing of the IDF beyond a peripheral — today the LD2410 reader.
+esp-idf = ["std", "dep:esp-idf-svc", "dep:log"]
+# BLE provisioning over Bluedroid (`idf::ble`), the same GATT contract as
+# `ble` on Track B. Separate from `esp-idf` because esp-idf-svc compiles its
+# `bt` module out unless the firmware's sdkconfig sets CONFIG_BT_ENABLED: a
+# radar-only Track A firmware has no Bluetooth and must not ask for this.
+esp-idf-ble = ["esp-idf", "dep:enumset"]
 
 [dependencies]
 rusty_esp_signal-core = { workspace = true }

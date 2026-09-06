@@ -21,6 +21,10 @@ alloc = ["rusty_esp_signal-core/alloc"]
 esp-hal = ["rusty_esp_signal-esp/esp-hal"]
 # Track A: std on ESP-IDF via esp-idf-svc.
 esp-idf = ["rusty_esp_signal-esp/esp-idf"]
+# Track A with Bluedroid: the BLE provisioning backend needs the firmware's
+# sdkconfig to set CONFIG_BT_ENABLED, so a radar-only Track A firmware takes
+# `esp-idf` alone.
+esp-idf-ble = ["esp-idf", "rusty_esp_signal-esp/esp-idf-ble"]
 
 [dependencies]
 rusty_esp_signal-core = { workspace = true }

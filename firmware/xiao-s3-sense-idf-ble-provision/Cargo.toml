@@ -43,7 +43,7 @@ esp-idf-svc = { version = "0.52", default-features = false }
 # it to the local checkout); this repo's own crates by path.
 rusty_esp_core = { git = "https://github.com/Remade-With-Rust/rusty_esp_core", default-features = false, features = ["std"] }
 rusty_esp_signal-core = { path = "../../crates/rusty_esp_signal-core", default-features = false, features = ["std"] }
-rusty_esp_signal-esp = { path = "../../crates/rusty_esp_signal-esp", default-features = false, features = ["esp-idf"] }
+rusty_esp_signal-esp = { path = "../../crates/rusty_esp_signal-esp", default-features = false, features = ["esp-idf-ble"] }
 
 [build-dependencies]
 embuild = "0.33"
