@@ -1,124 +1,100 @@
 # rusty_esp_signal
 
-[![crates.io](https://img.shields.io/crates/v/rusty_esp_signal.svg)](https://crates.io/crates/rusty_esp_signal)
-[![docs.rs](https://docs.rs/rusty_esp_signal/badge.svg)](https://docs.rs/rusty_esp_signal)
-[![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![Remade With Rust](https://img.shields.io/badge/Remade%20With-Rust-000?logo=rust&logoColor=fff)](https://github.com/remade-with-rust) [![By Mata Network](https://img.shields.io/badge/by-Mata%20Network-5b2be0)](https://www.mata.network) [![crates.io](https://img.shields.io/crates/v/rusty_esp_signal.svg)](https://crates.io/crates/rusty_esp_signal) [![docs.rs](https://docs.rs/rusty_esp_signal/badge.svg)](https://docs.rs/rusty_esp_signal) [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](https://github.com/Remade-With-Rust/rusty_esp_signal/blob/main/LICENSE-MIT)
 
-The radio-application layer remade in Rust: Wi-Fi CSI radar (presence/motion), LoRa point-to-point over lora-phy, BLE provisioning and telemetry over trouble-host, Wi-Fi station/AP lifecycle and ESP-NOW framing — every frame mID-signed. Memory safe, no_std core.
+Radios and sensing for the **Janus** ESP32 family: Wi-Fi station policy,
+provisioning a device that has no network yet, a peer-to-peer link for chips
+with no access point, long-range radio, presence from channel state, and a
+millimetre-wave radar. Pure Rust, no C, no FFI, `no_std` by default.
 
-Part of **Janus**, the Remade-With-Rust programme that rebuilds the Espressif
-ESP32 and Arduino application portfolio in memory-safe Rust so hardware makers
-can ship products that plug straight into the MATA home computer.
+* **A device with no network can still be given one.** A browser hands an
+  ESP32-CAM its credentials over Bluetooth, on a page with no app and no
+  server: **joined in 7.5 seconds**, and the next boot joins alone in 9.5
+  seconds with Bluetooth off entirely. The passphrase never reaches a server, a
+  log, or a command line.
+* **Presence from the Wi-Fi channel itself**, judged against a labelled public
+  capture rather than our own recording: an empty room reads 17.4% occupancy
+  and a walking person 86.1%, with a held-out pair at 60.8%.
+* **A link where there is no access point.** Peer-to-peer framing sized to fit:
+  227 bytes of payload inside a 250-byte datagram, with hello, accept and
+  confirm at 84, 100 and 18 bytes.
+* **The radar's own documentation is wrong, and the tests say where.** Field
+  offsets in the vendor datasheet do not match the vendor's tool; ours follow
+  the wire.
 
-- This package's plan: [docs/plans/rusty_esp_signal.md](docs/plans/rusty_esp_signal.md)
-- The family plan: Janus `docs/plans/janus-mission.md` (umbrella repo)
+## What has run on hardware
 
-**Claims discipline:** this README makes no performance or capability claim that
-is not backed by a test, a benchmark ledger entry, or a kill test recorded in the
-plan. "Scaffold" means scaffold.
+| what | measured |
+|---|---|
+| provisioning over Bluetooth | **joined in 7.5 s**; the reboot joins alone in **9.5 s** with no Bluetooth |
+| the identity behind it | the same `did:mata` held across six reflashes |
+| the advertisement budget | 31 bytes, which is what forced the name and service layout |
+| a failed join | must not spend the modem — a device that cannot join has to stay askable |
 
-## Status
+**A known gap, stated plainly:** channel-state presence and the peer-to-peer
+link are verified against captures and against the host, not yet on two chips
+talking to each other. Those rows need boards that are not on this bench, and
+the ledger says so rather than implying otherwise.
 
-**S0 shipped on the host (2026-09-02).** The whole radio-application core
-exists in `no_std`, `forbid(unsafe)`, fixed-size memory, and is tested against
-external oracles before any radio: **78 unit tests + 3 capture-oracle tests**,
-clippy clean, `riscv32imac` / `riscv32imafc` checks green, `cargo deny` clean.
+Every number, with the run that produced it:
+[`docs/LEDGER.md`](https://github.com/Remade-With-Rust/rusty_esp_signal/blob/main/docs/LEDGER.md).
 
-- `radar::csi` — presence from Wi-Fi CSI in fixed point; on a labelled
-  ESP32-C6 dataset (empty room vs a person walking, CC BY 4.0) the held-out
-  empty minute reads absent for all 2 951 judged frames and the walking
-  minutes read present for 86 % / 61 % of theirs (`docs/LEDGER.md`).
-- `radar::ld2410` — the HLK-LD2410/LD2410C UART protocol: streaming parser,
-  every command, ACK decoders, verified against the protocol documents'
-  own frames.
-- `link` — the mID-authenticated session (P-256, Noise-KK shape, forward
-  secrecy) and the 23-byte MAC'd envelope every ESP-NOW and LoRa frame
-  travels in; replay window, key confirmation, 15 refusal tests.
-- `wifi` — credentials that never print (redacted `Debug`, zeroised on
-  drop) and the station policy: exponential back-off 1 s → 60 s, fallback
-  to provisioning after ten failures.
-- `ble` — the GATT table (provisioning, manifest, telemetry) as data under
-  the Janus base UUID.
-- `provision` (S3's host half, 2026-09-02) — the provisioning session over
-  that table: a `credentials` write becomes the station policy's join, the
-  `status` byte is the phase and every change a notification, `scan` is the
-  networks strongest first as TLV, the secret never reads back and never
-  prints; `docs/provision.html` is the Web Bluetooth page a phone opens (no
-  app), and a test holds it to the same UUIDs, tags and phase names. The
-  `c6-ble-provision` firmware now serves that session over `trouble-host`
-  (status and scan published before advertising, the phase notified after
-  a write) and builds: 936 896 B ELF on the C6.
-- `lora` — modem parameters, exact time-on-air (matches Semtech's calculator
-  to the microsecond), region limits, a duty-cycle budget, the discovery
-  beacon.
+## Using it
 
-Each signal type answers to its own standard and was tested against its own
-external oracle; the table is in the plan (§4b).
+```rust
+use rusty_esp_signal::prelude::*;
 
-**The chip backends are written and compile (2026-09-02).**
-`rusty_esp_signal-esp` carries one backend per signal type - the hardware TRNG
-behind the core's `Rng` seam, the ESP-NOW transport under the authenticated
-session, a CSI frame borrowed into the detector, an LD2410 UART reader, the
-Wi-Fi station policy, a `lora-phy` P2P link, and a `trouble-host` GATT server
-built from the core's table - and three ESP32-C6 firmware projects compile them
-on **stable** Rust (Track B on RISC-V needs no espup):
+// A device with no credentials advertises itself and waits to be told.
+let mut provisioner = Provisioner::new("janus-doorbell");
+if let Some((ssid, psk)) = provisioner.poll()? {
+    match wifi.join(&ssid, &psk) {
+        Ok(()) => provisioner.report(true),
+        // A refusal has to leave the device askable, not spent.
+        Err(_) => provisioner.report(false),
+    }
+}
+```
 
-| firmware | radios | ELF |
+## Two tracks
+
+| track | what it is | this crate |
 |---|---|---|
-| `c6-mesh-node` | ESP-NOW, CSI, LD2410, station | 1 744 812 B |
-| `c6-lora-p2p` | LoRa (SX1262) | 339 592 B |
-| `c6-ble-provision` | BLE GATT | 932 836 B |
+| **A** | `std` on ESP-IDF — Wi-Fi, Bluetooth provisioning, the radar's serial port | `rusty_esp_signal-esp --features esp-idf` |
+| **B** | `no_std` on `esp-hal` — the protocols, the detector, the framing | `rusty_esp_signal-core`, default |
 
-**Nothing has been flashed.** A build proves the types agree with the radio
-crates; every on-radio number (S1-S6) waits for boards.
+## Part of Janus
 
-## What it is
+**Janus** rebuilds the Espressif ESP32 and Arduino application portfolio as
+independent, memory-safe Rust packages — so a hardware maker can ship a device
+that the [MATA](https://www.mata.network) home computer discovers, catalogs honestly, adopts
+under its own identity, and pays for. Ten packages, three layers, and the
+dependency direction never reverses.
 
-- A pure-Rust remake of the *application* layer Espressif ships in C for this
-  function. Same job, same protocols and file formats, new code, permissive
-  licence, `forbid(unsafe)` in the core.
-- Track-agnostic: the core crate is `no_std + alloc` and knows nothing about
-  ESP-IDF or `esp-hal`. Backends are thin and feature-gated.
+| layer | packages |
+|---|---|
+| **0 — the vocabulary** | [`rusty_esp_core`](https://crates.io/crates/rusty_esp_core) · [`rusty_esp_dsp`](https://crates.io/crates/rusty_esp_dsp) |
+| **1 — the functions** | [`rusty_esp_image`](https://crates.io/crates/rusty_esp_image) · [`rusty_esp_video`](https://crates.io/crates/rusty_esp_video) · [`rusty_esp_audio`](https://crates.io/crates/rusty_esp_audio) · [`rusty_esp_signal`](https://crates.io/crates/rusty_esp_signal) · [`rusty_esp_mid`](https://crates.io/crates/rusty_esp_mid) · [`rusty_esp_iroh`](https://crates.io/crates/rusty_esp_iroh) |
+| **2 — the surfaces** | [`rusty_esp_arduino`](https://crates.io/crates/rusty_esp_arduino) — the sketch facade · [`espino`](https://crates.io/crates/espino) — the maker's CLI |
 
-## What it is not
+Every package is host-verified against an external oracle and keeps a ledger
+in which no number appears without the run that produced it. **Five of seven
+device profiles have now run their kill tests on real silicon**, three of them
+over a Wi-Fi network the board hosts itself.
 
-- Not a rewrite of the radio PHY, the ROM, or Espressif's Wi-Fi/BT controller
-  blob. Where the silicon must be touched, the `-esp` crate **wraps** the
-  esp-rs HAL or ESP-IDF and says so.
-- Not a fork of esp-hal, esp-radio, espflash or ESP-IDF. Those are dependencies.
+Also check out the rest of [Remade With Rust](https://github.com/remade-with-rust) — including
+[`rusty_alloc`](https://crates.io/crates/rusty_alloc), the pure-Rust rebuild of
+mimalloc that these firmwares run on, and
+[`rusty_jpeg`](https://crates.io/crates/rusty_jpeg), the JPEG engine behind the
+camera path — and our sister project
+[remade_ffmpeg_rs](https://github.com/Remade-With-Rust/remade_ffmpeg_rs), a ground-up Rust rebuild of FFmpeg.
 
-## Layout
+## About Mata Network
 
-```text
-crates/rusty_esp_signal          facade: re-exports + prelude; the crate you depend on
-crates/rusty_esp_signal-core     no_std + alloc; forbid(unsafe); types, traits, algorithms
-crates/rusty_esp_signal-esp      the WRAP crate: `esp-hal` (Track B) | `esp-idf` (Track A)
-firmware/                per-chip example projects, excluded from the workspace
-docs/plans/              the mission plan for this package
-```
-
-## Two tracks, one core
-
-| Track | Feature | Runtime | Use when |
-|---|---|---|---|
-| **A** | `esp-idf` | `std` on ESP-IDF (FreeRTOS) | you need iroh, TLS, or a driver ESP-IDF has and esp-hal lacks |
-| **B** | `esp-hal` | `no_std` + Embassy | the purity path; every driver upstream in esp-rs |
-
-The core compiles on both and on the host, which is where its tests run.
-
-## Build
-
-```sh
-cargo test --workspace                                   # host: the tests
-cargo check -p rusty_esp_signal-core --no-default-features \
-  --target riscv32imac-unknown-none-elf                  # ESP32-C6 class, no alloc
-cargo check -p rusty_esp_signal-core --no-default-features --features alloc \
-  --target riscv32imac-unknown-none-elf
-```
-
-Firmware examples (Xtensa needs `espup`; RISC-V works on stable) are built from
-their own directories under `firmware/`.
+[Mata Network](https://www.mata.network) builds sovereign, self-hostable infrastructure.
+**Remade With Rust** is our open-source home for the permissively-licensed
+building blocks that work depends on.
 
 ## License
 
-MIT OR Apache-2.0, at your option.
+MIT OR Apache-2.0, at your option. See [LICENSE-MIT](https://github.com/Remade-With-Rust/rusty_esp_signal/blob/main/LICENSE-MIT)
+and [LICENSE-APACHE](https://github.com/Remade-With-Rust/rusty_esp_signal/blob/main/LICENSE-APACHE).
