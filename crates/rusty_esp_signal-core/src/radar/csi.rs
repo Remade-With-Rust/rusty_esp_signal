@@ -131,27 +131,46 @@ impl CsiFrame<'_> {
             variance: 0,
         };
         let mut sum: u32 = 0;
-        for k in layout.indices() {
-            let im = i32::from(self.iq[2 * k]);
-            let re = i32::from(self.iq[2 * k + 1]);
-            // |i|,|q| ≤ 128 → 16 · (i² + q²) ≤ 524 288; isqrt ≤ 724.
-            let a = isqrt((16 * (im * im + re * re)) as u32);
-            f.amplitude[f.count as usize] = a as u16;
-            f.count += 1;
-            sum += a;
+        // The valid entries come in CONTIGUOUS ranges, so each range is one
+        // slice: a bounds check per range instead of two per subcarrier, and
+        // the `2 * k` scaling becomes the walk itself.
+        for r in layout.valid {
+            if r.start >= r.end {
+                continue;
+            }
+            for p in self.iq[2 * r.start..2 * r.end].chunks_exact(2) {
+                let im = i32::from(p[0]);
+                let re = i32::from(p[1]);
+                // |i|,|q| ≤ 128 → 16 · (i² + q²) ≤ 524 288; isqrt ≤ 724.
+                let a = isqrt((16 * (im * im + re * re)) as u32);
+                f.amplitude[f.count as usize] = a as u16;
+                f.count += 1;
+                sum += a;
+            }
         }
         if f.count == 0 {
             return Err(Error::InvalidGeometry);
         }
         let n = u32::from(f.count);
         f.mean = (sum / n) as u16;
-        let mean = i64::from(f.mean);
-        let mut ss: u64 = 0;
+        // The whole reduction fits u32, and the INPUT TYPE is what proves it:
+        // `iq` is `&[i8]`, so |im|, |re| <= 128, so 16*(im^2 + re^2) <=
+        // 524 288, and every amplitude is `isqrt` of that, i.e. <= 724. A mean
+        // of values <= 724 is <= 724, so |d| <= 724 and d^2 <= 524 176; with
+        // `count <= MAX_SUBCARRIERS = 64` the total is at most 33 547 264.
+        //
+        // It matters because a u64 accumulator on a 32-bit core is not one
+        // add: the ELF census showed `add.n` + `bltu` + a carry `mov` for
+        // every element. One u32 accumulator is one `add.n`, and one chain
+        // fits the register window where two u64s had begun to spill.
+        let mean = i32::from(f.mean);
+        let mut ss: u32 = 0;
         for &a in &f.amplitude[..f.count as usize] {
-            let d = i64::from(a) - mean;
-            ss += (d * d) as u64;
+            let d = (i32::from(a) - mean).unsigned_abs();
+            debug_assert!(d <= 724, "amplitude outside what &[i8] guarantees");
+            ss += d * d;
         }
-        f.variance = (ss / u64::from(n)) as u32;
+        f.variance = ss / n;
         Ok(f)
     }
 }
@@ -274,6 +293,13 @@ impl<const W: usize> core::fmt::Debug for PresenceDetector<W> {
 }
 
 impl<const W: usize> PresenceDetector<W> {
+    /// `W` frames of a `u16` must fit a `u32` sum, which is what lets
+    /// `compute_wander` accumulate in 32 bits. At the ceiling that is
+    /// 65 536 * 65 535 = 4 294 901 760, just inside `u32::MAX`. A window that
+    /// long would be 8 GB of ring and cannot be built, so this states the
+    /// obvious -- to the COMPILER, where it is load-bearing.
+    const W_FITS_U32_SUM: () = assert!(W <= 65_536);
+
     /// A detector with `config`.
     #[must_use]
     pub const fn new(config: Config) -> Self {
@@ -384,20 +410,53 @@ impl<const W: usize> PresenceDetector<W> {
     /// Mean over subcarriers of `1000 · std_time / mean_time`, where the
     /// statistics run over the `W` frames of the window for one subcarrier.
     fn compute_wander(&self) -> u16 {
-        let n = self.count as usize;
+        // `.min` is a no-op on the value -- `push` cannot store a count above
+        // MAX_SUBCARRIERS without panicking in its own `copy_from_slice` --
+        // but it is not a no-op on the CODE. It is what lets the compiler see
+        // that every `frame[sc]` below indexes a `[u16; MAX_SUBCARRIERS]`
+        // inside its bounds, so the per-element compare-and-branch to a panic
+        // block goes. That check ran W * n times per CSI frame.
+        let n = (self.count as usize).min(MAX_SUBCARRIERS);
         if n == 0 || W == 0 {
             return 0;
         }
         let w = W as u64;
         let mut total: u64 = 0;
         for sc in 0..n {
-            let mut sum: u64 = 0;
+            // ONE accumulator each, and the sum in u32.
+            //
+            // This loop previously carried FOUR u64 accumulators -- two for
+            // the sum and two for the squares, to break the dependency chain.
+            // A census of the FLASHED ELF showed what that actually bought:
+            // eight 32-bit registers is past the Xtensa register window, and
+            // the loop was spending TEN of its 34 instructions on
+            // `l32i.n a?, a1, N` reloads plus a spill store. It is the same
+            // law this family already wrote down once -- eight u16 maxima fit
+            // the window, eight i64 accumulators do not -- and the split was
+            // never measured on its own before it was kept.
+            //
+            // The SQUARE is still formed in u32: `a` is a u16, so
+            // a^2 <= 65535^2 = 4 294 836 225, exact there, which is one
+            // `mull` instead of the 64x64 sequence. Only the sum of SQUARES
+            // needs the wider type; `sum` cannot exceed W * 65 535, and
+            // `W_FITS_U32_SUM` is what makes that a fact the COMPILER holds
+            // rather than one the reader does.
+            //
+            // REFUTED, measured worse, reverted: ONE pass over the ring
+            // accumulating every subcarrier into `[u64; MAX_SUBCARRIERS]`
+            // pairs turns this kernel's 128-byte-stride walk into sequential
+            // loads, and cost +28.1% against a 1.4% null arm (2026-09-19) --
+            // the array form read-modify-writes memory for every element, and
+            // that costs more than the stride saves.
+            let () = Self::W_FITS_U32_SUM;
+            let mut sum32: u32 = 0;
             let mut sumsq: u64 = 0;
             for frame in &self.ring {
-                let a = u64::from(frame[sc]);
-                sum += a;
-                sumsq += a * a;
+                let a = u32::from(frame[sc]);
+                sum32 += a;
+                sumsq += u64::from(a * a);
             }
+            let sum = u64::from(sum32);
             let mean = sum / w;
             if mean == 0 {
                 continue;
@@ -407,7 +466,13 @@ impl<const W: usize> PresenceDetector<W> {
             // fractional bits: isqrt(256 · W²·var) / W = 16 · std.
             let var_w2 = (w * sumsq).saturating_sub(sum * sum);
             let std16 = u64::from(isqrt((256 * var_w2).min(u64::from(u32::MAX)) as u32)) / w;
-            total += std16 * 1000 / (mean * 16);
+            // `std16 ≤ 65 535` (an isqrt of a u32, then divided) and
+            // `mean ≤ 65 535` (a sum of u16 over W, divided by W), so
+            // `std16 · 1000 ≤ 65 535 000` and `mean · 16 ≤ 1 048 560` -- both
+            // exact in u32. That turns a runtime 64-bit division, which is a
+            // LIBCALL on a 32-bit core, into one `quou`. It ran once per
+            // subcarrier on every CSI frame: ~56 libcalls at 20-50 Hz.
+            total += u64::from((std16 as u32) * 1000 / ((mean as u32) * 16));
         }
         (total / n as u64).min(u64::from(u16::MAX)) as u16
     }

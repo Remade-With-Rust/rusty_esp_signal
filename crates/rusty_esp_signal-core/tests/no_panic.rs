@@ -160,3 +160,56 @@ fn ld2410_parsers_never_panic() {
         "the stream was actually parsed"
     );
 }
+
+/// `feed_slice` takes whole DATA runs in one move; `feed` still walks a byte
+/// at a time. They must agree on every split of every input, which is the
+/// property the bulk arm has to preserve and the one a fuzzer cannot state.
+#[test]
+fn feed_slice_agrees_with_feed_on_every_split() {
+    use rusty_esp_signal_core::radar::ld2410::{Parser, REPORT_HEADER};
+
+    // Two real reports back to back, a resync in the middle, and a truncated
+    // third -- so DATA runs get split at every offset by the chunking below.
+    let mut stream: Vec<u8> = Vec::new();
+    stream.extend_from_slice(&[
+        0xF4, 0xF3, 0xF2, 0xF1, 0x23, 0x00, 0x01, 0xAA, 0x03, 0x1E, 0x00, 0x3C, 0x00, 0x00, 0x39,
+        0x00, 0x00, 0x08, 0x08, 0x3C, 0x22, 0x05, 0x03, 0x03, 0x04, 0x03, 0x06, 0x05, 0x00, 0x00,
+        0x39, 0x10, 0x13, 0x06, 0x06, 0x08, 0x04, 0x03, 0x05, 0x55, 0x00, 0xF8, 0xF7, 0xF6, 0xF5,
+    ]);
+    stream.extend_from_slice(&[0x11, 0x22, 0x33]); // garbage between frames
+    stream.extend_from_slice(&[
+        0xF4, 0xF3, 0xF2, 0xF1, 0x0D, 0x00, 0x02, 0xAA, 0x02, 0x51, 0x00, 0x00, 0x00, 0x00, 0x3B,
+        0x00, 0x00, 0x55, 0x00, 0xF8, 0xF7, 0xF6, 0xF5,
+    ]);
+    stream.extend_from_slice(&REPORT_HEADER);
+    stream.extend_from_slice(&[0x23, 0x00, 0x01, 0xAA]); // truncated data
+
+    // Byte at a time through `feed`, recording every frame's raw payload.
+    let mut one = Parser::new();
+    let mut by_byte: Vec<String> = Vec::new();
+    for &b in &stream {
+        if let Some(f) = one.feed(b) {
+            by_byte.push(format!("{f:?}"));
+        }
+    }
+
+    // And through `feed_slice`, at every chunk size, which lands a DATA run's
+    // boundary at a different offset each time.
+    for chunk in 1..=stream.len() {
+        let mut p = Parser::new();
+        let mut got: Vec<String> = Vec::new();
+        let mut at = 0usize;
+        while at < stream.len() {
+            let end = (at + chunk).min(stream.len());
+            let (used, frame) = p.feed_slice(&stream[at..end]);
+            if let Some(f) = frame {
+                got.push(format!("{f:?}"));
+            }
+            assert!(used > 0, "feed_slice must always consume at chunk={chunk}");
+            at += used;
+        }
+        assert_eq!(got, by_byte, "feed_slice disagreed with feed at chunk={chunk}");
+        assert_eq!(p.stats().frames, one.stats().frames, "frame count, chunk={chunk}");
+        assert_eq!(p.stats().resyncs, one.stats().resyncs, "resyncs, chunk={chunk}");
+    }
+}

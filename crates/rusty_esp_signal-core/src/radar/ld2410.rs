@@ -850,10 +850,38 @@ impl Parser {
     /// consumed (a frame was delivered, or a malformed body discarded), call
     /// again with the remainder.
     pub fn feed_slice(&mut self, bytes: &[u8]) -> (usize, Option<Frame<'_>>) {
-        for (i, &b) in bytes.iter().enumerate() {
-            if self.step(b) {
+        let mut i = 0;
+        while i < bytes.len() {
+            // The DATA phase is the bulk of a frame -- 35 of an engineering
+            // report's 45 bytes -- and it is INVARIANT for `len - pos`
+            // consecutive bytes: every one of them is copied and nothing else.
+            // Re-entering `step` for each costs a load of `self.state`, a
+            // four-way branch, and a read-modify-write of `self.pos` through
+            // `&mut self`, to move one byte. Taking the whole run at once does
+            // the same thing with one `copy_from_slice`.
+            if self.state == State::Data {
+                let n = (self.len - self.pos).min(bytes.len() - i);
+                if n > 1 {
+                    // `step` writes only while `pos < MAX_FRAME` and silently
+                    // drops the rest; mirror that exactly, including the
+                    // advance past the end.
+                    if self.pos < MAX_FRAME {
+                        let m = n.min(MAX_FRAME - self.pos);
+                        self.buf[self.pos..self.pos + m].copy_from_slice(&bytes[i..i + m]);
+                    }
+                    self.pos += n;
+                    i += n;
+                    if self.pos >= self.len {
+                        self.state = State::Tail;
+                        self.matched = 0;
+                    }
+                    continue;
+                }
+            }
+            if self.step(bytes[i]) {
                 return (i + 1, self.emit());
             }
+            i += 1;
         }
         (bytes.len(), None)
     }
