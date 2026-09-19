@@ -453,7 +453,12 @@ impl<const W: usize> PresenceDetector<W> {
             return 0;
         }
         let w = W as u64;
-        let mut total: u64 = 0;
+        // u32: each term is at most 65 535 * 1000 / 16 = 4 095 937 (std16 is
+        // an isqrt of a u32 then divided, and `mean == 0` is skipped), and
+        // there are at most MAX_SUBCARRIERS = 64 of them, so the total cannot
+        // pass 262 139 968. A u64 add on this core is add + carry-test + a
+        // move, once per subcarrier, for range that cannot be reached.
+        let mut total: u32 = 0;
         for sc in 0..n {
             // Both totals are already correct -- `push` carried them in as
             // the window slid. What used to be W multiply-accumulates per
@@ -491,9 +496,9 @@ impl<const W: usize> PresenceDetector<W> {
             // exact in u32. That turns a runtime 64-bit division, which is a
             // LIBCALL on a 32-bit core, into one `quou`. It ran once per
             // subcarrier on every CSI frame: ~56 libcalls at 20-50 Hz.
-            total += u64::from((std16 as u32) * 1000 / ((mean as u32) * 16));
+            total += (std16 as u32) * 1000 / ((mean as u32) * 16);
         }
-        (total / n as u64).min(u64::from(u16::MAX)) as u16
+        (total / n as u32).min(u32::from(u16::MAX)) as u16
     }
 }
 
