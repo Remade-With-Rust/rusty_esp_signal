@@ -271,6 +271,12 @@ impl Default for Config {
 pub struct PresenceDetector<const W: usize> {
     config: Config,
     ring: [[u16; MAX_SUBCARRIERS]; W],
+    /// Running `sum[sc] = SUM over the ring of ring[f][sc]`, and likewise the
+    /// sum of squares. See `push`: the ring is a SLIDING WINDOW, so these are
+    /// maintained by the one frame that changes rather than rebuilt from all
+    /// `W` of them.
+    sum: [u32; MAX_SUBCARRIERS],
+    sumsq: [u64; MAX_SUBCARRIERS],
     count: u8,
     filled: usize,
     next: usize,
@@ -306,6 +312,8 @@ impl<const W: usize> PresenceDetector<W> {
         PresenceDetector {
             config,
             ring: [[0; MAX_SUBCARRIERS]; W],
+            sum: [0; MAX_SUBCARRIERS],
+            sumsq: [0; MAX_SUBCARRIERS],
             count: 0,
             filled: 0,
             next: 0,
@@ -369,7 +377,31 @@ impl<const W: usize> PresenceDetector<W> {
             self.reset();
         }
         self.count = features.count;
-        self.ring[self.next][..features.count as usize].copy_from_slice(features.amplitudes());
+        // Maintain the window's sums from the ONE frame that changes.
+        //
+        // `compute_wander` used to rebuild them from the whole ring on every
+        // push: W * n multiply-accumulates, 2600 of them at W = 50 and 52
+        // subcarriers, to fold in a single new frame. A ring is a sliding
+        // window -- exactly one frame leaves and one arrives -- so the sums
+        // can be carried: subtract what the slot held, add what replaces it.
+        // That is `n` updates instead of `W * n`.
+        //
+        // The invariant is `sum[sc] == SUM_f ring[f][sc]` for EVERY sc, and
+        // it holds by construction: zero at `new` over a zeroed ring, and
+        // preserved by this update whichever slot is written. `reset` does
+        // not disturb it -- it never touches the ring, so it must not touch
+        // these either. Indices at or above `count` are not written below, so
+        // their sums are already correct and are left alone. Integer
+        // arithmetic is exact, so every total is the u32/u64 it was, and
+        // `sum >= old` because `old` is one of the terms in it.
+        let amps = features.amplitudes();
+        let slot = &mut self.ring[self.next];
+        for (sc, (&new, old)) in amps.iter().zip(slot[..amps.len()].iter_mut()).enumerate() {
+            let (o, x) = (u32::from(*old), u32::from(new));
+            self.sum[sc] = self.sum[sc] - o + x;
+            self.sumsq[sc] = self.sumsq[sc] - u64::from(o * o) + u64::from(x * x);
+            *old = new;
+        }
         self.next = (self.next + 1) % W;
         if self.filled < W {
             self.filled += 1;
@@ -423,40 +455,27 @@ impl<const W: usize> PresenceDetector<W> {
         let w = W as u64;
         let mut total: u64 = 0;
         for sc in 0..n {
-            // ONE accumulator each, and the sum in u32.
+            // Both totals are already correct -- `push` carried them in as
+            // the window slid. What used to be W multiply-accumulates per
+            // subcarrier is now two array loads.
             //
-            // This loop previously carried FOUR u64 accumulators -- two for
-            // the sum and two for the squares, to break the dependency chain.
-            // A census of the FLASHED ELF showed what that actually bought:
-            // eight 32-bit registers is past the Xtensa register window, and
-            // the loop was spending TEN of its 34 instructions on
-            // `l32i.n a?, a1, N` reloads plus a spill store. It is the same
-            // law this family already wrote down once -- eight u16 maxima fit
-            // the window, eight i64 accumulators do not -- and the split was
-            // never measured on its own before it was kept.
+            // The SQUARE is still formed in u32 where it is formed, in
+            // `push`: `a` is a u16, so a^2 <= 65535^2 = 4 294 836 225, exact
+            // there, which is one `mull` instead of the 64x64 sequence. Only
+            // the sum of SQUARES needs the wider type; `sum` cannot exceed
+            // W * 65 535, and `W_FITS_U32_SUM` is what makes that a fact the
+            // COMPILER holds rather than one the reader does.
             //
-            // The SQUARE is still formed in u32: `a` is a u16, so
-            // a^2 <= 65535^2 = 4 294 836 225, exact there, which is one
-            // `mull` instead of the 64x64 sequence. Only the sum of SQUARES
-            // needs the wider type; `sum` cannot exceed W * 65 535, and
-            // `W_FITS_U32_SUM` is what makes that a fact the COMPILER holds
-            // rather than one the reader does.
-            //
-            // REFUTED, measured worse, reverted: ONE pass over the ring
-            // accumulating every subcarrier into `[u64; MAX_SUBCARRIERS]`
-            // pairs turns this kernel's 128-byte-stride walk into sequential
-            // loads, and cost +28.1% against a 1.4% null arm (2026-09-19) --
-            // the array form read-modify-writes memory for every element, and
-            // that costs more than the stride saves.
+            // REFUTED along the way, both measured and both reverted: TWO
+            // accumulators each to break the dependency chain put four u64s
+            // -- eight 32-bit registers -- past the Xtensa window, and the
+            // loop spent ten of its 34 instructions on stack reloads; and one
+            // frame-order pass over the ring accumulating every subcarrier
+            // into `[u64; MAX_SUBCARRIERS]` pairs cost +28.1%, because the
+            // array form read-modify-writes memory per element.
             let () = Self::W_FITS_U32_SUM;
-            let mut sum32: u32 = 0;
-            let mut sumsq: u64 = 0;
-            for frame in &self.ring {
-                let a = u32::from(frame[sc]);
-                sum32 += a;
-                sumsq += u64::from(a * a);
-            }
-            let sum = u64::from(sum32);
+            let sum = u64::from(self.sum[sc]);
+            let sumsq = self.sumsq[sc];
             let mean = sum / w;
             if mean == 0 {
                 continue;
@@ -481,6 +500,109 @@ impl<const W: usize> PresenceDetector<W> {
 /// Integer square root, `floor(sqrt(v))` — `rusty_esp_dsp`'s (moved there in
 /// D0, 2026-09-02), at the path this module always had.
 pub use rusty_esp_dsp::int::isqrt;
+
+#[cfg(test)]
+mod carried_sums {
+    use super::*;
+
+    fn feats(count: u8, seed: u32) -> Features {
+        let mut f = Features {
+            amplitude: [0; MAX_SUBCARRIERS],
+            count,
+            mean: 0,
+            variance: 0,
+        };
+        let mut sum = 0u32;
+        for (i, a) in f.amplitude[..count as usize].iter_mut().enumerate() {
+            // the full u16 range, not just the <= 724 a real capture gives:
+            // `Features` has public fields, so the carried sums must stay
+            // exact for anything that can be put in one.
+            *a = ((seed.wrapping_mul(2_654_435_761) >> 8) as u16)
+                .wrapping_add((i as u16).wrapping_mul(9_973));
+            sum += u32::from(*a);
+        }
+        f.mean = (sum / u32::from(count.max(1))) as u16;
+        f
+    }
+
+    /// The window is the last `W` frames and NOTHING before them. That is the
+    /// property the carried sums have to preserve: a detector with a long,
+    /// varied history must agree with a fresh one shown only the final `W`
+    /// frames. A sum that failed to subtract what left the ring would leak
+    /// that history, and no fixture-replay test would notice.
+    #[test]
+    fn wander_ignores_everything_before_the_window() {
+        const W: usize = 8;
+        for count in [1u8, 7, 52, MAX_SUBCARRIERS as u8] {
+            let tail: Vec<Features> = (0..W).map(|k| feats(count, 900 + k as u32)).collect();
+
+            let mut fresh = PresenceDetector::<W>::new(Config::default());
+            for (k, f) in tail.iter().enumerate() {
+                fresh.push(f, Micros(k as u64 * 20_000));
+            }
+
+            let mut aged = PresenceDetector::<W>::new(Config::default());
+            for k in 0..(5 * W) {
+                aged.push(&feats(count, k as u32), Micros(k as u64 * 20_000));
+            }
+            for (k, f) in tail.iter().enumerate() {
+                aged.push(f, Micros((5 * W + k) as u64 * 20_000));
+            }
+
+            assert!(fresh.warm() && aged.warm(), "count={count}");
+            assert_eq!(
+                aged.wander(),
+                fresh.wander(),
+                "history leaked into the window at count={count}"
+            );
+        }
+    }
+
+    /// `reset` restarts the window without touching the ring, so the carried
+    /// sums must not be touched either -- and the detector must still agree
+    /// with a fresh one once it has warmed again.
+    #[test]
+    fn reset_then_refill_matches_a_fresh_detector() {
+        const W: usize = 6;
+        let tail: Vec<Features> = (0..W).map(|k| feats(30, 5_000 + k as u32)).collect();
+
+        let mut fresh = PresenceDetector::<W>::new(Config::default());
+        for (k, f) in tail.iter().enumerate() {
+            fresh.push(f, Micros(k as u64 * 20_000));
+        }
+
+        let mut reused = PresenceDetector::<W>::new(Config::default());
+        for k in 0..(3 * W) {
+            reused.push(&feats(30, k as u32), Micros(k as u64 * 20_000));
+        }
+        reused.reset();
+        assert!(!reused.warm(), "reset must un-warm");
+        for (k, f) in tail.iter().enumerate() {
+            reused.push(f, Micros((100 + k) as u64 * 20_000));
+        }
+        assert_eq!(reused.wander(), fresh.wander(), "reset left the sums stale");
+    }
+
+    /// A change of subcarrier count resets the window; the sums for the
+    /// indices that were never written must not poison the new ones.
+    #[test]
+    fn a_count_change_does_not_poison_the_sums() {
+        const W: usize = 5;
+        let mut d = PresenceDetector::<W>::new(Config::default());
+        for k in 0..(2 * W) {
+            d.push(&feats(52, k as u32), Micros(k as u64 * 20_000));
+        }
+        // now a narrower layout, long enough to warm again
+        for k in 0..(2 * W) {
+            d.push(&feats(20, 700 + k as u32), Micros((50 + k) as u64 * 20_000));
+        }
+        let mut fresh = PresenceDetector::<W>::new(Config::default());
+        for k in (2 * W - W)..(2 * W) {
+            fresh.push(&feats(20, 700 + k as u32), Micros(k as u64 * 20_000));
+        }
+        assert_eq!(d.wander(), fresh.wander(), "count change poisoned the sums");
+    }
+}
 
 #[cfg(test)]
 mod tests {
