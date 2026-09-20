@@ -24,21 +24,42 @@ doctest = false
 [features]
 # Exactly one. The default is the responder, because a responder waiting for
 # a peer is harmless and an initiator shouting into an empty room is noise.
-default = ["role-responder"]
+default = ["role-responder", "chip-esp32c6"]
 role-initiator = []
 role-responder = []
+
+# The chip. Exactly one, and the DEFAULT is the C6 because that is the board
+# S1 is written about. The others exist so the harness itself can be proven
+# on silicon we already own before a colleague is the first person ever to
+# run it -- see the note in README.md.
+#
+# `esp-radio` supports esp-now on all three, and `rusty_esp_signal-esp`
+# takes its chip feature from the firmware rather than pinning one, so the
+# only per-chip surface is this block.
+chip-esp32c6 = [
+  "esp-hal/esp32c6", "esp-radio/esp32c6", "esp-rtos/esp32c6",
+  "esp-bootloader-esp-idf/esp32c6", "esp-println/esp32c6", "esp-backtrace/esp32c6",
+]
+chip-esp32s3 = [
+  "esp-hal/esp32s3", "esp-radio/esp32s3", "esp-rtos/esp32s3",
+  "esp-bootloader-esp-idf/esp32s3", "esp-println/esp32s3", "esp-backtrace/esp32s3",
+]
+chip-esp32 = [
+  "esp-hal/esp32", "esp-radio/esp32", "esp-rtos/esp32",
+  "esp-bootloader-esp-idf/esp32", "esp-println/esp32", "esp-backtrace/esp32",
+]
 
 [dependencies]
 # The chip is selected HERE (not in the -esp library): esp-hal/esp-radio get
 # the esp32c6 feature, and the -esp crate's esp-hal feature turns on the
 # backends, which cargo then compiles for this chip through feature unification.
-esp-hal = { version = "=1.2.0", features = ["esp32c6", "unstable", "rt"] }
-esp-radio = { version = "=1.0.0-beta.1", features = ["esp32c6", "wifi", "esp-now", "csi", "unstable"] }
-esp-rtos = { version = "=0.4.0", features = ["esp32c6", "esp-radio", "embassy"] }
+esp-hal = { version = "=1.2.0", features = ["unstable", "rt"] }
+esp-radio = { version = "=1.0.0-beta.1", features = ["wifi", "esp-now", "unstable"] }
+esp-rtos = { version = "=0.4.0", features = ["esp-radio", "embassy"] }
 esp-alloc = "=0.11.0"
-esp-bootloader-esp-idf = { version = "=0.6.0", features = ["esp32c6"] }
-esp-println = { version = "=0.18.0", features = ["esp32c6"] }
-esp-backtrace = { version = "=0.20.0", features = ["esp32c6", "panic-handler", "println"] }
+esp-bootloader-esp-idf = "=0.6.0"
+esp-println = "=0.18.0"
+esp-backtrace = { version = "=0.20.0", features = ["panic-handler", "println"] }
 embassy-executor = "0.10"
 embassy-time = "0.5"
 

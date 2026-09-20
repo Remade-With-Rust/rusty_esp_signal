@@ -39,6 +39,33 @@ Every receive is wrapped in a timeout and a timeout is **counted as loss**
 rather than being fatal. A lossy run still produces numbers, and numbers are
 what S1 is for.
 
+## Chips: the harness is not only for the C6
+
+`esp-radio` carries ESP-NOW on the esp32, esp32s3 and esp32c6 alike, and
+`rusty_esp_signal-esp` takes its chip feature from the firmware rather than
+pinning one — so the only per-chip surface is the `chip-*` feature block.
+
+| chip | toolchain | target | state |
+|---|---|---|---|
+| **C6** (the S1 row) | stable | `riscv32imac-unknown-none-elf` | builds |
+| **S3** (XIAO) | `esp` | `xtensa-esp32s3-none-elf` | **builds and RUNS** — reaches `S1 waiting for peer`, DID minted |
+| **ESP32** (the CAM) | `esp` | `xtensa-esp32-none-elf` | **does not link**: `Main stack is smaller than 8192 bytes`, and the knob is not `ESP_HAL_CONFIG_STACK_SIZE` (esp-hal 1.2 rejects it as unknown). Unsolved. |
+
+```
+cargo +esp build --release --target xtensa-esp32s3-none-elf       --no-default-features --features role-responder,chip-esp32s3
+```
+
+**Why this matters more than portability.** S1 is a C6 row and an S3 run is
+not S1. But without it, a colleague with two new boards would be the first
+person ever to execute this code on hardware — and if it fell over, they
+would burn a day and we would learn nothing about S1. Proving the bring-up
+on a board we own reduces their run to "only the chip differs".
+
+What the S3 run establishes: boot, heap, TRNG, `DeviceKey` generation,
+Wi-Fi station bring-up, the ESP-NOW split and the link. What it cannot:
+the handshake, the frame loop, the counters and the rejection arm all need a
+second radio.
+
 ## Running it
 
 Reset the **responder first**, then the initiator. Both print `S1 ...` lines

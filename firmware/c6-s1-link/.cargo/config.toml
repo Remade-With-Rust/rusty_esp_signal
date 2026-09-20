@@ -4,3 +4,17 @@ rustflags = ["-C", "link-arg=-Tlinkall.x"]
 
 [build]
 target = "riscv32imac-unknown-none-elf"
+
+# The S3 and the plain ESP32 are Xtensa and need the `esp` toolchain:
+#   cargo +esp build --release --target xtensa-esp32s3-none-elf #         --no-default-features --features role-responder,chip-esp32s3
+# The C6 stays the default target above and builds on stable.
+[target.xtensa-esp32s3-none-elf]
+runner = "espflash flash --monitor"
+rustflags = ["-C", "link-arg=-Tlinkall.x"]
+
+[target.xtensa-esp32-none-elf]
+runner = "espflash flash --monitor"
+rustflags = ["-C", "link-arg=-Tlinkall.x"]
+
+[unstable]
+build-std = ["core", "alloc"]
