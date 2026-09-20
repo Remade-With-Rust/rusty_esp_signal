@@ -1,0 +1,60 @@
+# S1: the C6 <-> C6 authenticated ESP-NOW link, as a self-driving kill test.
+#
+# ONE source, TWO images. `role-initiator` drives the 1,000 frames and then
+# attempts the unadopted-identity join; `role-responder` echoes and refuses.
+# Building the same code twice with one feature different is what makes the
+# two halves comparable -- and is why the runbook hands a colleague two .bin
+# files rather than a toolchain.
+
+[package]
+name = "c6-s1-link"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "Janus J4 firmware, Track B (no_std/esp-hal), ESP32-C6: an authenticated ESP-NOW mesh node with Wi-Fi CSI presence, an LD2410 mmWave reader, and the Wi-Fi station policy — every radio ingesting into rusty_esp_signal-core."
+
+[[bin]]
+name = "c6-s1-link"
+path = "src/main.rs"
+test = false
+bench = false
+doctest = false
+
+[features]
+# Exactly one. The default is the responder, because a responder waiting for
+# a peer is harmless and an initiator shouting into an empty room is noise.
+default = ["role-responder"]
+role-initiator = []
+role-responder = []
+
+[dependencies]
+# The chip is selected HERE (not in the -esp library): esp-hal/esp-radio get
+# the esp32c6 feature, and the -esp crate's esp-hal feature turns on the
+# backends, which cargo then compiles for this chip through feature unification.
+esp-hal = { version = "=1.2.0", features = ["esp32c6", "unstable", "rt"] }
+esp-radio = { version = "=1.0.0-beta.1", features = ["esp32c6", "wifi", "esp-now", "csi", "unstable"] }
+esp-rtos = { version = "=0.4.0", features = ["esp32c6", "esp-radio", "embassy"] }
+esp-alloc = "=0.11.0"
+esp-bootloader-esp-idf = { version = "=0.6.0", features = ["esp32c6"] }
+esp-println = { version = "=0.18.0", features = ["esp32c6"] }
+esp-backtrace = { version = "=0.20.0", features = ["esp32c6", "panic-handler", "println"] }
+embassy-executor = "0.10"
+embassy-time = "0.5"
+
+# The Janus core and the Track B backends. Depend on the local crates by path
+# inside the firmware; the core reaches its siblings (rusty_esp_core,
+# rusty_esp_mid-core) by git URL as usual (patched to the checkout in the
+# umbrella).
+rusty_esp_signal-core = { path = "../../crates/rusty_esp_signal-core", default-features = false, features = ["alloc"] }
+rusty_esp_signal-esp = { path = "../../crates/rusty_esp_signal-esp", default-features = false, features = ["esp-radio"] }
+rusty_esp_mid-core = { git = "https://github.com/Remade-With-Rust/rusty_esp_mid", version = "0.1", default-features = false, features = ["alloc"] }
+rusty_esp_core = { git = "https://github.com/Remade-With-Rust/rusty_esp_core", version = "0.1", default-features = false, features = ["alloc"] }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[workspace]
