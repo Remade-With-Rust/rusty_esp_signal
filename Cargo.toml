@@ -7,7 +7,7 @@ members = ["crates/*"]
 exclude = ["firmware/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Remade-With-Rust/rusty_esp_signal"
@@ -25,8 +25,8 @@ undocumented_unsafe_blocks = "deny"
 [workspace.dependencies]
 # Internal crates carry BOTH path and version so the set publishes to crates.io
 # in lockstep (the rusty_time pattern).
-rusty_esp_signal-core = { path = "crates/rusty_esp_signal-core", version = "0.1.0", default-features = false }
-rusty_esp_signal-esp = { path = "crates/rusty_esp_signal-esp", version = "0.1.0", default-features = false }
+rusty_esp_signal-core = { path = "crates/rusty_esp_signal-core", version = "0.2.0", default-features = false }
+rusty_esp_signal-esp = { path = "crates/rusty_esp_signal-esp", version = "0.2.0", default-features = false }
 
 # Siblings in the Janus family are consumed BY GIT URL so this repo deploys on
 # its own. Inside the Janus umbrella folder, `.cargo/config.toml` patches the

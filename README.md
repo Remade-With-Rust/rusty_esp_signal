@@ -66,6 +66,37 @@ if let Some((ssid, psk)) = provisioner.poll()? {
 | **A** | `std` on ESP-IDF — Wi-Fi, Bluetooth provisioning, the radar's serial port | `rusty_esp_signal-esp --features esp-idf` |
 | **B** | `no_std` on `esp-hal` — the protocols, the detector, the framing | `rusty_esp_signal-core`, default |
 
+## 0.2.0 is a breaking release
+
+`EspNowLink` no longer takes a lifetime parameter. `esp-radio` 1.0.0-beta.1
+dropped it from `EspNowSender` and `EspNowReceiver`, and carrying one here
+would have claimed a borrow the type does not hold — it owns the halves.
+
+```rust
+-  let link: EspNowLink<'_> = EspNowLink::new(sender, receiver, peer);
++  let link: EspNowLink    = EspNowLink::new(sender, receiver, peer);
+```
+
+The whole signal set moves to 0.2.0 together, the way it has always
+published, even though only `-esp` broke.
+
+The chip backends also move to the esp-hal 1.2 companion set, and the
+library's dependency pins are **ranges** now rather than `=`: a firmware
+must not mix companion sets, but it is the firmware that picks which, and an
+`=` pin in a library took that choice away from every consumer at once.
+
+## S1, as a firmware you can run
+
+`firmware/c6-s1-link` is the C6 ↔ C6 kill test, self-driving: one source,
+two images, 1,000 authenticated ESP-NOW frames each way, loss / replay /
+bad-tag counters straight from `Session::counters()`, and an unadopted
+identity that must be refused.
+
+It needs two boards, not three — what has to be turned away is an unadopted
+**identity**, not a third piece of silicon, so the initiator mints a second
+key and tries again. Same radio, same distance: a refusal cannot be blamed
+on range.
+
 ## Part of Janus
 
 **Janus** rebuilds the Espressif ESP32 and Arduino application portfolio as
