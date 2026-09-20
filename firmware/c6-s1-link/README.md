@@ -49,7 +49,25 @@ pinning one — so the only per-chip surface is the `chip-*` feature block.
 |---|---|---|---|
 | **C6** (the S1 row) | stable | `riscv32imac-unknown-none-elf` | builds |
 | **S3** (XIAO) | `esp` | `xtensa-esp32s3-none-elf` | **builds and RUNS** — reaches `S1 waiting for peer`, DID minted |
-| **ESP32** (the CAM) | `esp` | `xtensa-esp32-none-elf` | **does not link**: `Main stack is smaller than 8192 bytes`, and the knob is not `ESP_HAL_CONFIG_STACK_SIZE` (esp-hal 1.2 rejects it as unknown). Unsolved. |
+| **ESP32** (the CAM) | `esp` | `xtensa-esp32-none-elf` | **builds**; never reached on hardware — see below |
+
+The ESP32 link error was `Main stack is smaller than 8192 bytes`, which reads
+like a stack setting and is a **heap** one: the assert
+(`ESP_HAL_CONFIG_ENSURE_MAIN_STACK_MINIMUM`, in esp-hal's `ld/sections/stack.x`)
+compares the stack the linker could *fit* against a minimum, and the 96 KB
+`heap_allocator!` was consuming the ESP32's much smaller contiguous DRAM. The
+heap is chip-dependent now: 32 KB there, 96 KB elsewhere.
+
+**The AI-Thinker ESP32-CAM was not reachable on this bench.** Its CH340
+enumerated (COM3, port opens, nothing holding it) but the board never
+responded to anything: no auto-reset (DTR/RTS toggle produced zero bytes,
+so those lines are not wired to EN/IO0 on this adapter), no response with
+`--before no-reset` after a manual IO0-to-GND power-cycle, and no boot
+output at all while listening at 115200. No data path was ever established,
+so the failure is upstream of anything this firmware controls. Recorded
+rather than retried: a second XIAO S3 pairs with the first immediately and
+carries none of the CAM's quirks (no native USB, no auto-reset, brownouts
+on 3.3V once the radio starts).
 
 ```
 cargo +esp build --release --target xtensa-esp32s3-none-elf       --no-default-features --features role-responder,chip-esp32s3

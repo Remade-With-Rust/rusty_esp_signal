@@ -77,6 +77,14 @@ fn now() -> Micros {
 #[esp_rtos::main]
 async fn main(_spawner: embassy_executor::Spawner) {
     let peripherals = esp_hal::init(esp_hal::Config::default());
+    // The ESP32 (the CAM board) has far less contiguous DRAM than the C6 or
+    // the S3, and `heap_allocator!` reserves statically -- at 96 KB it eats
+    // the main stack and the link fails with "Main stack is smaller than
+    // 8192 bytes", which reads like a stack setting and is really a heap
+    // one. The harness needs nowhere near 96 KB.
+    #[cfg(feature = "chip-esp32")]
+    esp_alloc::heap_allocator!(size: 32 * 1024);
+    #[cfg(not(feature = "chip-esp32"))]
     esp_alloc::heap_allocator!(size: 96 * 1024);
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
