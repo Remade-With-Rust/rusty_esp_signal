@@ -48,9 +48,13 @@ async fn main(_spawner: embassy_executor::Spawner) {
     esp_alloc::heap_allocator!(size: 96 * 1024);
 
     // The RTOS the radio driver needs.
+    // esp-rtos 0.4 takes the FROM_CPU interrupt peripheral directly; 0.3 went
+    // through `SoftwareInterruptControl::new(peripherals.SW_INTERRUPT)`.
+    // This is the seam Kairos's port plugs into -- `rusty_rtos_port-xtensa`
+    // runs its context switch in exactly this software interrupt so
+    // `xtensa-lx-rt`'s exception entry spills the register windows.
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    let sw = esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
-    esp_rtos::start(timg0.timer0, sw.software_interrupt0);
+    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
 
     // The hardware true-RNG behind the core's Rng seam. The TrngSource owns
     // RNG + ADC1 and must outlive every Trng handle, so it stays in scope.

@@ -40,19 +40,22 @@ pub const fn broadcast() -> [u8; 6] {
 ///
 /// Owns the ESP-NOW sender and receiver halves and the peer's MAC address.
 /// Hold a [`Session`] alongside it once a handshake completes.
-pub struct EspNowLink<'d> {
-    sender: EspNowSender<'d>,
-    receiver: EspNowReceiver<'d>,
+/// No lifetime parameter: `esp-radio` 1.0.0-beta.1 dropped it from
+/// `EspNowSender` and `EspNowReceiver`, and carrying one here would claim a
+/// borrow this type does not hold. The halves are owned outright.
+pub struct EspNowLink {
+    sender: EspNowSender,
+    receiver: EspNowReceiver,
     peer: [u8; 6],
     rx_buf: [u8; MAX_FRAME],
 }
 
-impl<'d> EspNowLink<'d> {
+impl EspNowLink {
     /// Build a link over the ESP-NOW halves, addressed to `peer`. The peer
     /// must already be added to the ESP-NOW peer table (unicast) or be the
     /// broadcast address (discovery).
     #[must_use]
-    pub fn new(sender: EspNowSender<'d>, receiver: EspNowReceiver<'d>, peer: [u8; 6]) -> Self {
+    pub fn new(sender: EspNowSender, receiver: EspNowReceiver, peer: [u8; 6]) -> Self {
         Self {
             sender,
             receiver,

@@ -48,8 +48,26 @@ rusty_esp_signal-core = { workspace = true }
 # Track B — all optional, pulled in only by the features above. No chip feature
 # here (see the `esp-hal` feature note). esp-radio's radio features ARE set
 # here (they are chip-independent): the backends this crate ships need them.
-esp-hal = { version = "=1.1.2", default-features = false, features = ["unstable"], optional = true }
-esp-radio = { version = "=1.0.0-beta.0", default-features = false, features = ["wifi", "esp-now", "csi", "ble", "unstable"], optional = true }
+# A RANGE, not an exact pin, and the distinction is the whole companion-set
+# rule. A firmware must never MIX companion sets -- but it is the firmware
+# that picks which set, and an `=` pin in a library takes that choice away
+# from every consumer at once. This crate said `=1.1.2`, so a C6 firmware
+# could not move to the 1.2 line without the library moving too, and the S3
+# firmwares were already there: one library, two incompatible truths.
+#
+# K5 forced the issue: `esp-rtos` 0.4 requires esp-hal `~1.2.0-rc.0`, so the
+# Kairos port cannot go under a firmware this crate has pinned to 1.1.2.
+esp-hal = { version = "1.1", default-features = false, features = ["unstable"], optional = true }
+# Caret, not `=`, for the same reason as esp-hal above. A caret on a
+# PRE-RELEASE is still narrow: `1.0.0-beta.0` admits later betas of 1.0.0 and
+# nothing beyond, which is exactly the latitude a firmware needs to pick its
+# companion set without the library re-pinning.
+#
+# `trouble-host` and `lora-phy` below still carry `=` pins. Same pattern, and
+# they should move the same way -- but they are the BLE and LoRa firmwares'
+# dependencies, not the mesh node's, so they move when those firmwares do and
+# can be verified on the radios they drive.
+esp-radio = { version = "1.0.0-beta.0", default-features = false, features = ["wifi", "esp-now", "csi", "ble", "unstable"], optional = true }
 embassy-time = { version = "0.5", optional = true }
 embassy-futures = { version = "0.1", optional = true }
 trouble-host = { version = "=0.6.0", default-features = false, features = ["gatt", "peripheral", "derive", "default-packet-pool"], optional = true }

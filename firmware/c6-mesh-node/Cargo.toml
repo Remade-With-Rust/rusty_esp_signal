@@ -17,13 +17,13 @@ doctest = false
 # The chip is selected HERE (not in the -esp library): esp-hal/esp-radio get
 # the esp32c6 feature, and the -esp crate's esp-hal feature turns on the
 # backends, which cargo then compiles for this chip through feature unification.
-esp-hal = { version = "=1.1.2", features = ["esp32c6", "unstable", "rt"] }
-esp-radio = { version = "=1.0.0-beta.0", features = ["esp32c6", "wifi", "esp-now", "csi", "unstable"] }
-esp-rtos = { version = "=0.3.0", features = ["esp32c6", "esp-radio", "embassy"] }
-esp-alloc = "=0.10.0"
-esp-bootloader-esp-idf = { version = "=0.5.0", features = ["esp32c6"] }
-esp-println = { version = "=0.17.0", features = ["esp32c6"] }
-esp-backtrace = { version = "=0.19.0", features = ["esp32c6", "panic-handler", "println"] }
+esp-hal = { version = "=1.2.0", features = ["esp32c6", "unstable", "rt"] }
+esp-radio = { version = "=1.0.0-beta.1", features = ["esp32c6", "wifi", "esp-now", "csi", "unstable"] }
+esp-rtos = { version = "=0.4.0", features = ["esp32c6", "esp-radio", "embassy"] }
+esp-alloc = "=0.11.0"
+esp-bootloader-esp-idf = { version = "=0.6.0", features = ["esp32c6"] }
+esp-println = { version = "=0.18.0", features = ["esp32c6"] }
+esp-backtrace = { version = "=0.20.0", features = ["esp32c6", "panic-handler", "println"] }
 embassy-executor = "0.10"
 embassy-time = "0.5"
 
