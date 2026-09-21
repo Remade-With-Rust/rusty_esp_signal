@@ -1,0 +1,113 @@
+# Do the ESP-IDF firmwares still build?
+#
+# WHY THIS EXISTS, AND WHY IT IS SEPARATE
+#
+# On 2026-09-21 two firmwares in this family were found to have been
+# uncompilable for long enough that a security decision -- moving the device
+# key out of the owner's NVS partition, taken 2026-09-05 -- never reached
+# them, and a struct they initialise had gained two fields it did not
+# have. Nobody was careless. There was simply no signal, because **a compile
+# error only helps if something compiles**.
+#
+# The family's bare-metal firmwares are checked on every push, in `ci.yml`:
+# they are esp-hal, so a build is about a minute. These are ESP-IDF, which
+# means the whole IDF is fetched and built -- minutes each -- so they get a
+# weekly run instead. A week of drift is a small thing to find out about; the
+# sixteen days above were not.
+#
+# WHAT A RED RUN MEANS
+#
+# Not necessarily that somebody broke something here. These firmwares take
+# the family crates by git URL on a default branch, so a sibling's change
+# lands in them without a commit in this repository. That is the usual cause
+# and the reason a weekly schedule is the right shape: the question is not
+# "did this push break it" but "does it still build".
+#
+# COPYING THIS
+#
+# Every repository in this family with an ESP-IDF firmware has one of these.
+# It is copied per repository: change `project` and, if the firmware
+# needs build-time environment, the `env` block below.
+
+name: firmware (ESP-IDF)
+
+on:
+  schedule:
+    # Mondays, early. Nothing here is urgent enough to interrupt a working day.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+  push:
+    paths:
+      - 'firmware/**'
+      - 'crates/**'
+      - '.github/workflows/firmware-idf.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  JANUS_GIT_TOKEN: ${{ secrets.JANUS_GIT_TOKEN }}
+  # These firmwares read their network at COMPILE time. A build only needs
+  # the variables to exist; it never connects to anything, and a placeholder
+  # is the honest value for a job that only asks whether the code compiles.
+  JANUS_WIFI_SSID: ci-build-placeholder
+  JANUS_WIFI_PASS: ci-build-placeholder
+
+jobs:
+  build:
+    name: ${{ matrix.project }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - project: xiao-s3-sense-idf-ble-provision
+            buildtargets: esp32s3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authorise private sibling fetches
+        if: ${{ env.JANUS_GIT_TOKEN != '' }}
+        shell: bash
+        run: git config --global url."https://x-access-token:${JANUS_GIT_TOKEN}@github.com/".insteadOf "https://github.com/"
+      # ESP-IDF, so: the toolchain AND ldproxy, which links an IDF app.
+      - uses: esp-rs/xtensa-toolchain@v1.5
+        with:
+          default: true
+          buildtargets: ${{ matrix.buildtargets }}
+          ldproxy: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware/${{ matrix.project }}
+          # The IDF checkout and its build products are the expensive part.
+          cache-directories: |
+            ~/.espressif
+            ~/.rustup/toolchains/esp
+      - name: build
+        working-directory: firmware/${{ matrix.project }}
+        run: |
+          set -euo pipefail
+          # `cargo update` FIRST, deliberately.
+          #
+          # These firmwares take the family by git URL on a default branch,
+          # so a committed lockfile goes stale on its own -- no commit here
+          # required. And cargo does not quietly re-resolve that: it stops.
+          #
+          #   error: failed to select a version for the requirement
+          #   `rusty_esp_audio-esp = "*"` (locked to 0.1.0)
+          #   candidate versions found which didn't match: 0.1.1
+          #
+          # Four of this family's seven ESP-IDF firmwares were failing that
+          # way on 2026-09-21. Without this line the job would report a stale
+          # lock and a genuinely broken firmware identically, and the useful
+          # question -- does it still build against the family as it is
+          # today -- would go unasked.
+          cargo update
+          cargo build --release
+      # The partition table is not checked by a build -- only by a flash --
+      # so an invalid one would otherwise be found on somebody's bench.
+      - name: the partition table parses
+        working-directory: firmware/${{ matrix.project }}
+        run: |
+          set -euo pipefail
+          cargo install espflash --locked --version '^4'
+          espflash partition-table partitions.csv
