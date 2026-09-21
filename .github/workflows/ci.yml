@@ -81,6 +81,9 @@ jobs:
           - c6-mesh-node
           - c6-lora-p2p
           - c6-ble-provision
+          # The S1 link harness. It was the only Track B firmware here that
+          # nothing built, which is exactly the gap this job exists to close.
+          - c6-s1-link
     steps:
       - uses: actions/checkout@v4
       - name: Authorise private sibling fetches
