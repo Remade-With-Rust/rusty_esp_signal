@@ -338,3 +338,77 @@ on a capture this one is not.
 
 The corroborated-rise candidate only trades (150 empty frames for 2 297 of
 walk at its best setting) and is recorded here so nobody rebuilds it.
+
+---
+
+## W2 of the RuView plan: breathing, and a heart band to try — 2026-09-23
+
+`radar::vitals`: the slow rhythm in the channel, in fixed point, on
+normalised features. Decimate (50 → 10 Hz), a 20 s window, the
+autocorrelation per subcarrier over the band's lags (`dot_i16` and
+`sum_sq_i16` from the DSP crate — the S3's vectorised kernels, plain loops
+on the C6), normalised and overlap-corrected, summed across subcarriers,
+the first significant peak from lag 2 up, a parabola, a rate and a
+confidence. 25.6 KiB of ring at `N = 200`.
+
+### The oracle, and what it is not
+
+The Cuenca dataset has no vitals labels and there is no recording of our
+own. So the estimator is held to three things, and **no accuracy against a
+person is claimed**:
+
+1. it must read back the rate it was given from a synthetic capture in the
+   real fixtures' row format — a static multipath shape per subcarrier,
+   each subcarrier modulated with its own depth and sign (a changing path
+   is frequency-selective, which is also why breathing survives gain
+   normalisation), unit Gaussian noise on I/Q, a slow drift;
+2. the chip's integer pipeline must agree with an independent float replica
+   (`tools/csi_vitals_oracle.py`) estimate by estimate;
+3. on the real captures, **an empty room must not grow a breathing rate**.
+
+| capture | band | reads | float replica | Δ fixed−float (bpm / conf) | accepted |
+|---|---|---|---|---|---|
+| synthetic, 15.0 per min | breathing | **15.0**, 633 ‰ | 15.05, 0.634 | 0.048 / 0.0018 | yes |
+| synthetic, 12.0 + 72 | breathing | **11.9**, 639 ‰ | 11.91, 0.641 | 0.056 / 0.0020 | yes |
+| synthetic, 12.0 + 72 | heart | 78.4, **74 ‰** | 78.37, 0.073 | 0.616 / 0.0013 | **no** — flagged |
+| Cuenca empty room | breathing | —, max **47 ‰** | max 0.03 | — / 0.0090 | 0 of 41 |
+| Cuenca walking | breathing | 300 per min (lag 2), 805 ‰ | 300, 0.70 | — | 0 of 41 |
+
+### Three rules the synthetic captures forced, in both implementations
+
+- **The first significant peak, not the highest.** A rhythm's
+  autocorrelation peaks at every multiple of its period, and the overlap
+  correction favours the longer lag, so the float replica read a 12 per
+  minute breath as **6** before this rule — the sub-harmonic.
+- **Scan from lag 2, not from the band's edge.** A 1.2 Hz heartbeat has a
+  perfect peak at 2.5 s, inside the breathing band; an in-band scan read it
+  as 24 breaths a minute at 99 % confidence. From lag 2 the true period is
+  found first, below the band, and the estimate is reported with its real
+  rate and **flagged**. The same rule flags the walker (first peak at lag
+  2: broadband motion, no rhythm) on all 41 estimates at up to 805 ‰
+  confidence — which is why acceptance is a rule and not a threshold.
+- **A high-pass for the heart band.** Breathing is 25× the power of a
+  heartbeat; over the heart's short lags the autocorrelation was the
+  breath's slow curve and the peak sat on the band's edge (130 per
+  minute). A one-second moving average subtracted cuts 0.2 Hz by ~24 dB.
+
+### Heart rate, as measured
+
+After the high-pass, 78 for 72 at 7 % confidence — within ten percent,
+flagged, and the float replica says the same. A 0.6 % modulation on
+amplitudes near 30 is a fifth of one LSB of the noise; that is the ceiling
+of one amplitude link at this SNR. A clean heartbeat alone reads to a
+tenth (unit test). **A band to try, not a number to trust**, exactly as
+the plan said; phase (W1) is the more sensitive carrier and the obvious
+next input.
+
+### What W2 does not claim
+
+The plan's own judge — *BPM error against a reference, per recording,
+stated* — needs a recording of our own with a reference count. That is a
+hardware step and it has not happened. What is stated is the synthetic
+error (under 0.06 per minute), the fixed–float agreement, and the
+empty-room floor (47 ‰ against an accept floor of 400).
+
+Gates: 7 new unit tests, 3 new capture tests, clippy `-D warnings`, fmt,
+the bare-metal core-only check — green.

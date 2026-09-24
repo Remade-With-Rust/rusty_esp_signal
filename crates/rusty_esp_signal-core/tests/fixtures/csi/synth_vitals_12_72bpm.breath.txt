@@ -1,0 +1,7 @@
+# float vitals per estimate: bpm confidence -- decim 5, 10 Hz, band 150-550 mHz, window 200, from tools/csi_vitals_oracle.py
+11.954 0.6425
+11.933 0.6445
+11.944 0.6439
+11.930 0.6460
+11.912 0.6395
+11.910 0.6410

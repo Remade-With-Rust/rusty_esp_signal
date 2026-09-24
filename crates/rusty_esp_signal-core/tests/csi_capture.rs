@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use rusty_esp_core::Micros;
 use rusty_esp_signal_core::radar::csi::{Config, CsiFrame, Layout, PresenceDetector, Verdict};
 use rusty_esp_signal_core::radar::phase::{PhaseConfig, PhaseDetector};
+use rusty_esp_signal_core::radar::vitals::{Vitals, VitalsConfig, VitalsEstimator};
 
 /// 50 frames at the dataset's 50 Hz: a one-second window.
 const WINDOW: usize = 50;
@@ -614,6 +615,213 @@ fn fixed_point_normalised_wander_tracks_the_float_oracle() {
         assert!(mean <= 0.0 && mean > -1.5, "{name}: mean delta {mean}");
         assert!(max_abs < 2.5, "{name}: max |delta| {max_abs}");
     }
+}
+
+// ------------------------------------------------------------------ W2: vitals
+
+/// Run the estimator over a capture on normalised features; every estimate
+/// it makes, in order.
+fn run_vitals(path: &Path, cfg: VitalsConfig) -> Vec<Vitals> {
+    let rows = parse(path);
+    let mut est = VitalsEstimator::<200>::new(cfg);
+    let mut out = Vec::new();
+    for (n, row) in rows.iter().enumerate() {
+        let now = Micros(n as u64 * FRAME_MICROS);
+        let f = CsiFrame {
+            timestamp: now,
+            rssi: row.rssi,
+            channel: 6,
+            iq: &row.iq,
+        }
+        .features(&Layout::C6_HT20_NATURAL)
+        .expect("layout")
+        .normalised();
+        if let Some(v) = est.push(&f, now) {
+            out.push(v);
+        }
+    }
+    out
+}
+
+/// The float replica's estimates for a capture (`tools/csi_vitals_oracle.py`).
+fn golden_vitals(name: &str, suffix: &str) -> Vec<(f64, f64)> {
+    std::fs::read_to_string(fixture(&format!("{name}{suffix}")))
+        .unwrap_or_else(|e| {
+            panic!("{name}{suffix}: {e}; regenerate with tools/csi_vitals_oracle.py")
+        })
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .map(|l| {
+            let mut it = l.split_whitespace();
+            (
+                it.next().unwrap().parse().unwrap(),
+                it.next().unwrap().parse().unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// Fixed against float, estimate by estimate; the worst differences are
+/// printed and bounded.
+///
+/// `bpm_tol` is `None` for a capture with no rhythm in it: a rate read off
+/// noise is the first local maximum of a flat curve, and two implementations
+/// landing on different lags there is not a disagreement about anything.
+/// The confidence is what says "nothing here", and it is always compared.
+fn compare_vitals(
+    name: &str,
+    fixed: &[Vitals],
+    golden: &[(f64, f64)],
+    bpm_tol: Option<f64>,
+    conf_tol: f64,
+) {
+    assert_eq!(fixed.len(), golden.len(), "{name}: estimate count");
+    let mut worst_bpm = 0.0f64;
+    let mut worst_conf = 0.0f64;
+    for (v, &(bpm, conf)) in fixed.iter().zip(golden) {
+        let db = (f64::from(v.bpm_x10) / 10.0 - bpm).abs();
+        let dc = (f64::from(v.confidence) / 1000.0 - conf).abs();
+        worst_bpm = worst_bpm.max(db);
+        worst_conf = worst_conf.max(dc);
+    }
+    println!(
+        "{name}: fixed vs float VITALS over {} estimates: worst |Δbpm| {worst_bpm:.3}, worst |Δconfidence| {worst_conf:.4}",
+        golden.len()
+    );
+    if let Some(tol) = bpm_tol {
+        assert!(worst_bpm <= tol, "{name}: |Δbpm| {worst_bpm}");
+    }
+    assert!(worst_conf <= conf_tol, "{name}: |Δconfidence| {worst_conf}");
+}
+
+/// A synthetic capture breathing at exactly 15 per minute, with a
+/// frequency-selective modulation of a few percent and unit noise on I/Q,
+/// in the real fixtures' row format. The estimator must read the rate it
+/// was given, and agree with the float replica.
+#[test]
+fn a_synthetic_breath_at_15_bpm_is_read_back() {
+    let out = run_vitals(
+        &fixture("synth_breathing_15bpm.csv"),
+        VitalsConfig::breathing(50),
+    );
+    assert!(!out.is_empty());
+    let last = out.last().unwrap();
+    println!("synth 15 bpm: {} estimates, last {last:?}", out.len());
+    assert!(
+        (f64::from(last.bpm_x10) / 10.0 - 15.0).abs() <= 0.5,
+        "read {} x0.1 bpm for a 15.0 bpm breath",
+        last.bpm_x10
+    );
+    assert!(last.accepted, "{last:?}");
+    // And every estimate after the first agrees with the rate.
+    for v in &out {
+        assert!((f64::from(v.bpm_x10) / 10.0 - 15.0).abs() <= 1.0, "{v:?}");
+    }
+    // Measured: worst |Δbpm| 0.048, worst |Δconfidence| 0.0018.
+    compare_vitals(
+        "synth_breathing_15bpm",
+        &out,
+        &golden_vitals("synth_breathing_15bpm", ".breath.txt"),
+        Some(0.2),
+        0.02,
+    );
+}
+
+/// Two rhythms at once: breathing at 12 and a heartbeat at 72, the latter
+/// five times weaker -- 0.6 % of an amplitude near 30, which is a fifth of
+/// one LSB of the unit noise on I/Q. The breathing band reads the first to
+/// a tenth. The heart band, after its high-pass, reads the second to within
+/// about ten percent at a confidence under a tenth, and **flags it** -- and
+/// the float replica says the same. That is the honest ceiling of one
+/// amplitude link at this noise, and it is what "a band to try, not a
+/// number to trust" means. A clean heartbeat alone is read to a tenth
+/// (`heart_at_72_bpm_is_read_from_the_heart_band_on_a_clean_signal`).
+#[test]
+fn a_synthetic_breath_and_heartbeat_are_read_from_their_own_bands() {
+    let breath = run_vitals(
+        &fixture("synth_vitals_12_72bpm.csv"),
+        VitalsConfig::breathing(50),
+    );
+    let heart = run_vitals(
+        &fixture("synth_vitals_12_72bpm.csv"),
+        VitalsConfig::heart(50),
+    );
+    let (b, h) = (breath.last().unwrap(), heart.last().unwrap());
+    println!("synth 12/72: breathing band {b:?}");
+    println!("synth 12/72: heart band     {h:?}");
+    assert!((f64::from(b.bpm_x10) / 10.0 - 12.0).abs() <= 0.5, "{b:?}");
+    assert!(b.accepted, "{b:?}");
+    // Within ten percent, and NOT accepted: the flag is the claim.
+    assert!((f64::from(h.bpm_x10) / 10.0 - 72.0).abs() <= 8.0, "{h:?}");
+    assert!(
+        !h.accepted,
+        "a heart rate at this SNR must be flagged: {h:?}"
+    );
+    // Measured: breath 0.056 / 0.0020; heart 0.616 / 0.0013 -- the heart's
+    // parabola sits on a low, flat peak where one lag of rounding is a BPM.
+    compare_vitals(
+        "synth_vitals_12_72bpm/breath",
+        &breath,
+        &golden_vitals("synth_vitals_12_72bpm", ".breath.txt"),
+        Some(0.2),
+        0.02,
+    );
+    compare_vitals(
+        "synth_vitals_12_72bpm/heart",
+        &heart,
+        &golden_vitals("synth_vitals_12_72bpm", ".heart.txt"),
+        Some(1.5),
+        0.02,
+    );
+}
+
+/// The one property the real captures can hold the estimator to without a
+/// label: **an empty room must not grow a breathing rate.** Every estimate
+/// over the Cuenca empty room stays below the accept floor. The walk is
+/// printed, not asserted -- a walking person's rhythm is their gait, and
+/// what the breathing band makes of it is a number to look at, not a claim.
+#[test]
+fn an_empty_room_grows_no_breathing_rate() {
+    let cfg = VitalsConfig::breathing(50);
+    let empty = run_vitals(&fixture("c6_empty_room_iter1.csv"), cfg);
+    let walk = run_vitals(&fixture("c6_walking_person_iter1.csv"), cfg);
+    let max_conf = |v: &[Vitals]| v.iter().map(|e| e.confidence).max().unwrap_or(0);
+    println!(
+        "empty room: {} estimates, max confidence {} ‰, accepted {}",
+        empty.len(),
+        max_conf(&empty),
+        empty.iter().filter(|e| e.accepted).count()
+    );
+    println!(
+        "walking   : {} estimates, max confidence {} ‰, accepted {}, rates seen {:?}",
+        walk.len(),
+        max_conf(&walk),
+        walk.iter().filter(|e| e.accepted).count(),
+        walk.iter().map(|e| e.bpm_x10).collect::<Vec<_>>()
+    );
+    assert!(!empty.is_empty());
+    // The walk is a person moving: its first peak is the gait, faster than
+    // any breath, so every estimate is flagged even where it is confident.
+    assert_eq!(
+        walk.iter().filter(|e| e.accepted).count(),
+        0,
+        "a walker accepted as breathing"
+    );
+    assert_eq!(
+        empty.iter().filter(|e| e.accepted).count(),
+        0,
+        "the empty room grew a breathing rate: max confidence {} ‰ against an accept floor of {} ‰",
+        max_conf(&empty),
+        cfg.accept_permille
+    );
+    // No rhythm, so no rate to compare; confidence measured at 0.0090.
+    compare_vitals(
+        "c6_empty_room_iter1",
+        &empty,
+        &golden_vitals("c6_empty_room_iter1", ".breath.txt"),
+        None,
+        0.03,
+    );
 }
 
 #[test]
