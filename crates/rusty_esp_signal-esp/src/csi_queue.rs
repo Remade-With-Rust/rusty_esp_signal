@@ -22,6 +22,7 @@
 
 use rusty_esp_signal_core::esp_core::Micros;
 use rusty_esp_signal_core::radar::csi::{CsiFrame, Features, Layout};
+use rusty_esp_signal_core::radar::csi_stream::{self, MAX_IQ, Sample};
 
 /// One reading the sketch drains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +36,29 @@ pub struct Frame {
     /// Amplitude features for the configured layout, computed where the raw
     /// buffer lives because it does not outlive the callback.
     pub features: Features,
+    /// The layout, as `csi_stream`'s tag (0 for one it does not name).
+    pub layout: u8,
+    /// Bytes of `iq` that are the frame.
+    pub len: u8,
+    /// The raw I/Q, as the chip delivered them (after the first-word
+    /// blanking): what the W5 stream sends, because a subscriber wants what
+    /// was measured, not what the device summarised.
+    pub iq: [i8; MAX_IQ],
+}
+
+impl Frame {
+    /// The frame as one W5 [`Sample`].
+    #[must_use]
+    pub fn sample(&self) -> Sample {
+        Sample {
+            at: self.at,
+            rssi: self.rssi,
+            channel: self.channel,
+            layout: self.layout,
+            len: self.len,
+            iq: self.iq,
+        }
+    }
 }
 
 /// Why a buffer produced no frame.
@@ -77,11 +101,18 @@ pub fn ingest(
         iq,
     };
     let features = raw.features(layout).map_err(|_| Short::Layout)?;
+    let len = iq.len().min(MAX_IQ);
+    let mut copy = [0i8; MAX_IQ];
+    copy[..len].copy_from_slice(&iq[..len]);
     Ok(Frame {
         at,
         rssi,
         channel,
         features,
+        layout: csi_stream::tag_of(layout).unwrap_or(csi_stream::TAG_UNKNOWN),
+        // `len <= MAX_IQ = 128` fits.
+        len: u8::try_from(len).unwrap_or(u8::MAX),
+        iq: copy,
     })
 }
 
@@ -200,6 +231,24 @@ mod tests {
             f.features.amplitudes().iter().all(|&a| a == 40),
             "{:?}",
             f.features.amplitudes()
+        );
+    }
+
+    #[test]
+    fn a_frame_is_one_sample_and_the_receiver_gets_the_same_features() {
+        let f = frame(9);
+        assert_eq!(f.layout, csi_stream::TAG_LLTF_20MHZ);
+        assert_eq!(usize::from(f.len), MAX_IQ);
+        let s = f.sample();
+        let mut wire = [0u8; csi_stream::MAX_ENCODED_LEN];
+        let n = s.encode(&mut wire).unwrap();
+        let back = Sample::decode(&wire[..n]).unwrap();
+        assert_eq!(back.at, Micros(9));
+        assert_eq!((back.rssi, back.channel), (-50, 6));
+        assert_eq!(
+            back.features().unwrap(),
+            f.features,
+            "the device's features, recomputed"
         );
     }
 
