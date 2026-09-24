@@ -208,8 +208,19 @@ fn feed_slice_agrees_with_feed_on_every_split() {
             assert!(used > 0, "feed_slice must always consume at chunk={chunk}");
             at += used;
         }
-        assert_eq!(got, by_byte, "feed_slice disagreed with feed at chunk={chunk}");
-        assert_eq!(p.stats().frames, one.stats().frames, "frame count, chunk={chunk}");
-        assert_eq!(p.stats().resyncs, one.stats().resyncs, "resyncs, chunk={chunk}");
+        assert_eq!(
+            got, by_byte,
+            "feed_slice disagreed with feed at chunk={chunk}"
+        );
+        assert_eq!(
+            p.stats().frames,
+            one.stats().frames,
+            "frame count, chunk={chunk}"
+        );
+        assert_eq!(
+            p.stats().resyncs,
+            one.stats().resyncs,
+            "resyncs, chunk={chunk}"
+        );
     }
 }

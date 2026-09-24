@@ -31,6 +31,21 @@
 //! defaults come from the recorded captures the ledger names, and a product
 //! calibrates them with [`PresenceDetector::wander`] in an empty room.
 //!
+//! # Normalise the amplitude by its frame's mean
+//!
+//! A receiver's gain is not the room. Three two-second events in the
+//! ledger's empty-room capture read 74–85 ‰ of wander and were flagged as
+//! presence; the phase detector, which cannot see gain, read nothing at
+//! all. Dividing every subcarrier's amplitude by that frame's mean cancels
+//! a common gain step exactly and leaves a change of *shape* -- which is
+//! what a body does -- untouched. Through [`Features::normalised`] the same
+//! capture reads **0** present frames and a ceiling of 21 ‰, and the walk
+//! keeps 74 % of its frames. That is the trade this module now recommends:
+//! [`Config::normalised_default`] carries the thresholds re-derived for it.
+//!
+//! The phase half of the same entry -- sanitised per frame, its circular
+//! variance over the window -- is [`super::phase`], on the same raw buffer.
+//! Both read a gain step as nothing; [`Verdict::either`] fuses them.
 //! Breathing detection (0.2–0.5 Hz on the amplitude time series) is the S2
 //! item and is not here yet.
 
@@ -197,6 +212,62 @@ impl Features {
     pub fn amplitudes(&self) -> &[u16] {
         &self.amplitude[..self.count as usize]
     }
+
+    /// The same features with every amplitude divided by this frame's
+    /// mean, scaled so the mean lands near 1 024.
+    ///
+    /// A receiver's gain multiplies every subcarrier by the same factor,
+    /// and so does a change in transmit power or in the frame's own
+    /// strength; a body in the room changes the *shape* across the
+    /// subcarriers. Dividing by the frame's mean cancels the first exactly
+    /// and keeps the second. On the ledger's empty-room capture it removes
+    /// three two-second gain events that read as presence, and it costs the
+    /// walking capture twelve points of its present frames -- the trade
+    /// [`Config::normalised_default`] is derived for.
+    ///
+    /// `mean` and `variance` are recomputed over the normalised amplitudes,
+    /// so the variance stays the gain-free room fingerprint it is meant to
+    /// be. A frame whose mean is zero is returned unchanged.
+    #[must_use]
+    pub fn normalised(&self) -> Features {
+        let n = usize::from(self.count).min(MAX_SUBCARRIERS);
+        // Divide by the exact SUM, not the stored mean. `mean` is an
+        // integer, floored: a gain step of ×3 on a sum that is not a multiple
+        // of `n` floors to something other than 3× the old mean, and the
+        // ratios then differ by the rounding -- about 1 % at these
+        // amplitudes, which is a real wander the room did not make. With
+        // `a · 1024 · n / Σa` a common factor cancels exactly.
+        let total: u32 = self.amplitude[..n].iter().map(|&a| u32::from(a)).sum();
+        if n == 0 || total == 0 {
+            return *self;
+        }
+        let mut out = Features {
+            amplitude: [0; MAX_SUBCARRIERS],
+            count: self.count,
+            mean: 0,
+            variance: 0,
+        };
+        let mut sum: u32 = 0;
+        let n32 = n as u32;
+        for (dst, &a) in out.amplitude[..n].iter_mut().zip(&self.amplitude[..n]) {
+            // a ≤ 724 (see `features`) and n ≤ 64, so a · 1024 · n ≤
+            // 47 448 064: u32 with room. The result is a ratio to the mean,
+            // clipped to u16 -- a frame where one subcarrier carries 64× the
+            // mean is not a frame this detector should be reasoning from.
+            let v = (u32::from(a) * 1024 * n32 / total).min(u32::from(u16::MAX)) as u16;
+            *dst = v;
+            sum += u32::from(v);
+        }
+        out.mean = (sum / n32) as u16;
+        let mean = i32::from(out.mean);
+        let mut ss: u64 = 0;
+        for &a in &out.amplitude[..n] {
+            let d = i64::from(i32::from(a) - mean).unsigned_abs();
+            ss += d * d;
+        }
+        out.variance = (ss / u64::from(n32)).min(u64::from(u32::MAX)) as u32;
+        out
+    }
 }
 
 /// What the detector concluded.
@@ -233,6 +304,28 @@ impl Verdict {
             _ => 0,
         }
     }
+
+    /// One verdict from two detectors: present if either is, with the
+    /// larger motion; warming if either is still filling; else absent.
+    ///
+    /// The fusion of a normalised-amplitude detector and a phase detector.
+    /// It is free on the ledger's empty room -- both read zero present
+    /// frames, so their union does too -- and it inherits the more
+    /// sensitive detector's walk. The two `motion` levels are on different
+    /// scales (permille of amplitude wander, tens of ppm of phase wander);
+    /// the larger is reported, which is a level to show and not a number
+    /// to add.
+    #[must_use]
+    pub const fn either(self, other: Verdict) -> Verdict {
+        match (self, other) {
+            (Verdict::Present { motion: a }, Verdict::Present { motion: b }) => Verdict::Present {
+                motion: if a > b { a } else { b },
+            },
+            (p @ Verdict::Present { .. }, _) | (_, p @ Verdict::Present { .. }) => p,
+            (Verdict::Warming, _) | (_, Verdict::Warming) => Verdict::Warming,
+            (Verdict::Absent, Verdict::Absent) => Verdict::Absent,
+        }
+    }
 }
 
 /// Detector thresholds.
@@ -247,8 +340,29 @@ pub struct Config {
     pub hold: Micros,
 }
 
+impl Config {
+    /// Thresholds for features passed through [`Features::normalised`].
+    ///
+    /// The normalised wander sits lower -- the gain jitter that was part of
+    /// the raw floor is gone -- so the defaults for raw features are wrong
+    /// for it: `on` 42 ‰ reads a walk present less than half the time. By
+    /// the same rule as [`Config::default`], on the same captures: the
+    /// normalised empty room's ceiling is 21 ‰ over its whole minute, so
+    /// `on` is 1.5 × that and `off` sits just above it. The walk reads
+    /// 74 % present at these, the empty room 0 % (`docs/LEDGER.md`).
+    #[must_use]
+    pub const fn normalised_default() -> Self {
+        Config {
+            on_permille: 32,
+            off_permille: 23,
+            hold: Micros::from_secs(3),
+        }
+    }
+}
+
 impl Default for Config {
-    /// `on` 42 ‰, `off` 32 ‰, hold 3 s.
+    /// `on` 42 ‰, `off` 32 ‰, hold 3 s, for RAW features. For features
+    /// through [`Features::normalised`] see [`Config::normalised_default`].
     ///
     /// Derived on the ledger's ESP32-C6 captures with a one-second window:
     /// an empty room never exceeds 28 ‰ of wander over a full minute, so
@@ -489,7 +603,19 @@ impl<const W: usize> PresenceDetector<W> {
             // 1/W resolution: W²·var = W·Σa² − (Σa)². Then std with four
             // fractional bits: isqrt(256 · W²·var) / W = 16 · std.
             let var_w2 = (w * sumsq).saturating_sub(sum * sum);
-            let std16 = u64::from(isqrt((256 * var_w2).min(u64::from(u32::MAX)) as u32)) / w;
+            // The u32 root when it fits, which for raw amplitudes (≤ 724,
+            // a window std of a few units) it always does on the ledger's
+            // captures -- this is the path the ELF census measured. It stops
+            // fitting when the window's std passes ~82 units, which
+            // gain-normalised amplitudes (a mean near 1 024) reach during a
+            // walk: saturating there read the walk 40 ‰ under the float
+            // replica at its peaks. A u64 root takes the rest, exactly.
+            let scaled = 256 * var_w2;
+            let std16 = if scaled <= u64::from(u32::MAX) {
+                u64::from(isqrt(scaled as u32)) / w
+            } else {
+                isqrt64(scaled) / w
+            };
             // `std16 ≤ 65 535` (an isqrt of a u32, then divided) and
             // `mean ≤ 65 535` (a sum of u16 over W, divided by W), so
             // `std16 · 1000 ≤ 65 535 000` and `mean · 16 ≤ 1 048 560` -- both
@@ -505,6 +631,33 @@ impl<const W: usize> PresenceDetector<W> {
 /// Integer square root, `floor(sqrt(v))` — `rusty_esp_dsp`'s (moved there in
 /// D0, 2026-09-02), at the path this module always had.
 pub use rusty_esp_dsp::int::isqrt;
+
+/// `floor(sqrt(v))` for a `u64`, digit by digit.
+///
+/// Only reached when `256 · W² · var` leaves `u32`, i.e. a window whose
+/// standard deviation is past ~82 amplitude units -- normalised features
+/// during motion. Thirty-two iterations of shifts and compares, no
+/// multiply; on the chip it runs on the few subcarriers in a frame that
+/// are moving that much, and never on a still room.
+#[must_use]
+pub const fn isqrt64(v: u64) -> u64 {
+    let mut rem = v;
+    let mut root: u64 = 0;
+    let mut bit: u64 = 1 << 62;
+    while bit > rem {
+        bit >>= 2;
+    }
+    while bit != 0 {
+        if rem >= root + bit {
+            rem -= root + bit;
+            root = (root >> 1) + bit;
+        } else {
+            root >>= 1;
+        }
+        bit >>= 2;
+    }
+    root
+}
 
 #[cfg(test)]
 mod carried_sums {
@@ -741,6 +894,65 @@ mod tests {
         }
         assert_eq!(first_absent, Some(16));
         assert_eq!(det.frames(), 8 + 8 + 21);
+    }
+
+    /// A common gain step is invisible after normalisation; a change of
+    /// shape is not. The receiver-gain events in the ledger's empty room,
+    /// as a unit test.
+    #[test]
+    fn normalising_cancels_a_gain_step_and_keeps_a_shape_change() {
+        let base: Vec<u16> = (0..56u16).map(|k| 80 + (k * 7) % 23).collect();
+        let feats = |amps: &[u16]| {
+            let mut f = Features {
+                amplitude: [0; MAX_SUBCARRIERS],
+                count: amps.len() as u8,
+                mean: 0,
+                variance: 0,
+            };
+            f.amplitude[..amps.len()].copy_from_slice(amps);
+            f.mean = (amps.iter().map(|&a| u32::from(a)).sum::<u32>() / amps.len() as u32) as u16;
+            f
+        };
+        let a = feats(&base);
+        // Every subcarrier × 3: a gain step.
+        let tripled: Vec<u16> = base.iter().map(|&x| x * 3).collect();
+        let b = feats(&tripled);
+        assert_ne!(a.amplitudes(), b.amplitudes(), "the raw frames differ");
+        let (na, nb) = (a.normalised(), b.normalised());
+        // Integer division leaves a ±1 in 1 024 between the two.
+        for (x, y) in na.amplitudes().iter().zip(nb.amplitudes()) {
+            assert!(i32::from(*x).abs_diff(i32::from(*y)) <= 1, "{x} vs {y}");
+        }
+        assert!(na.mean.abs_diff(nb.mean) <= 1, "{} vs {}", na.mean, nb.mean);
+        // One subcarrier doubled: a shape change, which survives.
+        let mut shaped = base.clone();
+        shaped[20] *= 2;
+        let c = feats(&shaped).normalised();
+        assert!(
+            c.amplitude[20] > na.amplitude[20] * 3 / 2,
+            "{} vs {}",
+            c.amplitude[20],
+            na.amplitude[20]
+        );
+        // And the variance is the gain-free fingerprint: same for a and b.
+        assert!(na.variance.abs_diff(nb.variance) <= na.variance / 50 + 2);
+        // A zero-mean frame comes back unchanged rather than dividing by it.
+        let z = feats(&[0u16; 4]);
+        assert_eq!(z.normalised(), z);
+    }
+
+    #[test]
+    fn either_fuses_two_verdicts() {
+        use Verdict::{Absent, Present, Warming};
+        assert_eq!(Absent.either(Absent), Absent);
+        assert_eq!(Warming.either(Absent), Warming);
+        assert_eq!(Absent.either(Warming), Warming);
+        assert_eq!(Present { motion: 7 }.either(Absent), Present { motion: 7 });
+        assert_eq!(Warming.either(Present { motion: 7 }), Present { motion: 7 });
+        assert_eq!(
+            Present { motion: 7 }.either(Present { motion: 9 }),
+            Present { motion: 9 }
+        );
     }
 
     #[test]
