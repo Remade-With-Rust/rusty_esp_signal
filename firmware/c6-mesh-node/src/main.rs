@@ -5,7 +5,9 @@
 //!
 //! What runs: the node brings up Wi-Fi as a station, takes the ESP-NOW halves,
 //! and runs the mID-authenticated link ([`EspNowLink`]) as the responder,
-//! accepting a handshake from an adopted peer and then echoing sealed frames.
+//! answering the handshake of ONE peer -- the DID in `JANUS_LINK_PEER` at
+//! build time, the bridge's -- and then echoing sealed frames. Without it,
+//! every hello is refused and the boot line says so.
 //! The device key comes from the hardware TRNG through the core's `Rng` seam.
 //!
 //! What is compiled in and ready but not driven without a full room and peers:
@@ -26,6 +28,7 @@ use esp_hal::time::Instant;
 use esp_hal::timer::timg::TimerGroup;
 use esp_println::println;
 use rusty_esp_core::Micros;
+use rusty_esp_mid_core::did::Did;
 use rusty_esp_mid_core::key::DeviceKey;
 use rusty_esp_signal_core::radar::csi::{Config as CsiConfig, PresenceDetector};
 use rusty_esp_signal_core::wifi::{PolicyConfig, StationPolicy};
@@ -94,16 +97,31 @@ async fn main(_spawner: embassy_executor::Spawner) {
         rusty_esp_signal_esp::hal::link::broadcast(),
     );
 
-    println!("c6-mesh-node up; awaiting an adopted peer's handshake over ESP-NOW");
+    // The one peer this node answers: the bridge's DID, given at build time
+    // (`JANUS_LINK_PEER=did:mata:…`; the bridge prints its own at start).
+    // Track B has no NVS backend yet, so there is no provisioning record to
+    // read it from, and the build carries it until there is. With none, every
+    // hello is refused: a node that would answer anyone is not one an owner
+    // adopted, and the roster's whole point is that it is the owner's.
+    let peer: Option<Did> = option_env!("JANUS_LINK_PEER").and_then(|s| Did::parse(s).ok());
+    match peer {
+        Some(_) => {
+            println!("c6-mesh-node up; answering the peer named by JANUS_LINK_PEER over ESP-NOW")
+        }
+        None => println!(
+            "c6-mesh-node up; JANUS_LINK_PEER unset or not a did:mata: every handshake will be refused"
+        ),
+    }
 
-    // Run as the responder: accept a handshake from any peer for this demo
-    // (a shipping node checks the DID against its owner pin / adoption roster).
     match link
-        .handshake_responder(&me, &mut rng, |_peer| true, now())
+        .handshake_responder(&me, &mut rng, |did| peer.as_ref() == Some(did), now())
         .await
     {
         Ok(mut session) => {
-            println!("session {} established with an authenticated peer", session.id());
+            println!(
+                "session {} established with an authenticated peer",
+                session.id()
+            );
             let mut buf = [0u8; 256];
             loop {
                 match link.recv(&mut session, &mut buf).await {

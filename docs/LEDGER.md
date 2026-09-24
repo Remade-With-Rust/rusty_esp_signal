@@ -205,3 +205,35 @@ response because a 128-bit service UUID and a name do not both fit in a
 31-byte advertisement, and the GATT attributes are added one at a time so
 `status`'s CCCD lands behind `status` rather than behind `scan`. Rows in
 espino's ledger. The S3 kill test still waits for the XIAO.
+
+---
+
+## The link answers a roster, not anyone — 2026-09-23
+
+`rusty_esp_iroh-bridge`'s handshake was `|_| true`: any DID with a valid
+key got an accept and a session. The RuView plan's W5 named it as the
+thing to fix before sensing data rides the link, and the S1 runbook's
+"reject unadopted" arm already assumed it. Now:
+
+- **The bridge** (`BridgeCore::allow` / `disallow` / `roster`) answers the
+  DIDs on its roster and no others. An empty roster refuses everyone; it
+  never admits everyone. A refusal happens where `Handshake::respond`
+  asks, before any key material is derived; it is counted
+  (`BridgeCounters::denied`), reported (`Event::Refused`, "not on the
+  roster") and answered with silence, so a refused peer learns nothing.
+  The example takes `--allow did:mata:…`, repeatable.
+- **The node** (`firmware/c6-mesh-node`, and espino's generated Track B
+  sketch) answers ONE peer, the DID in `JANUS_LINK_PEER` at build time
+  (the bridge prints its own at start). Track B has no NVS backend yet,
+  so no provisioning record can carry it; with none set, every hello is
+  refused and the boot line says so.
+
+The acceptance seam (`allow: impl FnOnce(&Did) -> bool`) was already the
+right shape; what was missing was anything behind it. A `Did`-level
+roster is what an owner-signed adoption will install when it lands; the
+build-time DID is its stand-in on Track B and says so in the sketch.
+
+Proven on the host: the bridge test links its three neighbours and
+refuses a fourth (a valid key, a valid hello, no answer: `denied == 1`,
+not listed, the initiator's `link` times out). Nothing has run on a
+board; the S1 runbook is where it shows on silicon.
