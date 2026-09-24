@@ -41,6 +41,12 @@ esp-idf = ["std", "dep:esp-idf-svc", "dep:log"]
 # `bt` module out unless the firmware's sdkconfig sets CONFIG_BT_ENABLED: a
 # radar-only Track A firmware has no Bluetooth and must not ask for this.
 esp-idf-ble = ["esp-idf", "dep:enumset"]
+# Wi-Fi CSI on ESP-IDF (`idf::csi`): the Track A twin of `hal::csi`, so a
+# camera or mesh cell can watch the room on the same board. Its own feature
+# because it registers a C callback on the Wi-Fi task through raw ESP-IDF
+# entry points -- the crate's one `allow(unsafe_code)` seam -- and a firmware
+# with no Wi-Fi sensing has no reason to carry it.
+esp-idf-csi = ["esp-idf"]
 
 [dependencies]
 rusty_esp_signal-core = { workspace = true }

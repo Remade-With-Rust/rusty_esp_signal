@@ -8,8 +8,13 @@
 //! `CONFIG_BT_ENABLED`, so it sits behind `esp-idf-ble`. The second is the
 //! LD2410 radar, whose reader was bare metal only: a device that also wants
 //! the mesh is on this track, because iroh needs `std`, and it needs nothing
-//! of the IDF beyond a UART.
+//! of the IDF beyond a UART. The third is Wi-Fi CSI ([`csi`], behind
+//! `esp-idf-csi`): until it existed a device that watched the room could not
+//! also show it or reach the owner over iroh, because every camera cell and
+//! the mesh are on this track and CSI was esp-radio only.
 
 #[cfg(feature = "esp-idf-ble")]
 pub mod ble;
+#[cfg(feature = "esp-idf-csi")]
+pub mod csi;
 pub mod ld2410;
