@@ -412,3 +412,42 @@ empty-room floor (47 ‰ against an accept floor of 400).
 
 Gates: 7 new unit tests, 3 new capture tests, clippy `-D warnings`, fmt,
 the bare-metal core-only check — green.
+
+---
+
+## W3 of the RuView plan: the payload — 2026-09-23
+
+`radar::presence::Presence` at **version 2**: 18 bytes become 28 —
+breathing and heart rate in tenths per minute, each with its confidence in
+permille, and the room's fingerprint distance. The path it rides was traced
+before it was widened: a sketch encodes the record, the facade's
+`mesh::push_telemetry` copies the bytes at their own length into the
+`"tlm "` codec on `janus/media/1`, and a home computer decodes them. Nothing
+on the way assumes a length; every consumer sizes by `ENCODED_LEN`. The BLE
+`presence` characteristic carries a two-byte summary and is untouched.
+
+**A version 1 record still decodes**, its new fields zero — a device flashed
+before this reads on a home computer built after it. A version nobody knows
+is refused.
+
+**A rate is on the wire only when it was accepted.** A flagged estimate —
+the heartbeat at seven percent, a walker's gait through the breathing band
+— contributes its confidence and a rate of zero. A consumer that reads the
+rate and ignores the confidence still cannot be misled; the confidence is
+there for the one that wants to know the sensor tried.
+
+`radar::fingerprint::Baseline`: calibrated from normalised frames in the
+room's reference state, it reports the permille departure of a frame's
+across-subcarrier variance from the mean it learned. One number, not a
+verdict; what 200 ‰ means is the application's to decide per room. A gain
+step during calibration does not move it, and a change of shape reads as a
+distance (unit tests).
+
+Not done here, and said so: the facade (`rusty_esp_arduino`) takes this
+crate by git URL and re-exports `ENCODED_LEN` symbolically — it follows on
+its next pin, with no code change. Adding public fields to `Presence` is a
+minor bump for a 0.x crate (0.3.0), which is the maintainer's call at
+release, not made in this branch.
+
+Gates: 3 new tests on the record, 3 on the fingerprint; clippy
+`-D warnings`, fmt, the bare-metal core-only check — green.
