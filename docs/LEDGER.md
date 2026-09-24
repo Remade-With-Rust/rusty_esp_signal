@@ -602,3 +602,37 @@ Nothing has run on a board. W5 is judged by packets counted end to end
 the way C2 was; on the host the bridge test counts three through the
 bridge to a subscriber, decoded, none lost — the LAN is where it is
 judged, and the home computer stays on the iroh gap.
+
+---
+
+## W7 of the RuView plan: a fall, as a shape in the wander — 2026-09-24
+
+`radar::fall::FallDetector`, `no_std`, integer, a few comparisons a frame
+over the wander `PresenceDetector` already computes: moving (with a
+three-second grace, because a walker is not above threshold between every
+step), then a **burst** above anything walking does, then **stillness**
+that begins within three seconds and lasts ten. It says *suspected*: an
+empty room and a person lying still read the same amplitude, and only a
+breath (`radar::vitals`) separates them, so the caller asks.
+
+### Evidence (`rusty_esp_sense bench-fall`, the Cuenca captures)
+
+No labelled ESP32 fall recording under a usable licence was found (the
+candidates carried no licence, or their "raw" files were synthetic). So:
+
+| what | result |
+|---|---|
+| tuning half: highest one-second wander | walking 178 ‰, walking + traffic 138, traffic 35, empty 28 |
+| defaults set from it | burst 232 ‰ (1.3 × 178), still 30 ‰ (above the empty room's 28) |
+| test half, 0.84 h of real channel state, no falls in it | **0 false events** — at 95 % that bounds the rate below ~3.6 / h, no tighter |
+| margin | the test half raises its first false event only at 114 ‰ |
+| splices, SYNTHETIC: a capture's most active 10 s, a 0.5 s burst, 20 s of an empty room | 10 / 10 raised |
+| splices without a burst (someone leaving) | 0 / 10 raised |
+
+Two fixes the bench forced, both with regression tests: motion first ended
+on any dip below "still" (1 splice in 10 caught), and "still" first reused
+the presence `off` of 23 ‰, below the tuning half's empty-room ceiling.
+The splices first took each walking capture's first 10 s, one of which
+had no frame of motion in it; they take its most active 10 s now.
+
+Not claimed: any detection rate on a real fall.

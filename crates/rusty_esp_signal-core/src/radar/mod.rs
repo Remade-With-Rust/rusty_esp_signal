@@ -11,6 +11,7 @@
 
 pub mod csi;
 pub mod csi_stream;
+pub mod fall;
 pub mod fingerprint;
 pub mod ld2410;
 pub mod phase;
