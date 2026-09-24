@@ -565,3 +565,40 @@ C9 regenerated and rebuilt under ESP-IDF v5.5.1 (`xtensa-esp32s3-espidf`, `--rel
 Nothing has run on a board. W4 is judged by CSI frames/s on the XIAO with
 the MJPEG page streaming; the C9 sketch prints that number once a minute
 now, and this ring is what makes the number the radio's, not the loop's.
+
+---
+
+## W5 of the RuView plan: one CSI frame on the wire, raw I/Q — 2026-09-23
+
+`radar::csi_stream::Sample` (PR #9, on #7): the record a device sends per
+frame and a subscriber reads. **Raw I/Q, not features.** Features are what
+the on-device detector wants; a subscriber wants everything the radio
+delivered — the phase half needs I/Q, a recording in this ledger's own
+fixture format is I/Q, and a model trained later wants what was measured,
+not what one release summarised. 141 bytes at 64 entries; 7 KB/s at
+50 Hz, which ESP-NOW's 227-byte sealed payloads, the bridge and the LAN
+carry without noticing.
+
+The header names the buffer's layout by tag, so a receiver that knows the
+tag computes the same features the device did (`Sample::features`, and a
+test says so); one that does not still has the bytes. Decode takes the
+whole buffer or refuses it — a version nobody knows, a short header, a
+`len` over 128 or one the bytes do not match — never a guess.
+`csi_queue::Frame` carries the raw I/Q and the tag beside the features;
+`Frame::sample()` is the frame as one record (the ring entry is ~280 B,
+sixteen of them 4.5 KiB).
+
+The other halves: the facade's `mesh::push_csi` (rusty_esp_arduino #2),
+the bridge's `MSG_CSI` → `nbrc` with the host's decoder and CSV recorder
+(rusty_esp_iroh #4), and espino's `csi-stream` package with cell C10.
+
+### The gate
+
+C10 generated and built under ESP-IDF v5.5.1 (`xtensa-esp32s3-espidf`, `--release`) 2026-09-23: ELF 10,062,356 B (a mesh cell: iroh on the chip), app 4,700,800 B in the factory slot (74.7 %), image 8,376,320 B, zero warnings, 2 m 52 s -- the first compile of `push_csi`, `Frame::sample` and the record-with-vitals path on a device. The first attempt failed in rusty_esp_iroh-host: the sibling patch named `rusty_esp_signal-esp` but not `-core`, so the mesh built against git main's -core; every std project patches -core now, and the C2 test that said otherwise was wrong.
+
+### Not claimed
+
+Nothing has run on a board. W5 is judged by packets counted end to end
+the way C2 was; on the host the bridge test counts three through the
+bridge to a subscriber, decoded, none lost — the LAN is where it is
+judged, and the home computer stays on the iroh gap.

@@ -10,6 +10,7 @@
 //! the transport learning which sensor produced it.
 
 pub mod csi;
+pub mod csi_stream;
 pub mod fingerprint;
 pub mod ld2410;
 pub mod phase;
