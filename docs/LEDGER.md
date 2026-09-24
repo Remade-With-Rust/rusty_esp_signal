@@ -205,3 +205,98 @@ response because a 128-bit service UUID and a name do not both fit in a
 31-byte advertisement, and the GATT attributes are added one at a time so
 `status`'s CCCD lands behind `status` rather than behind `scan`. Rows in
 espino's ledger. The S3 kill test still waits for the XIAO.
+
+---
+
+## W1 of the RuView plan: the phase half of CSI — 2026-09-23
+
+`espino/docs/plans/ruview-function.md` W1. The amplitude detector kept the
+magnitude of each CSI entry and threw the angle away; `radar::phase` keeps
+it, on the same raw buffer, in fixed point. Additive — this crate is
+published and `Features` is not `#[non_exhaustive]`, so nothing existing
+changed shape.
+
+### What it is
+
+- **Binary radians.** Every angle is an `i16` with 65 536 to the turn, so
+  `wrapping_sub` between neighbouring subcarriers IS the shortest arc — the
+  unwrap step of phase sanitisation, for free, no `2π` anywhere.
+- `atan2_brad`: one octant from a 257-entry table, the rest by symmetry.
+  Worst error over every (x, y) an `i8` pair can hold: **40.4 brads,
+  0.222°** (`atan2_brad_is_within_a_table_step_of_float_everywhere`).
+- `CsiFrame::phases`: raw angles, unwrapped across the subcarriers, then
+  the least-squares line through them removed — the per-frame carrier
+  offset and sampling-time slope, the two artefacts that have nothing to
+  do with the room. Q16 in `i64`, once per frame.
+- `PhaseDetector<W>`: the amplitude detector's shape — a ring, sums
+  carried by the one frame that changes, the same hysteresis — with
+  **circular variance** as the statistic (`1 − |mean unit vector|`, a
+  257-entry quarter-wave sine at 2^14), because the residual is still an
+  angle. Reported in **ppm**.
+
+### Two things the fixed point taught
+
+- **The zeroed ring is `W` copies of angle 0, whose unit vector is
+  `(UNIT, 0)`.** Sums started at zero subtracted a phantom on every push
+  into a never-filled slot, and the same frame pushed `W` times read
+  883 ‰ of variance instead of none. The amplitude detector has no such
+  trap — an amplitude of 0 contributes 0 — which is exactly why this one
+  had it. The sums start at `(W · UNIT, 0)`.
+- **Every floor landed on the same side.** Truncating the mean vector's
+  components and its square root read a constant **+0.061 ‰** above the
+  float replica on both captures — exactly one unit of 2^14, no scatter.
+  Rounded division and a double-resolution `isqrt` removed it.
+
+Against the float replica (`tools/csi_phase_oracle.py`: `atan2`, unwrap,
+least squares, `cmath` unit vectors — none of the integer tricks), frame by
+frame (`fixed_point_phase_wander_tracks_the_float_oracle`):
+
+| fixture | frames | mean (fixed − float) | max \|fixed − float\| |
+|---|---|---|---|
+| `c6_empty_room_iter1` | 2 951 | −0.001 ‰ | 0.013 ‰ |
+| `c6_walking_person_iter1` | 2 951 | −0.002 ‰ | 0.015 ‰ |
+
+The pipeline's own noise floor: a perfectly still channel reads up to ~60
+ppm from the table's unit vectors being unit length to ±1 in 16 384. A
+fifth of an empty room's real reading.
+
+### The judgement — both detectors, same frames, same window, same rule
+
+Thresholds by the amplitude's rule: `on` at 1.5 × the empty room's
+ceiling (254 → **380 ppm**), `off` just above it (**260 ppm**), hold 3 s.
+
+| detector | capture | present | p50 | p95 | max |
+|---|---|---|---|---|---|
+| amplitude (‰) | empty | **514** / 2 951 (17.4 %) | 25 | 73 | 85 |
+| amplitude (‰) | walking | **2 540** / 2 951 (86.1 %) | 44 | 76 | 120 |
+| phase (ppm) | empty | **0** / 2 951 | 184 | 208 | 254 |
+| phase (ppm) | walking | **1 139** / 2 951 (38.6 %) | 250 | 660 | 1 401 |
+
+**Phase wins the empty room outright, amplitude wins the walk.** Phase does
+not see the three amplitude "transients" in the empty room's first 17 s at
+all — consistent with those being receiver-gain events, which move
+amplitude and not phase; a hypothesis, stated as one. On the walk the
+phase's median barely clears its threshold while its 95th percentile and
+maximum separate **3.2× and 5.5×** (amplitude: 1.04× and 1.4×) — it sees
+the crossings, not the pauses.
+
+Fused frame by frame over the same judged frames:
+
+| fusion | empty present | walking present |
+|---|---|---|
+| either | 514 / 2 951 | 2565 / 2 951 |
+| both | 0 / 2 951 | 1114 / 2 951 |
+
+"Either" keeps amplitude's walk; "both" keeps phase's empty room. Neither
+is free. That trade is **W1b** in the plan, and it is not made here.
+
+### What is not claimed
+
+The held-out Cuenca pair is not on this machine
+(`JANUS_CSI_HELDOUT_DIR` unset); the harness runs it the day it is. No
+accuracy is stated: the labels are per file, and a per-frame labelled
+recording of our own is W0's hardware step.
+
+Gates: 7 new unit tests in `radar::phase`, 2 new capture-oracle tests,
+clippy `--all-targets -D warnings`, `cargo fmt --check`, and the
+`riscv32imac-unknown-none-elf` core-only check — all green.

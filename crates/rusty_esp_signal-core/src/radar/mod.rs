@@ -7,4 +7,5 @@
 
 pub mod csi;
 pub mod ld2410;
+pub mod phase;
 pub mod presence;

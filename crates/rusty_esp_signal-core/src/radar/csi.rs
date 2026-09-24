@@ -31,6 +31,8 @@
 //! defaults come from the recorded captures the ledger names, and a product
 //! calibrates them with [`PresenceDetector::wander`] in an empty room.
 //!
+//! The phase half of the same entry -- sanitised per frame, its circular
+//! variance over the window -- is [`super::phase`], on the same raw buffer.
 //! Breathing detection (0.2–0.5 Hz on the amplitude time series) is the S2
 //! item and is not here yet.
 
