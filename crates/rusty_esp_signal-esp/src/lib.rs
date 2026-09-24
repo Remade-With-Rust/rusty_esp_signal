@@ -26,7 +26,9 @@
 //!   keys and session ephemerals.
 //! - [`hal::link`] — the ESP-NOW datagram transport under the mID-authenticated
 //!   `link::Session`, plus the handshake driven over it.
-//! - [`hal::csi`] — a Wi-Fi CSI frame borrowed into `radar::csi::CsiFrame`.
+//! - [`hal::csi`] — a Wi-Fi CSI frame borrowed into `radar::csi::CsiFrame`;
+//!   `idf::csi` (feature `esp-idf-csi`) is its Track A twin, a callback on
+//!   ESP-IDF's Wi-Fi task parked into a slot the sketch drains.
 //! - [`hal::ld2410`] — a UART reader feeding `radar::ld2410::Parser`.
 //! - [`hal::station`] — Wi-Fi station events driving `wifi::StationPolicy`.
 //! - [`lora`] (feature `lora`) — `lora::Params` mapped to `lora-phy`

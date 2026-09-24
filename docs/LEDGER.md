@@ -451,3 +451,80 @@ release, not made in this branch.
 
 Gates: 3 new tests on the record, 3 on the fingerprint; clippy
 `-D warnings`, fmt, the bare-metal core-only check — green.
+
+---
+
+## W4 of the RuView plan: CSI on ESP-IDF, so a camera can watch the room — 2026-09-23
+
+`rusty_esp_signal-esp::idf::csi`, behind `esp-idf-csi`: the Track A twin of
+`hal::csi`. Until it existed, every camera cell and the mesh were `std` on
+ESP-IDF and CSI was esp-radio only, so a device that watched the room could
+not also show it or reach the owner over iroh. espino's `presence-csi` is now
+`Track::Either`.
+
+### The shape, and why
+
+ESP-IDF delivers channel state to a C callback on the Wi-Fi task with a
+buffer valid only for the call. So the callback does the one thing that
+must happen inside it — copy the buffer out, blank the first two entries
+when the chip flags them, `features()` — and parks the result in a slot
+the sketch drains on its own thread. It never blocks the Wi-Fi task
+(`try_lock`; a contended slot is a counted drop, not a stalled radio). The
+detector, the estimators and the telemetry all live with the sketch.
+
+This is the crate's one `allow(unsafe_code)` seam: three ESP-IDF entry
+points and one `extern "C"` trampoline, each with its contract written at
+the block, the way `rusty_esp_iroh-esp` opens its own. Everything either
+side of the seam is safe Rust over the core.
+
+**Which training field is the caller's choice, and both-at-once is
+refused.** Legacy LTF only (`Config::recommended`) is the default: every
+OFDM frame carries one, so any data frame from the access point produces a
+reading and the buffer is exactly `Layout::LLTF_20MHZ`'s 64 entries. HT-LTF
+only is the other supported shape. Both enabled concatenates fields in an
+order this crate has not verified on silicon, and a layout guessed wrong
+reads a room from the wrong subcarriers with every status clean — so it
+returns `ESP_ERR_INVALID_ARG` instead. The channel filter is off, on
+ESP-IDF's own advice for keeping adjacent subcarriers independent.
+
+### What it changed in espino
+
+The catalogue names a package's dependencies once, and the signal backend
+crate selects its track by feature — the two tracks are `compile_error!`
+together. `radar-ld2410` said `esp-idf` with a comment that a Track B
+firmware "takes `esp-hal` instead", and nothing did the taking: a Track B
+cell with a radar would have failed on the first line of its Cargo.toml.
+Both generators now translate the signal crate's features by track
+(`signal_esp_features`), and the C8 test holds that no Track A feature
+reaches a Track B firmware.
+
+Cell **C9**: the XIAO's camera page plus `presence-csi` on one board. The
+std sketch begins the capture after the network is up, drains the slot in
+the loop through a gain-normalised detector at the W1b thresholds, and logs
+one line per verdict change with the radio's own counters beside it.
+
+### The gate
+
+The generated C9 project (espino) compiled this module for the first
+time -- it is `cfg`'d out on the host, so the firmware build is its
+compile -- with **zero warnings**:
+
+| step | result |
+|---|---|
+| `espino make image --host-only --planned --force --patch-siblings <umbrella> --release` on the C9 manifest (`xiao-esp32s3-sense`; `wifi-sta` \| `camera-ov2640` + `presence-csi` \| `mjpeg-page`) | 14 files generated, Track A (`rusty_esp_signal-esp` at `["esp-idf", "esp-idf-csi"]`, no Track B feature in the file) |
+| `cargo build --release`, `xtensa-esp32s3-espidf`, ESP-IDF v5.5.1, patched to the sibling checkouts | `Finished release` in **2 m 36 s** cold for the siblings (1 m 01 s on the rebuild); ELF **1,652,352 B**; **0 warnings** in the generated project |
+| the image, unchanged | **8,376,320 B**; app **1,130,304 B** in the 3 MiB `factory` (**35.9 %**); filesystem 299 B in `littlefs`; `identity` kept |
+
+The first build carried two warnings and the rebuild none: the presence
+record's import is now emitted only when `telemetry` is chosen (it is
+only encoded then), and a `let mut` in the boot record that esp-idf-svc
+0.52 no longer needs -- pre-existing, cleared in passing.
+
+### What it does not claim
+
+Nothing has run on a board. `Verified` is CSI frames per second on the XIAO
+**with the MJPEG page streaming** — radio contention is the risk and it is
+measured, not assumed — and the layout the S3 delivers is confirmed by the
+first capture, not by this text. The vitals estimators (W2) are not yet in
+the sketch: the record a C9-with-telemetry would send carries the verdict
+and zeros for the rates, honestly, until W5 wires them.
