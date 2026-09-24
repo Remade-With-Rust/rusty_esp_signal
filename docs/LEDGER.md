@@ -300,3 +300,41 @@ recording of our own is W0's hardware step.
 Gates: 7 new unit tests in `radar::phase`, 2 new capture-oracle tests,
 clippy `--all-targets -D warnings`, `cargo fmt --check`, and the
 `riscv32imac-unknown-none-elf` core-only check — all green.
+
+### W1b — the transients were gain, and normalising removes them (2026-09-23)
+
+The fusion trade above was never made, because the data settled the
+question underneath it. The hypothesis — that the empty room's three
+"transients" were receiver-gain events — is testable without a new
+capture: a common gain step multiplies every subcarrier by the same factor,
+so dividing each frame's amplitudes by that frame's mean cancels it
+exactly, while a change of shape (a body) survives. Run:
+
+| detector | thresholds | empty present | empty max | walking present |
+|---|---|---|---|---|
+| raw amplitude | 42 / 32 ‰ | 514 | 85 ‰ | 2 540 (86.1 %) |
+| **normalised amplitude** | 32 / 23 ‰ (by the rule: ceiling 21 × 1.5) | **0** | **21 ‰** | 2 169 (73.5 %) |
+| phase | 380 / 260 ppm | 0 | 254 ppm | 1 139 (38.6 %) |
+| normalised ⋁ phase (`Verdict::either`) | — | 0 | — | 2 186 (74.1 %) |
+| corroborated rise (amplitude only with phase ≥ 254) | — | 150 | — | 2 297 |
+
+**The transients are not attenuated by normalisation; they are gone** —
+a ceiling of 21 ‰ against a floor of 17, with no event in the first
+17 s at all. They were gain. That is a fact now, not a hypothesis, and it
+says something about the raw amplitude detector: a third of what it called
+presence in an empty room was the receiver adjusting itself.
+
+The trade is twelve points of the walk for the whole of the empty room, and
+it is made: `Features::normalised` and `Config::normalised_default` (32 /
+23 ‰, re-derived by the same rule on the same captures) are what this
+module now recommends. The raw defaults are unchanged for anyone who
+constructed them. The normalised path has its own float twin
+(`.nwander.txt`), like every other.
+
+`Verdict::either` fuses a normalised-amplitude verdict with a phase
+verdict: free on the empty room (both read zero), 17 frames on this
+walk. A primitive, not a claim; the phase's 5.5× tail separation may matter
+on a capture this one is not.
+
+The corroborated-rise candidate only trades (150 empty frames for 2 297 of
+walk at its best setting) and is recorded here so nobody rebuilds it.

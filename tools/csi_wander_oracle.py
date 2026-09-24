@@ -24,6 +24,15 @@ def rows(path):
     return out
 
 
+def normalised(rows_):
+    """Each frame's amplitudes divided by that frame's mean (the gain cancels)."""
+    out = []
+    for r in rows_:
+        m = sum(r) / len(r)
+        out.append([a / m for a in r] if m else list(r))
+    return out
+
+
 def wander(rows_):
     out = []
     for n in range(WINDOW - 1, len(rows_)):
@@ -42,13 +51,16 @@ def wander(rows_):
 
 def main():
     for name in ("c6_empty_room_iter1", "c6_walking_person_iter1"):
-        ws = wander(rows(os.path.join(FIX, name + ".csv")))
-        golden = os.path.join(FIX, name + ".wander.txt")
-        with open(golden, "w", encoding="utf-8", newline="\n") as f:
-            f.write("# float wander (permille) per judged frame, window %d, from tools/csi_wander_oracle.py\n" % WINDOW)
-            for w in ws:
-                f.write("%.3f\n" % w)
-        print("wrote", golden, len(ws), "values; p50 %.1f max %.1f" % (sorted(ws)[len(ws) // 2], max(ws)))
+        raw = rows(os.path.join(FIX, name + ".csv"))
+        for suffix, series in ((".wander.txt", raw), (".nwander.txt", normalised(raw))):
+            ws = wander(series)
+            golden = os.path.join(FIX, name + suffix)
+            with open(golden, "w", encoding="utf-8", newline="\n") as f:
+                f.write("# float %swander (permille) per judged frame, window %d, from tools/csi_wander_oracle.py\n"
+                        % ("gain-normalised " if suffix == ".nwander.txt" else "", WINDOW))
+                for w in ws:
+                    f.write("%.3f\n" % w)
+            print("wrote", golden, len(ws), "values; p50 %.1f max %.1f" % (sorted(ws)[len(ws) // 2], max(ws)))
 
 
 if __name__ == "__main__":

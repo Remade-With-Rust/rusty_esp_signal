@@ -442,6 +442,180 @@ fn fixed_point_phase_wander_tracks_the_float_oracle() {
     }
 }
 
+/// W1b's judgement, and the fact it settled.
+///
+/// The amplitude detector's three "transients" in the empty room were a
+/// hypothesis: receiver-gain events, not motion. A common gain step
+/// multiplies every subcarrier by the same factor, so dividing each frame
+/// by its own mean cancels it exactly while a change of shape survives.
+/// Through `Features::normalised`, at thresholds re-derived by the same
+/// rule (the normalised empty room's ceiling is 21 ‰ → `on` 32, `off` 23):
+///
+/// | detector | empty present | walking present |
+/// |---|---|---|
+/// | raw amplitude, 42/32 | 514 | 2 540 (86 %) |
+/// | normalised amplitude, 32/23 | **0** | 2 169 (74 %) |
+/// | phase, 380/260 ppm | 0 | 1 139 (39 %) |
+/// | normalised ⋁ phase | 0 | 2 186 |
+///
+/// The transients are not attenuated by normalisation; they are gone --
+/// max 21 ‰ against a floor of 17 -- so they were gain. That is the fact.
+/// The trade is twelve points of the walk for the whole of the empty room,
+/// and this test pins it. `Verdict::either` with phase is free on the
+/// empty room and adds 17 frames to the walk; it is a primitive, not
+/// a claim.
+#[test]
+fn normalising_the_amplitude_removes_the_empty_rooms_transients() {
+    use rusty_esp_signal_core::radar::csi::MAX_SUBCARRIERS;
+    let cfg = Config::normalised_default();
+    assert_eq!((cfg.on_permille, cfg.off_permille), (32, 23));
+    let mut out = Vec::new();
+    for name in ["c6_empty_room_iter1", "c6_walking_person_iter1"] {
+        let rows = parse(&fixture(&format!("{name}.csv")));
+        let mut d = PresenceDetector::<WINDOW>::new(cfg);
+        let mut pd = PhaseDetector::<WINDOW>::new(PhaseConfig::default());
+        let mut wanders = Vec::new();
+        let (mut present, mut fused, mut last) = (0usize, 0usize, None);
+        for (n, row) in rows.iter().enumerate() {
+            let now = Micros(n as u64 * FRAME_MICROS);
+            let frame = CsiFrame {
+                timestamp: now,
+                rssi: row.rssi,
+                channel: 6,
+                iq: &row.iq,
+            };
+            let f = frame
+                .features(&Layout::C6_HT20_NATURAL)
+                .unwrap()
+                .normalised();
+            assert_eq!(f.count, 56);
+            assert!(
+                f.amplitude[..56].iter().all(|&a| a < 4 * 1024),
+                "a ratio to the mean"
+            );
+            let ph = frame.phases(&Layout::C6_HT20_NATURAL).unwrap();
+            let va = d.push(&f, now);
+            let vp = pd.push(&ph, now);
+            if va != Verdict::Warming {
+                wanders.push(d.wander());
+                if matches!(va, Verdict::Present { .. }) {
+                    present += 1;
+                    last = Some(n);
+                }
+                if matches!(va.either(vp), Verdict::Present { .. }) {
+                    fused += 1;
+                }
+            }
+        }
+        wanders.sort_unstable();
+        let pct = |p: usize| wanders[(wanders.len() - 1) * p / 100];
+        println!(
+            "normalised {name}: present {present}/{} last {last:?} p50 {} p95 {} max {} | either-with-phase {fused}",
+            wanders.len(),
+            pct(50),
+            pct(95),
+            *wanders.last().unwrap()
+        );
+        out.push((
+            name,
+            present,
+            fused,
+            wanders.len(),
+            pct(50),
+            pct(95),
+            *wanders.last().unwrap(),
+        ));
+    }
+    let _ = MAX_SUBCARRIERS;
+    let (_, e_present, e_fused, e_judged, e_p50, _, e_max) = out[0];
+    let (_, w_present, w_fused, w_judged, w_p50, w_p95, w_max) = out[1];
+    assert_eq!(e_judged, 3000 - WINDOW + 1);
+    // The fact: the transients are gone, not attenuated.
+    assert_eq!(
+        e_present, 0,
+        "the empty room must read empty once gain is cancelled"
+    );
+    assert!(
+        e_max < cfg.on_permille,
+        "empty ceiling {e_max} must sit under on {}",
+        cfg.on_permille
+    );
+    assert!(e_p50 < cfg.off_permille);
+    // The trade: the walk keeps at least 70 % (measured 73.5 %).
+    assert!(
+        w_present * 100 >= w_judged * 70,
+        "normalised walk present {w_present}/{w_judged} under the 70 % floor"
+    );
+    assert!(
+        w_p50 >= cfg.off_permille,
+        "the walk's median {w_p50} should clear off"
+    );
+    assert!(
+        w_p95 > 2 * e_p50 && w_max > 3 * e_max,
+        "separation: {w_p95}/{e_p50}, {w_max}/{e_max}"
+    );
+    // The fusion is free on the empty room and never loses on the walk.
+    assert_eq!(e_fused, 0);
+    assert!(w_fused >= w_present);
+}
+
+/// The normalised fixed-point wander against the float replica's
+/// gain-normalised series (`tools/csi_wander_oracle.py`, `.nwander.txt`),
+/// so this path has the same independent twin as the raw one.
+#[test]
+fn fixed_point_normalised_wander_tracks_the_float_oracle() {
+    for name in ["c6_empty_room_iter1", "c6_walking_person_iter1"] {
+        let golden = std::fs::read_to_string(fixture(&format!("{name}.nwander.txt")))
+            .expect("golden normalised wander series; regenerate with tools/csi_wander_oracle.py");
+        let floats: Vec<f64> = golden
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| l.trim().parse().expect("float"))
+            .collect();
+        let rows = parse(&fixture(&format!("{name}.csv")));
+        let mut det = PresenceDetector::<WINDOW>::new(Config::normalised_default());
+        let mut fixed = Vec::with_capacity(rows.len());
+        for (n, row) in rows.iter().enumerate() {
+            let now = Micros(n as u64 * FRAME_MICROS);
+            let f = CsiFrame {
+                timestamp: now,
+                rssi: row.rssi,
+                channel: 6,
+                iq: &row.iq,
+            }
+            .features(&Layout::C6_HT20_NATURAL)
+            .expect("layout")
+            .normalised();
+            if det.push(&f, now) != Verdict::Warming {
+                fixed.push(f64::from(det.wander()));
+            }
+        }
+        assert_eq!(fixed.len(), floats.len(), "{name}: judged frames");
+        let mut max_abs = 0.0f64;
+        let mut sum = 0.0f64;
+        let mut worst = 0usize;
+        for (i, (x, o)) in fixed.iter().zip(&floats).enumerate() {
+            let d = x - o;
+            sum += d;
+            if d.abs() > max_abs {
+                max_abs = d.abs();
+                worst = i;
+            }
+        }
+        let mean = sum / floats.len() as f64;
+        println!(
+            "{name}: fixed vs float NORMALISED wander over {} frames: mean delta {mean:+.3} permille, max |delta| {max_abs:.3} at frame {worst} (fixed {} vs float {:.3})",
+            floats.len(),
+            fixed[worst],
+            floats[worst]
+        );
+        // Same floor bias as the raw path (integer sqrt and division round
+        // down), and the 1 024 scale adds a hair; bounds set from the print.
+        assert!(mean <= 0.0 && mean > -1.5, "{name}: mean delta {mean}");
+        assert!(max_abs < 2.5, "{name}: max |delta| {max_abs}");
+    }
+}
+
 #[test]
 fn held_out_captures_transfer() {
     let Some(dir) = std::env::var_os("JANUS_CSI_HELDOUT_DIR") else {
