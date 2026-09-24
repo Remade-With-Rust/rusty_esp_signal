@@ -528,3 +528,40 @@ measured, not assumed — and the layout the S3 delivers is confirmed by the
 first capture, not by this text. The vitals estimators (W2) are not yet in
 the sketch: the record a C9-with-telemetry would send carries the verdict
 and zeros for the rates, honestly, until W5 wires them.
+
+---
+
+## W4 hammered: the callback's ingest and ring are host-tested, and the ring holds sixteen — 2026-09-23
+
+The first ESP-IDF backend parked **one** frame, and the two things a
+callback must get right — what to make of the chip's buffer, and what
+happens when frames arrive faster than the sketch drains them — were
+`cfg`'d out on the host, so nothing tested them.
+
+`rusty_esp_signal-esp::csi_queue`, compiled on every track and the host:
+`ingest` (the short check, the first-word blanking the legacy layout needs
+because it keeps entry 1, `features()`) and `Ring<N>` (push overwrites the
+oldest when full and counts it; pop is oldest first). Six tests on the
+host, including the one that says a late sketch sees the latest N in
+order and the count it missed. `idf::csi` is the FFI around them now.
+
+**Why sixteen.** A sketch that shares its loop with a camera drains the
+ring every pass, and a pass is a frame grab — twenty to forty
+milliseconds — while a steady transmitter delivers channel state every
+twenty. With a slot of one, half the frames were overwritten before the
+sketch saw them, and the vitals estimators downstream decimate by
+**count**, so the rate they were configured for was wrong by the same
+half. Sixteen is 320 ms at 50 Hz, longer than any pass of a camera loop;
+later than that, the sketch sees the latest sixteen and `Stats::dropped`
+says how many it missed. Never a stalled radio (still `try_lock`), never
+a silent gap.
+
+### The gate
+
+C9 regenerated and rebuilt under ESP-IDF v5.5.1 (`xtensa-esp32s3-espidf`, `--release`) 2026-09-23: ELF 1,714,488 B (+4,132 B for the ring of sixteen and the minute line), app 1,187,936 B in the 3 MiB factory slot (37.7 %), image 8,376,320 B, zero warnings, 1 m 43 s -- the first compile of `csi_queue` behind the FFI.
+
+### Still not claimed
+
+Nothing has run on a board. W4 is judged by CSI frames/s on the XIAO with
+the MJPEG page streaming; the C9 sketch prints that number once a minute
+now, and this ring is what makes the number the radio's, not the loop's.

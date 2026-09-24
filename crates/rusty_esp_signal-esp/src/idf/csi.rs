@@ -11,15 +11,18 @@
 //!
 //! ESP-IDF delivers channel state to a C callback on the Wi-Fi task, with a
 //! buffer that is valid only for the duration of the call. So the callback
-//! does the one thing that must happen inside it -- [`CsiFrame::features`],
-//! a few thousand integer operations -- and parks the result in a slot the
-//! sketch drains with [`poll`] on its own thread. Nothing else crosses: the
-//! detector, the estimators and the telemetry all live with the sketch.
+//! does the one thing that must happen inside it -- copy the buffer and
+//! [`ingest`] it, a few thousand integer operations -- and parks the frame
+//! in a ring the sketch drains with [`poll`] on its own thread. Nothing else
+//! crosses: the detector, the estimators and the telemetry all live with
+//! the sketch.
 //!
-//! The slot holds **one** frame. A sketch that polls slower than frames
-//! arrive sees the latest and a count of the ones it missed
-//! ([`Stats::dropped`]); it never blocks the Wi-Fi task, because the
-//! callback uses `try_lock` and counts a miss rather than waiting.
+//! The ring holds [`CAPACITY`] frames. A sketch later than that sees the
+//! latest sixteen and a count of the ones it missed ([`Stats::dropped`]);
+//! the callback never blocks the Wi-Fi task, because it uses `try_lock` and
+//! counts a miss rather than waiting. The ring and the ingest are
+//! [`crate::csi_queue`], compiled and tested on the host; this module is
+//! the FFI around them.
 //!
 //! # Which training field, and why it is the caller's choice
 //!
@@ -48,7 +51,14 @@ use std::sync::Mutex;
 
 use esp_idf_svc::sys::{self, EspError};
 use rusty_esp_signal_core::esp_core::Micros;
-use rusty_esp_signal_core::radar::csi::{CsiFrame, Features, Layout};
+use rusty_esp_signal_core::radar::csi::Layout;
+
+pub use crate::csi_queue::Frame;
+use crate::csi_queue::{Ring, ingest};
+
+/// Frames the ring holds: 320 ms at 50 Hz, longer than any pass of a
+/// camera loop (`csi_queue` says why).
+pub const CAPACITY: usize = 16;
 
 /// Which training fields to capture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,33 +108,19 @@ impl Config {
     }
 }
 
-/// One reading the sketch drains.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Frame {
-    /// The device clock when the radio delivered it.
-    pub at: Micros,
-    /// Received signal strength, dBm.
-    pub rssi: i8,
-    /// The primary channel.
-    pub channel: u8,
-    /// Amplitude features for the configured layout, computed inside the
-    /// callback because the raw buffer does not outlive it.
-    pub features: Features,
-}
-
 /// Counters, since [`begin`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Stats {
     /// Callbacks that produced a frame.
     pub received: u32,
-    /// Frames that replaced one the sketch had not yet polled, or that
-    /// arrived while the sketch held the slot.
+    /// Frames overwritten before the sketch polled them (the ring was
+    /// full), or that arrived while the sketch held the ring.
     pub dropped: u32,
     /// Callbacks whose buffer was shorter than the layout needs.
     pub short: u32,
 }
 
-static SLOT: Mutex<Option<Frame>> = Mutex::new(None);
+static RING: Mutex<Ring<CAPACITY>> = Mutex::new(Ring::new());
 static RECEIVED: AtomicU32 = AtomicU32::new(0);
 static DROPPED: AtomicU32 = AtomicU32::new(0);
 static SHORT: AtomicU32 = AtomicU32::new(0);
@@ -159,8 +155,8 @@ pub fn begin(config: Config) -> Result<(), EspError> {
     RECEIVED.store(0, Ordering::Relaxed);
     DROPPED.store(0, Ordering::Relaxed);
     SHORT.store(0, Ordering::Relaxed);
-    if let Ok(mut slot) = SLOT.lock() {
-        *slot = None;
+    if let Ok(mut ring) = RING.lock() {
+        ring.clear();
     }
     // SAFETY: an all-zero `wifi_csi_config_t` is a valid value (every field
     // is a bool, a u8 or a bitfield unit), and the three calls are plain
@@ -205,10 +201,11 @@ pub fn end() -> Result<(), EspError> {
     Ok(())
 }
 
-/// The latest frame the radio delivered, if the sketch has not taken it.
+/// The oldest frame the radio delivered that the sketch has not taken;
+/// drain with `while let Some(frame) = poll()`.
 #[must_use]
 pub fn poll() -> Option<Frame> {
-    SLOT.lock().ok().and_then(|mut slot| slot.take())
+    RING.lock().ok().and_then(|mut ring| ring.pop())
 }
 
 /// The counters since [`begin`].
@@ -223,10 +220,9 @@ pub fn stats() -> Stats {
 
 /// The callback ESP-IDF invokes on the Wi-Fi task.
 ///
-/// It copies the buffer out (zeroing the first two entries when the radio
-/// says they are garbage), computes the features for the configured layout
-/// and parks them. It never blocks: a contended slot is a dropped frame, not
-/// a stalled radio.
+/// It copies the buffer out, [`ingest`]s it for the configured layout and
+/// parks the frame. It never blocks: a contended ring is a dropped frame,
+/// not a stalled radio.
 #[allow(unsafe_code)]
 unsafe extern "C" fn on_csi(_ctx: *mut core::ffi::c_void, data: *mut sys::wifi_csi_info_t) {
     let Some(layout) = layout_for(LAYOUT.load(Ordering::Acquire)) else {
@@ -251,39 +247,25 @@ unsafe extern "C" fn on_csi(_ctx: *mut core::ffi::c_void, data: *mut sys::wifi_c
             copy,
         )
     };
-    if len < 2 * layout.entries {
-        SHORT.fetch_add(1, Ordering::Relaxed);
-        return;
-    }
-    if first_word_invalid {
-        // The chip says entries 0 and 1 are garbage; the LLTF layout keeps
-        // entry 1, so blank them rather than read them.
-        copy[..4].fill(0);
-    }
     // SAFETY: `esp_timer_get_time` reads the system timer; no arguments.
     let at = Micros(unsafe { sys::esp_timer_get_time() }.unsigned_abs());
-    let frame = CsiFrame {
-        timestamp: at,
+    let Ok(frame) = ingest(
+        &mut copy[..len],
+        first_word_invalid,
+        layout,
         rssi,
         channel,
-        iq: &copy[..len],
-    };
-    let Ok(features) = frame.features(layout) else {
+        at,
+    ) else {
         SHORT.fetch_add(1, Ordering::Relaxed);
         return;
     };
     RECEIVED.fetch_add(1, Ordering::Relaxed);
-    match SLOT.try_lock() {
-        Ok(mut slot) => {
-            if slot.is_some() {
+    match RING.try_lock() {
+        Ok(mut ring) => {
+            if ring.push(frame) {
                 DROPPED.fetch_add(1, Ordering::Relaxed);
             }
-            *slot = Some(Frame {
-                at,
-                rssi,
-                channel,
-                features,
-            });
         }
         Err(_) => {
             DROPPED.fetch_add(1, Ordering::Relaxed);

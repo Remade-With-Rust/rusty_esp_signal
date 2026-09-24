@@ -28,7 +28,9 @@
 //!   `link::Session`, plus the handshake driven over it.
 //! - [`hal::csi`] — a Wi-Fi CSI frame borrowed into `radar::csi::CsiFrame`;
 //!   `idf::csi` (feature `esp-idf-csi`) is its Track A twin, a callback on
-//!   ESP-IDF's Wi-Fi task parked into a slot the sketch drains.
+//!   ESP-IDF's Wi-Fi task parked into a ring the sketch drains. The ring and
+//!   the buffer's ingest are [`csi_queue`], compiled on the host and tested
+//!   there, because a callback cannot be tested on a board.
 //! - [`hal::ld2410`] — a UART reader feeding `radar::ld2410::Parser`.
 //! - [`hal::station`] — Wi-Fi station events driving `wifi::StationPolicy`.
 //! - [`lora`] (feature `lora`) — `lora::Params` mapped to `lora-phy`
@@ -66,6 +68,8 @@ pub const TRACK: Track = if cfg!(feature = "esp-hal") {
 } else {
     Track::Host
 };
+
+pub mod csi_queue;
 
 #[cfg(feature = "esp-hal")]
 pub mod hal;
