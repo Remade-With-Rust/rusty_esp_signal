@@ -9,8 +9,13 @@ toolchain.
 |---|---|---|---|---|
 | [`c6-mesh-node`](c6-mesh-node/) | ESP32-C6 | B (`no_std`) | ESP-NOW (authenticated link), Wi-Fi CSI, LD2410 UART, Wi-Fi station | **builds** 2026-09-02, 1 744 812 B |
 | [`c6-lora-p2p`](c6-lora-p2p/) | ESP32-C6 + SX1262 | B | LoRa P2P over `lora-phy` | **builds** 2026-09-02, 339 592 B |
-| [`c6-ble-provision`](c6-ble-provision/) | ESP32-C6 | B | BLE GATT (provisioning, manifest, telemetry) | **builds** 2026-09-02, 932 836 B |
-| [`xiao-s3-sense-idf-ble-provision`](xiao-s3-sense-idf-ble-provision/) | XIAO ESP32-S3 Sense | **A** (`std`, ESP-IDF, Bluedroid) | BLE GATT provisioning (the same contract, `idf::ble`), then Wi-Fi station with the provisioned credentials | **builds** 2026-09-04, 1 829 716 B ELF, app image 1 240 928 B (39.4 % of the XIAO's `factory`) |
+| [`c6-ble-provision`](c6-ble-provision/) | ESP32-C6 | B | BLE GATT (provisioning, manifest, telemetry); the provisioning service carries the setup session, the settings and the device key in NVS | **builds** 2026-10-02 on the setup session, 1 145 896 B ELF (2026-09-02 on the plaintext TLV: 932 836 B) |
+| [`xiao-s3-sense-idf-ble-provision`](xiao-s3-sense-idf-ble-provision/) | XIAO ESP32-S3 Sense | **A** (`std`, ESP-IDF, Bluedroid) | BLE GATT provisioning (the same contract, `idf::ble`: the setup session), then Wi-Fi station with the network the session applied | **builds** 2026-10-02 on the setup session, 1 948 948 B ELF (2026-09-04 on the plaintext TLV: 1 829 716 B ELF, app image 1 240 928 B) |
+| [`xiao-s3-sense-hal-ble-provision`](xiao-s3-sense-hal-ble-provision/) | XIAO ESP32-S3 Sense | B (`no_std`, trouble-host) | the same, with no ESP-IDF: the setup session, the join, a restart into station mode | **builds** 2026-10-02 on the setup session, 1 311 316 B ELF |
+
+The provisioning firmwares take a session only once a setup code's verifier
+(`setup.v`) is in the board's settings (`nvs`, namespace `janus`), which the
+portal (espino) writes at flash time; without one, Discover offers no code.
 
 **Nothing has been flashed.** Every on-radio number is a kill test in
 `docs/LEDGER.md` waiting for boards (S1–S6).

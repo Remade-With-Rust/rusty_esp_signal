@@ -636,3 +636,659 @@ The splices first took each walking capture's first 10 s, one of which
 had no frame of motion in it; they take its most active 10 s now.
 
 Not claimed: any detection rate on a real fall.
+
+## X0 of the killing-C plan: the C census — 2026-09-30
+
+`python tools/c-census.py build && python tools/c-census.py report --ledger` from the umbrella, so sibling crates are the checkouts beside this one: each firmware is linked `--release` with a linker map and `--emit-relocs`, and the two are read together. Every input section the linker kept is charged to the archive the map names for it, one owner per address; every FUNC and OBJECT symbol in the ELF to the archive whose section holds its address; and a mask-ROM routine counts when a kept relocation names it (a linker script defines every ROM symbol whether or not anything calls it). `image B` is code + data as flashed; bss is RAM only. `tools/c-census.py verify` is the gate: the bytes charged equal the bytes the ELF loads, and every symbol charged to a C archive is one `llvm-nm` finds defined in that archive; on an ESP-IDF build the image bytes of every archive also equal what Espressif's own `esp_idf_size` reports from the same map. Two limits: a string table the linker merged is shared by everything that contributed to it, so it is charged where the map puts it (GNU ld) or to the linker row (lld, which names no contributor); and with LTO the Rust side is one object, so its crates are not told apart. Where a firmware reads its network at compile time the build is given placeholders for all of it (`census` / `census-pass`, stream destinations in 192.0.2.0/24): a firmware given no destination compiles its networking out, and the census would measure an image nobody ships.
+
+**What it says.** `c6-lora-p2p` is the one image in the family with no C above
+the mask ROM: 0 C symbols, 0 blob archives. The three Track B firmwares with a
+radio up are the opposite: 63% to 76% of
+the image is Espressif's blob, and every C symbol in them is a blob symbol —
+so on the C6 the floor the killing-C plan can reach is what these tables show,
+not zero. `c6-mesh-node` and `c6-s1-link` keep the same nine archives to the
+byte (420,033 B); `libwpa_supplicant.a` is
+50,464 B of that, shipped closed by `esp-wifi-sys`
+though ESP-IDF builds it from source. The Rust side is not ROM-free either: its
+memory copies and 64-bit division resolve to mask-ROM routines.
+
+The Track A BLE firmware is the largest C share measured:
+79.3%. The Bluedroid host (`bt`) alone is
+233,726 B and 2,508 symbols — what X3 removes by moving the
+S3 to `trouble-host` — and the controller (`libbtdm_app.a`,
+68,869 B) stays. It calls 1,122 mask-ROM routines,
+nearly three times any other firmware, and 763 of them are the
+controller's own `r_*` routines: on the S3 most of the Bluetooth controller is
+in the ROM, not in the archive. Leaving ESP-IDF removes 676,690 B and 6,823 symbols.
+
+### `c6-lora-p2p` — C6, Track B, `w7/fall@8ee35a4`
+
+| origin | objects | symbols | code B | data B | bss B |
+|---|---:|---:|---:|---:|---:|
+| Rust | 2 | 1,050 | 93,408 | 19,556 | 75,966 |
+| linker (merged constants, padding, reservations) | 2 | 151 | 38 | 7,480 | 365,090 |
+
+**C in this image: 0 symbols, 0 B of 120,482 B (0.0%). The blob floor is 0 symbols in 0 archives.** The 2nd-stage bootloader that starts it is espflash 4.6.0's bundled `esp32c6-bootloader.bin`: 22,016 B of C outside this image.
+
+Mask-ROM routines called: 5 — 0 from C, 5 from Rust: `__udivdi3`, `ets_delay_us`, `memcpy`, `memset`, `rtc_get_reset_reason`.
+
+### `c6-ble-provision` — C6, Track B, `w7/fall@8ee35a4`
+
+| origin | objects | symbols | code B | data B | bss B |
+|---|---:|---:|---:|---:|---:|
+| Rust | 2 | 1,295 | 115,986 | 23,150 | 106,944 |
+| precompiled Espressif archives (the blob) | 4 | 1,417 | 253,724 | 7,927 | 315 |
+| linker (merged constants, padding, reservations) | 2 | 181 | 38 | 13,311 | 307,813 |
+
+**C in this image: 1,417 symbols, 261,651 B of 414,136 B (63.2%). The blob floor is 1,417 symbols in 4 archives.** The 2nd-stage bootloader that starts it is espflash 4.6.0's bundled `esp32c6-bootloader.bin`: 22,016 B of C outside this image.
+
+Mask-ROM routines called: 90 — 88 from C, 9 from Rust: `__divdi3`, `__udivdi3`, `ets_clk_get_xtal_freq`, `ets_delay_us`, `memcmp`, `memcpy`, `memmove`, `memset`, `rtc_get_reset_reason`.
+
+| C archive | origin | symbols | image B | bss B |
+|---|---|---:|---:|---:|
+| `libble_app.a` | blob | 1,218 | 223,276 | 310 |
+| `libphy.a` | blob | 147 | 28,377 | 4 |
+| `libprintf.a` | blob | 15 | 5,044 | 0 |
+| `libbtbb.a` | blob | 37 | 4,954 | 1 |
+
+### `c6-mesh-node` — C6, Track B, `w7/fall@8ee35a4`
+
+| origin | objects | symbols | code B | data B | bss B |
+|---|---:|---:|---:|---:|---:|
+| Rust | 2 | 1,188 | 94,942 | 16,178 | 103,071 |
+| precompiled Espressif archives (the blob) | 9 | 2,210 | 362,962 | 57,071 | 15,324 |
+| linker (merged constants, padding, reservations) | 2 | 152 | 38 | 19,223 | 265,053 |
+
+**C in this image: 2,210 symbols, 420,033 B of 550,414 B (76.3%). The blob floor is 2,210 symbols in 9 archives.** The 2nd-stage bootloader that starts it is espflash 4.6.0's bundled `esp32c6-bootloader.bin`: 22,016 B of C outside this image.
+
+Mask-ROM routines called: 309 — 306 from C, 10 from Rust: `__divdi3`, `__eqdf2`, `__udivdi3`, `ets_clk_get_xtal_freq`, `ets_delay_us`, `memcmp`, `memcpy`, `memmove`, `memset`, `rtc_get_reset_reason`.
+
+| C archive | origin | symbols | image B | bss B |
+|---|---|---:|---:|---:|
+| `libnet80211.a` | blob | 926 | 214,775 | 10,867 |
+| `libpp.a` | blob | 764 | 114,545 | 2,893 |
+| `libwpa_supplicant.a` | blob | 303 | 50,464 | 1,483 |
+| `libphy.a` | blob | 169 | 29,825 | 4 |
+| `libprintf.a` | blob | 17 | 4,880 | 0 |
+| `libespnow.a` | blob | 23 | 4,379 | 64 |
+| `libregulatory.a` | blob | 2 | 752 | 0 |
+| `libcore.a` | blob | 5 | 353 | 9 |
+| `libmesh.a` | blob | 1 | 60 | 4 |
+
+### `c6-s1-link` — C6, Track B, `w7/fall@8ee35a4`
+
+| origin | objects | symbols | code B | data B | bss B |
+|---|---:|---:|---:|---:|---:|
+| Rust | 2 | 1,201 | 98,928 | 16,235 | 103,047 |
+| precompiled Espressif archives (the blob) | 9 | 2,210 | 362,962 | 57,071 | 15,324 |
+| linker (merged constants, padding, reservations) | 2 | 161 | 38 | 19,446 | 265,061 |
+
+**C in this image: 2,210 symbols, 420,033 B of 554,680 B (75.7%). The blob floor is 2,210 symbols in 9 archives.** The 2nd-stage bootloader that starts it is espflash 4.6.0's bundled `esp32c6-bootloader.bin`: 22,016 B of C outside this image.
+
+Mask-ROM routines called: 309 — 306 from C, 10 from Rust: `__divdi3`, `__eqdf2`, `__udivdi3`, `ets_clk_get_xtal_freq`, `ets_delay_us`, `memcmp`, `memcpy`, `memmove`, `memset`, `rtc_get_reset_reason`.
+
+| C archive | origin | symbols | image B | bss B |
+|---|---|---:|---:|---:|
+| `libnet80211.a` | blob | 926 | 214,775 | 10,867 |
+| `libpp.a` | blob | 764 | 114,545 | 2,893 |
+| `libwpa_supplicant.a` | blob | 303 | 50,464 | 1,483 |
+| `libphy.a` | blob | 169 | 29,825 | 4 |
+| `libprintf.a` | blob | 17 | 4,880 | 0 |
+| `libespnow.a` | blob | 23 | 4,379 | 64 |
+| `libregulatory.a` | blob | 2 | 752 | 0 |
+| `libcore.a` | blob | 5 | 353 | 9 |
+| `libmesh.a` | blob | 1 | 60 | 4 |
+
+### `xiao-s3-sense-idf-ble-provision` — S3, Track A, `w7/fall@8ee35a4`
+
+| origin | objects | symbols | code B | data B | bss B |
+|---|---:|---:|---:|---:|---:|
+| Rust | 1 | 587 | 105,556 | 140,272 | 117 |
+| ESP-IDF, built from C source | 40 | 6,572 | 534,516 | 53,594 | 6,757 |
+| precompiled Espressif archives (the blob) | 8 | 1,998 | 278,500 | 29,121 | 9,605 |
+| toolchain C runtime (libc, libgcc) | 2 | 251 | 82,684 | 5,896 | 337 |
+| linker (merged constants, padding, reservations) | 1 | 0 | 10,739 | 437 | 82,413 |
+
+**C in this image: 8,821 symbols, 984,311 B of 1,241,315 B (79.3%). The blob floor is 1,998 symbols in 8 archives.** The 2nd-stage bootloader that starts it is espflash 4.6.0's bundled `esp32s3-bootloader.bin`: 21,072 B of C outside this image.
+
+Mask-ROM routines called: 1122 — 1122 from C, 6 from Rust: `__udivdi3`, `memcmp`, `memcpy`, `memmove`, `memset`, `strlen`.
+
+| C archive | origin | symbols | image B | bss B |
+|---|---|---:|---:|---:|
+| `bt` | idf | 2,508 | 233,726 | 589 |
+| `libnet80211.a` | blob | 633 | 133,315 | 7,590 |
+| `libc.a` | toolchain | 196 | 87,096 | 320 |
+| `lwip` | idf | 689 | 69,105 | 2,470 |
+| `libbtdm_app.a` | blob | 531 | 68,869 | 680 |
+| `libpp.a` | blob | 487 | 62,626 | 1,234 |
+| `mbedtls` | idf | 608 | 56,428 | 252 |
+| `wpa_supplicant` | idf | 457 | 54,974 | 1,330 |
+| `libphy.a` | blob | 181 | 33,598 | 86 |
+| `esp_hw_support` | idf | 262 | 26,234 | 156 |
+| `freertos` | idf | 205 | 18,898 | 757 |
+| `hal` | idf | 160 | 16,157 | 4 |
+| `spi_flash` | idf | 222 | 14,231 | 24 |
+| `esp_system` | idf | 196 | 13,802 | 309 |
+| `nvs_flash` | idf | 151 | 13,046 | 24 |
+| `heap` | idf | 107 | 9,638 | 8 |
+| `libcoexist.a` | blob | 142 | 5,471 | 6 |
+| `libbtbb.a` | blob | 18 | 3,456 | 0 |
+| `libcore.a` | blob | 5 | 283 | 9 |
+| `libespnow.a` | blob | 1 | 3 | 0 |
+| … 30 smaller | | 1,062 | 63,355 | 851 |
+
+## X2 of the killing-C plan: an IP stack over the station on Track B — built, not yet joined (2026-09-30)
+
+`rusty_esp_signal-esp::hal::netstack` (feature `embassy-net`): embassy-net
+0.9 over esp-radio's station interface with DHCP, a `net_task` that runs the
+stack and a `station_task` that keeps the station joined through the core's
+`StationPolicy` — the same host-tested policy `hal::station` drives on the
+C6, now under an address and sockets. `station_config` turns an SSID and a
+passphrase into the radio's configuration and refuses what the radio would.
+It is what `wifi-sta` means on a bare-metal chip: where ESP-IDF gives Track A
+lwIP, DHCP and BSD sockets in C, this gives Track B smoltcp, its DHCP client
+and embassy-net's sockets in Rust, and the only C under the station is
+Espressif's radio blob.
+
+Two firmwares compile it for the ESP32-S3, the first of this family's on
+that chip with a radio up: `rusty_esp_audio/firmware/xiao-s3-sense-hal-pdm-udp`
+(PCM over UDP) and `rusty_esp_video/firmware/xiao-s3-sense-hal-page` (the
+camera page over TCP). Their census is the number the killing-C plan waited
+for (its §1.4, item 2): **on the S3, a Track B firmware with Wi-Fi up keeps
+320,574 B of blob in 8 archives (1,710 symbols)** — `libnet80211` 169,861 B,
+`libpp` 66,954, `libwpa_supplicant` 42,754, `libphy` 32,824, `libprintf`,
+`libbtbb`, `libregulatory`, `libespnow` — against 229,745 B in 5 under
+ESP-IDF, which builds `wpa_supplicant` from source and drops `libbtbb`. So
+esp-radio keeps about 90 KB more closed code than IDF on this chip, and
+everything else C is gone: 6 bytes of `crti.o`.
+
+**Not yet joined.** No 2.4 GHz network was reachable from the bench when this
+was built (the laptop's networks are all 5 GHz, and the plan in
+`docs/plans/ap-remaking.md` has the answer: the router's 2.4 GHz SSID, or a
+phone hotspot), and a passphrase is the operator's to type — Requirement C
+there says it never reaches the assistant. The join, the lease and their
+times are the first three lines the firmwares print; the ledger row waits
+for them. What is established: the module compiles for the chip in both
+firmwares, `cargo clippy -D warnings` is clean on both with the esp
+toolchain, and the policy it runs is the one `rusty_esp_signal-core`'s host
+tests cover.
+
+The `embassy-net` feature is not built by this repository's own CI (no C6
+firmware enables it yet); the two firmwares above are its compile checks,
+and their CI jobs can only be green once this crate is pushed with the
+feature.
+
+## X3 of the killing-C plan: BLE provisioning on the S3 with no Bluedroid — kill test passed on the XIAO (2026-09-30)
+
+### The backend, on the 1.2 companion set
+
+`rusty_esp_signal-esp::ble` now speaks `trouble-host` 0.7 over `bt-hci`
+0.9, the line esp-radio 1.0.0-beta.1 (esp-hal 1.2, esp-rtos 0.4) hands
+out; 0.6 / 0.8 was the beta.0 set's, and a caret on both lets the firmware
+pick the set, as for esp-hal. Three things changed with it:
+
+- **The advertisement carries the provisioning service UUID; the name rides
+  in the scan response.** It used to carry the flags and the name only — so
+  `espino serve`'s page, which filters on the service (Chrome shows only
+  what matches), could never have found a Track B device. A legacy
+  advertisement holds 31 bytes and the UUID takes 18; the split is the one
+  the IDF backend already used (ledger, 2026-09-05).
+- **A session that outlives the write.** `accept` advertises and returns a
+  `Session` (the phone, with the attribute server attached);
+  `Session::serve` answers it until it writes credentials;
+  `Session::attend(fut)` runs the join while still answering the phone's
+  reads and writes, so a request during those seconds is not left to the
+  ATT timeout; `Session::report(event)` feeds the join's outcome to the
+  core's `Provisioner` and notifies the phase. The one-shot `serve` remains
+  for a firmware with nothing to join. Dropping the session drops the link.
+- The 0.7 API: a write's bytes come through `with_data`, `notify` takes a
+  `store` flag, `HostResources` names its controller, `Stack` hands out
+  `runner()` and `peripheral()`.
+
+`c6-ble-provision` moved to the 1.2 set with it (`FROM_CPU_INTR0` in place
+of the software interrupt) and builds: 446,062 B image, 261,651 B of C in
+4 blob archives — the same C as on the 1.1.2 set, 32 KB more Rust.
+
+### The firmware
+
+`firmware/xiao-s3-sense-hal-ble-provision`: the IDF twin rebuilt on the C6
+firmware's stack, with the join the C6 has no Wi-Fi stack for. Two boots,
+the way the Track A sketch lives (ledger, 2026-09-05): **provisioning** —
+advertise as `janus-s3`, take the write, join with the phone still
+connected (both radios up on the S3's one modem, esp-radio's `coex`),
+notify `Connected`, stash the credentials, software reset; **station** —
+Bluetooth never initialised, the station joined through `hal::netstack`
+with DHCP, the address and the join time printed. The stash is RTC fast RAM
+behind a checksum: a software reset keeps it, a power cycle does not, and
+X4's NVS reader replaces it. A failed join notifies `Backoff` and keeps the
+phone connected: a corrected write is the retry (the policy retries on
+`Tick`, and a new write always yields `Connect`). A `diag` feature turns on
+esp-radio's, trouble-host's and esp-println's own log lines for the bench
+(48 KB of image).
+
+Census (`tools/c-census.py`, `verify` closes, `llvm-nm` agrees on all 2,414
+C symbols):
+
+| | this firmware | the ESP-IDF twin |
+|---|---:|---:|
+| image | 705,259 B | 1,241,315 B |
+| C in the image | 414,612 B (58.8 %) | 984,311 B (79.3 %) |
+| C symbols | 2,428 | 8,821 |
+| of which the radio blob | 414,606 B, 10 archives | 307,621 B, 8 archives |
+| C that is not the blob | 6 B (`crti.o`) | 676,690 B |
+| Bluedroid host (`bt` component) | — | 233,726 B, 2,508 symbols |
+| ROM routines called | 1,008 (22 from Rust) | 1,122 (6) |
+
+Leaving ESP-IDF took **569,699 B of C and 6,393 C symbols** out from under
+the same GATT table; the Bluedroid host, lwIP (69 KB), mbedTLS (56 KB) and
+FreeRTOS are gone. What is left is the blob, larger than under IDF by the
+same 90 KB X2 found (`wpa_supplicant` closed, `libregulatory`, `libprintf`)
+plus `libbtdm_app` 86,396 B — the BLE controller, which is what Bluetooth
+costs on Track B: 560 symbols against Bluedroid's 2,508 + the controller's
+531.
+
+### On the board
+
+Flashed to the XIAO on COM4 (`diag` build): both radios initialise
+(`coex-initialize`, `btdm_controller_init`), trouble-host comes up
+(`[host] initialized`, `Device Address 6A:EE:8F:51:74:65`), and the
+laptop's Bluetooth sees it — the service UUID from the advertisement, the
+name from the scan response, 31 packets in 30 s at −46 dBm.
+
+**The write path, measured** (`tools/ble-provision.ps1`, a network that
+does not exist, so the join must fail; times are the laptop's clock):
+
+| step | result |
+|---|---|
+| connect, read `status` | `Unprovisioned`; the DID characteristic reads empty (identity is X4's) |
+| subscribe to `status` | `Success` |
+| write the credential TLV (10 + 11 bytes) | `Success` at 13:03:10.172 |
+| the first notification | `Connecting`, 23 ms after the write |
+| the join, both radios up | the board: `provisioned: Provisioner { phase: Connecting, has_credentials: true, scan_len: 0 } -> Connect`, then `join failed: the join failed` — esp-radio refused the association in 3.2 s, well inside the 20 s timeout |
+| the second notification | `Backoff`, 3.2 s after the first |
+| the link | still connected 60 s later: the phone can write again |
+
+The first attempt at this write was rejected with ATT `0x13`
+(`VALUE_NOT_ALLOWED`) — our own refusal: trouble-host 0.7's
+`WriteEvent::with_data(|a, b| …)` hands the write's **offset** first, not
+its length, and the backend had sliced the data to `..offset`, i.e. to
+nothing, so the core saw an empty TLV. Fixed (offset 0 or refused; the
+whole slice to the core).
+
+### The kill test, passed (13:38)
+
+`Tineco_5413` — an open 2.4 GHz network on channel 1 that appeared on the
+bench in the afternoon (an appliance's setup AP), so no passphrase was
+involved — through `tools/x3-kill-test.ps1` (flash → reset and log →
+`ble-provision.ps1` → a scan afterwards → the log):
+
+| step | the laptop | the board |
+|---|---|---|
+| the write | `Success`, 13:38:15.435 | `provisioned: Provisioner { phase: Connecting, has_credentials: true, scan_len: 0 } -> Connect` |
+| `Connecting` | notified 11 ms after the write | |
+| the join, both radios up | | `joined join_ms=14` — fast scan finds the AP on channel 1, open authentication, no handshake |
+| `Connected` | notified 12 ms after the write | then 700 ms for it to leave |
+| the restart | link `Disconnected` 10.5 s after `Connected`: the board reset without hanging up and Windows waited out its supervision timeout (fixed after this run: the session is dropped and given 300 ms before the reset) | `restarting into station mode` → `rst:0x3 (RTC_SW_SYS_RST)` → `== … mode=station reset=Some(CoreSw) ==`, with no `btdm_controller_init` and no `[host]` line: Bluetooth was never initialised |
+| the station | a 12 s scan 17 s later: 6 advertisers, **none named `janus-s3`** | `station ssid_len=11 joining` → **`mode=station ip=192.168.0.100 join_ms=64 dhcp_ms=254`** (from boot), then `link=up` every ten seconds for the two minutes the log ran |
+
+Next to Track A's 7.5 s to join on the ESP32-CAM (2026-09-05): 64 ms from
+boot to the association and 254 ms to the lease. An open network on
+channel 1 is the best case — the fast scan stops at the first channel and
+there is no 4-way handshake — so this is the floor; a WPA2 network adds
+the handshake and its channel's place in the scan. Row X3's kill test is
+met; the operator's WPA2 network is the same script with `-PskEnv`.
+
+**A second pass (13:44), with the hang-up before the reset:** the same
+write, `Connecting` and `Connected` 9 ms after it, `joined join_ms=25`,
+then `disconnection event on handle 1, reason: Connection Terminated By
+Local Host` on the board and the link gone on the laptop **836 ms after
+`Connected`** (the 700 ms the notification is given, then the disconnect)
+where the first pass had waited out a 10.5 s supervision timeout; the
+restart, `mode=station`, `join_ms=70`, no `janus-s3` on the air. The lease
+took `dhcp_ms=10271` this time against 254 ms before: the association was
+as fast, so the 10 s is smoltcp's DISCOVER retry after the access point
+did not answer the first one — the appliance's DHCP server, not the
+firmware. Two passes, two joins, two restarts, two addresses.
+
+The bench is one board and, this afternoon, two sessions: within twelve
+seconds of this firmware's second flash, another session's
+`espflash flash --monitor … flac-chipbench` reflashed the XIAO and held
+COM4 with its monitor (`Get-CimInstance Win32_Process` names the holder;
+the boot banner — `== JANUS BLE …` against `== FLACBENCH …` — is the
+check before trusting any run). The kill test waits for a window with the
+board to itself.
+
+`tools/ble-provision.ps1` (umbrella) is the laptop's half without Chrome:
+the same contract as the page — the service filter, the DID, the status
+read, the subscription, the credential TLV write, the phases as they arrive
+— from Windows' own Bluetooth stack (a C# class over WinRT, compiled with
+the Framework's csc; Windows PowerShell 5.1 cannot subscribe to WinRT
+events and `Add-Type` cannot take a `.winmd`). The passphrase is read from
+an environment variable the operator names and never printed. Found on the
+way: its first scanner merged an advertisement and its scan response
+last-writer-wins per address, which is how a device can appear to advertise
+a name and no service — the two packets are merged now.
+
+CI: a `firmware-xtensa` job (espup's toolchain, no ESP-IDF) builds this
+firmware; the `ble` feature is built by both the C6 and the S3 jobs.
+
+## X5's network half: the board hosting its own network on Track B (2026-09-30)
+
+X5's stream had to be measured the way V1 was — the laptop on a network the
+board hosts, no router in the line — and embassy-net has a DHCP client but
+no server. `hal::netstack` grew the other direction:
+
+- `access_point_config(ssid, passphrase, max_stations)`: WPA2-Personal (an
+  empty passphrase means open; 8–63 bytes otherwise, refused before the
+  radio sees it). The radio starts the access point inside
+  `WifiController::set_config`, so there is no start call to make.
+- `hosted_stack(interface, address, resources, seed)`: the stack over
+  `Interface::access_point()` at a fixed address, the board as gateway.
+- `dhcp_server_task(stack, address)` (feature `access-point`): edge-dhcp
+  0.8's packet server over edge-nal 0.7's UDP traits, which edge-nal-embassy
+  0.9 implements on embassy-net 0.9 — leases from `.50` to `.200`, the board
+  as router; one UDP socket on port 67, so `SOCKETS` leaves it one. The
+  server survives a socket error (the lease table is kept) and rebinds.
+- `auto-icmp-echo-reply` on embassy-net, which lwIP has built in and
+  embassy-net makes opt-in. Found the hard way: the first run's laptop
+  joined, took lease 192.168.71.50 from the new server, and then waited 40 s
+  for a ping the board would never answer, so the runner declared it absent.
+  The gate is port 80 now, and the ping is a separate row.
+
+On the XIAO, the page firmware hosting `janus-cam` (WPA2, channel 1): the
+laptop associated on the first attempt, took `.50`, fetched the page (200),
+answered 10 of 10 pings at 1 / 9.1 / 60 ms (min / mean / max; the 60 is one
+outlier, the rest under 5), and decoded 1,500 frames of `/stream` at 27.04
+fps — the row is in `rusty_esp_video`'s ledger. `PAGE station=joined aid=1`
+and `station=left` bracket the visit on the board's serial.
+
+## X9 of the killing-C plan: the link over UDP, and the accept that arrived late (2026-10-01)
+
+`rusty_esp_signal-esp::hal::link::UdpLink` (feature `embassy-net`): the
+mID-authenticated link (`link::Handshake` / `Session`, Noise-KK, the same
+frames as over ESP-NOW) over an embassy-net UDP socket the caller bound,
+to one peer endpoint. `handshake_initiator(me, rng, allow, now, patience)`
+sends `Hello`, waits for `Accept` within `patience`, sends `Confirm` and
+returns the `Session`; `send` seals one payload into one datagram; `recv`
+opens one datagram from the peer within `patience` (others are dropped
+without a word). It is what the camera cell behind a bridge (espino's C14,
+X9) runs on the network it hosts, with `rusty_esp_iroh-bridge`'s
+`UdpRadio` on the laptop's side; no second radio on the bench.
+
+**The accept that arrived late (X9, run 3).** After a hard reset the
+laptop takes seconds to rejoin the board's network; the node's first hello
+timed out at 3 s and its accept arrived during the second attempt, where
+it failed the transcript check (`Error::Crypto`) — and from then on every
+attempt read the accept of the attempt before, fifteen times, while the
+bridge answered every hello and linked none. `handshake_initiator` now
+drains the socket before it sends a hello. One attempt is still wasted
+when an accept is in flight at that moment (run 4: a timeout, one
+refusal, a session): `Handshake::finish` consumes the handshake, so an
+initiator cannot try the next datagram on a refused one. A `finish` that
+borrows, or a handshake that can be run again, would let the initiator
+wait out its patience for the accept that matches; the responder's side
+(`Pending::confirm`) has the same shape.
+
+The C6 mesh node (`c6-mesh-node`, and espino's C8 from it) responds to a
+hello; so does a bridge. Two responders never link. A node behind a bridge
+initiates, as `UdpLink` does; the ESP-NOW node should too once its peer is
+a bridge rather than the bench's `s1-link`.
+
+## The optimization campaign after X11: the link's MAC keyed once a session (2026-10-01)
+
+`Session` keeps two HMAC-SHA256 states keyed at the handshake (`mac_send`,
+`mac_recv`) and clones one per frame, so the key's inner and outer pad
+blocks (two SHA-256 compressions) are not hashed again on every `seal` and
+`open`. The tags are the same bytes: the golden test pins a frame's tag and
+the full suite (140 tests) passes. On the XIAO's probe at 80 MHz, a
+220-byte payload sealed and opened: 919.4 → 651.3 µs (0.708). Numbers and
+method: rusty_esp_dsp's ledger.
+
+On drop the keyed states are overwritten with a state keyed by zeros
+behind a compiler fence and `black_box`: best effort, because the crate
+is `forbid(unsafe_code)` (no volatile write) and the hash states do not
+implement `Zeroize`. The raw keys are still zeroised as before.
+
+## Round 2: the link's HMAC on the SHA unit (2026-10-01)
+
+The core keeps each direction's HMAC key as its two SHA-256 midstates and
+runs the blocks through a `Sha256Blocks` engine: `seal`/`open` use
+`SoftSha` (`sha2`'s own block function), `seal_with`/`open_with` take any
+engine. `rusty_esp_signal-esp`'s `hal::sha::EspSha` (feature `sha-accel`,
+every chip but the ESP32) loads the midstate into the S3's SHA unit, feeds
+aligned blocks a word at a load, and takes a message and its padded tail in
+one trip (`compress2`). `UdpLink::with_sha` makes the link's own `send` and
+`recv` use it; `FrameBuf` keeps frames on a word.
+
+| a 220-byte frame sealed and opened, XIAO at 80 MHz | us |
+|---|---:|
+| before (round 1's end) | 651.2 |
+| `SoftSha`, the midstate HMAC | 638.0 |
+| the SHA unit, first engine | 97.5 |
+| the SHA unit, word feed + one trip per message | **66.2** |
+
+The midstate HMAC equals the `hmac` crate at every length 0-300 under four
+keys; frames from the engine are byte-identical to `seal`'s; a forged tag
+is refused on both paths. The midstates are plain words now, so `zeroize`
+reaches them on drop (it could not reach `hmac`'s states). dsp's ledger, "Round 2", has the method, every run and the refuted shapes.
+
+## Round 3: the SHA engine's state in digest byte order (2026-10-01)
+
+**B9.** The link's HMAC midstates (`Keyed`) and the `Sha256Blocks` engines
+now hold the SHA-256 state in the byte order the S3's SHA unit reads and
+writes its H registers: the IV words are stored `swap_bytes`, `SoftSha`
+swaps at its own edges, `hmac_with` emits the digest with `to_le_bytes`,
+and `rusty_esp_signal-esp`'s `hal::sha` copies words in and out with no
+swap at all. Frames are byte-identical to `seal`'s (the probe's link
+checksum; the host tests pin the midstate HMAC to the `hmac` crate at every
+message length 0-300 under four keys).
+
+| XIAO, 80 MHz | before | after |
+|---|---:|---:|
+| `link_seal_open_hw` (a frame sealed and opened on the SHA unit) | 66.1 us | **55.8 us** |
+
+The handshake is faster too, but not here: its P-256 work went from 1,404
+to 526 ms on the probe through `rusty_esp_mid/vendor/p256` (mid's
+ledger, "Round 3"). dsp's ledger, "Round 3", has the method and every run.
+
+## enc-ble M1: the setup session's cryptographic core (2026-10-02)
+
+`rusty_esp_signal-core::setup`, the protocol of the umbrella's
+`docs/setup-protocol.md` (v1, suite 1), host-first, `no_std`, allocation-free,
+secrets zeroised on drop:
+
+| piece | file |
+|---|---|
+| the setup code: Crockford base32, normalisation (`O`/`I`/`L`, hyphens, case), display, 50-bit generation | `setup/code.rs` |
+| `w0`, `w1` by PBKDF2-HMAC-SHA256 (hand-rolled on `hmac`), the 40-byte halves reduced mod `n`; the 118-byte `setup.v` record and its refusals | `setup/verifier.rs` |
+| SPAKE2+ (RFC 9383, P-256) both roles, the key schedule, the Reply's prehash and the browser's check of the device's signature | `setup/spake.rs` |
+| ChaCha20-Poly1305 (`chacha20poly1305` 0.10, no alloc), one key per direction, counted nonces, the header as associated data | `setup/seal.rs` |
+
+New dependencies: `chacha20poly1305` 0.10.1 and `subtle` 2.6 (both already in
+a P-256 firmware's graph), and p256's `ecdsa` feature for the verify.
+
+**Held to.**
+
+- In Rust: RFC 9383's P-256 / SHA-256 / HMAC vector (`K_confirmP`,
+  `K_confirmV`, both confirmations, `K_shared`, through both roles),
+  RFC 8439 section 2.8.2 (the AEAD), RFC 7914 section 11 (PBKDF2), RFC 9383's
+  compressed `M` and `N`.
+- `tools/setup_golden.py`, an independent oracle in pure Python (its own
+  P-256, PBKDF2, HKDF, RFC 6979 ECDSA with low-s, ChaCha20-Poly1305), which
+  first checks itself against RFC 8439, RFC 6979 A.2.5 and RFC 9383, then
+  writes one complete session (`tests/fixtures/setup/session-v1.txt`;
+  `--check` compares). `tests/session_vectors.rs` reproduces it **byte for
+  byte from both halves**: the code as typed, `w0`, `w1`, `setup.v`, the
+  Context, both shares and confirmations, the Reply's prehash, **the device's
+  signature made by mID's `DeviceKey` (equal to the oracle's RFC 6979
+  low-s signature)**, and every sealed message (Ready, Settings, Result).
+- Refusals: a wrong code (on both sides), another carrier's Context, an
+  impostor's signature, the device's signature over another session, shares
+  off the curve or of the wrong length, `setup.v` records with a zero or
+  out-of-range `w0`, `L` off the curve, another version, too few iterations.
+- 141 unit tests (twelve new) and 7 session tests pass on **i686 and
+  x86_64**; `cargo build --no-default-features` passes for `wasm32-unknown-
+  unknown`, `xtensa-esp32s3-none-elf` and `xtensa-esp32-none-elf`
+  (`-Z build-std=core`). Clippy is clean on the new code.
+
+**Found on the way.** On 32-bit Windows an executable with "setup" in its
+name triggers the installer detection and asks for elevation (`os error
+740`): the test binary `setup_vectors-*.exe` would not start on i686 while
+the x86_64 one ran. The file is `session_vectors.rs`.
+
+**Not here yet:** the messages' framing, the session's state machine, the
+window and the lockout (M2); the signature helpers in mID (M3); the wasm
+half (M4). The device's per-session cost is measured on the board in M6.
+
+## enc-ble M2: the setup session (2026-10-02)
+
+The session of `docs/setup-protocol.md` on top of M1's core, both halves,
+`no_std` and allocation-free:
+
+| piece | file |
+|---|---|
+| framing (version, kind, body; 512 bytes at most), Discover, the shared code table `ResultCode` | `setup/message.rs` |
+| the settings record: decode with every standalone check (the network through `wifi::Credentials`, a name, a maker through mID's `Did::parse`, a verifier, an adoption's syntax), `RecordWriter` for the browser | `setup/record.rs` |
+| the device: `Device` over two `Kv` stores (`settings`: the network, `setup.v`, `setup.fail`; `identity`: mID's `mid.adopt` and `mid.owner`, as the link keeps them), the window, the backoff, the lockout, the idle timeout, signing through mID's `DeviceSigner` | `setup/device.rs` |
+| the browser: `Browser` (start from Discover and the code, Reply, Ready, Settings, Result), a device's `Error` surfaced as `Failure::Remote(code)` | `setup/browser.rs` |
+
+A record is checked whole (an adoption by mID's `Adoption::accept` against
+this device and the pinned owner) before the first write; values are stored
+as NVS's reader returns them (strings without a NUL, `blink_ms`
+little-endian).
+
+**Tests.** `tests/session_flow.rs`, eleven, the browser against the device
+over the message bytes: a device set up end to end (every stored value
+checked); a wrong code counted even when the guesser walks away; the 1, 2,
+4, 8 s backoff, the lockout at five, a non-power-on reset changing nothing,
+one guess per power cycle, the right code clearing the count; the window on
+a provisioned device (closed without a power-on, the button's ten minutes to
+the microsecond); `Busy` leaving the first session alone, `Order`, the idle
+timeout, a wrong version, a fragment; a replay refused at the device (an old
+Confirm against a fresh Reply), at the browser (an old Reply) and inside a
+fresh session (an old Settings does not open); another device refused by the
+browser; ten refused records that write nothing (a good name beside a bad
+passphrase included); a rotated code (the old one stops working) and an
+adoption accepted, then another owner's refused; a store that fails
+mid-record answering `StoreFailed`; a Discover claiming four billion
+iterations refused in under 100 ms. `tests/session_fuzz.rs` (the
+`no_panic.rs` shape): 20,000 inputs through every decoder, 3,000 device
+rounds across its three states, 3,000 browser rounds across its steps,
+random bytes and mutations of a recorded session; no panic, every answer at
+most 512 bytes, nothing written without a Result.
+
+**176 tests on i686 and x86_64** (141 unit, 10 + 4 existing, 11 + 3 + 7
+setup); the `no_std` builds for wasm32, the S3 and the ESP32 pass; clippy is
+clean on the new code; the M1 fixture still matches its oracle.
+
+**Two protocol fixes the tests found.**
+
+- *The failure count.* The first spec said abandoning a session told the
+  guesser nothing, so only a wrong Confirm counted. But Reply carries
+  `confirmV`, which lets whoever sent Start check the one guess its share was
+  made from, offline: a guesser who never sends Confirm was never counted.
+  Now every answered Start counts, and a verified Confirm clears the count
+  (spec sections 6 and 9).
+- *The iteration bound.* The browser runs as many PBKDF2 iterations as
+  Discover names; the first fuzz run spent twenty minutes of CPU on a
+  mutated count before it was stopped. A device claiming four billion would
+  freeze the person's page. Counts outside 1,000 to 2,000,000 are refused
+  before any work, in `Secrets::derive` and in a stored record (spec 3.2).
+
+**Not here:** mID's own helpers and its release (M3), the wasm half (M4),
+the carriers (M5). On the ESP-IDF cell (C6) the settings keys are typed NVS
+entries; the `Kv` there must write them so (M7).
+
+## enc-ble M3: the session's identity pieces are mID's (2026-10-02)
+
+`setup::reply_prehash` and `setup::verify_reply` now call
+`rusty_esp_mid_core::setup` (so a high-s signature, which the first version
+accepted, is refused by mID's rule), the device signs through mID's
+`sign_reply`, and `setup.v` / `setup.fail` are read and written through mID's
+accessors under mID's key names. Compile-time asserts tie this crate's
+`SETUP_V_LEN`, `SHARE_LEN` and `CONFIRM_LEN` to mID's. 176 tests on i686 and
+x86_64, unchanged; the `no_std` builds pass. Building against mID still uses
+the umbrella's sibling patch until mID is released.
+
+**M3 closed: signal against the released mID.** A copy of this repository
+outside the umbrella (no `.cargo/config.toml`, so no sibling patch) resolves
+`rusty_esp_mid-core` 0.1.1 from GitHub (`139dcb36`) and passes all 176 tests
+(release, x86_64), the setup suites included. This repository's own changes
+(the setup module, M1-M3) are not committed yet.
+
+## enc-ble M4: PBKDF2 on the compression function (2026-10-02)
+
+`setup::verifier`'s PBKDF2 absorbs the HMAC key's two pads once and runs
+every later iteration as two `sha2::compress256` calls on one fixed,
+pre-padded block (`U || 0x80 || 0.. || 768`), the state kept as words.
+Byte-identical: `pbkdf2_is_the_generic_loop_byte_for_byte` holds it to the
+old HMAC loop across keys of 0, 6, 63, 64, 65 and 100 bytes (over a block
+is hashed first), 1 to 1,000 iterations and 1 to 80 bytes out, and
+`pbkdf2_matches_rfc_7914_at_80000` to the RFC's second vector; the golden
+session is unchanged. In wasm (V8, sha2 at `opt-level = 3`) 118 -> 110 ms
+for 100,000 iterations; the larger lever was the opt-level (espino's
+`wasm-release` now builds sha2 at 3). 178 tests on i686 and x86_64; the
+`no_std` builds pass.
+
+## enc-ble M5: the provisioning service carries the setup session (2026-10-02)
+
+The plaintext path is gone: `credentials` (Wi-Fi in the clear) and the
+public `scan` are retired from the table, their UUIDs not reused; `setup`
+(`…-0104`, WRITE|READ|NOTIFY, 512) and `discover` (`…-0105`, READ, 59) carry
+the session (the Janus umbrella's `docs/setup-protocol.md`, 11.1).
+
+| piece | what |
+|---|---|
+| `provision::Provisioner<E: SetupEnv, N>` | the session's GATT router: `new(policy, devpub, reset, now, env)`, `boot` (a stored network adopted), `on_write`/`read` by UUID, `Outcome.answer` (the header to notify), `carrier_closed`, `advertising`, `window`, `button`, `tick`, `forget` (wipes `wifi.*`); the scan list goes out sealed in Ready |
+| `provision::Env` | settings, identity, rng, signer as one `SetupEnv` |
+| `setup::ResultCode::describe` | a refusal in words (the page and espino-web say the same) |
+| `-esp` `ble` (trouble-host) | `att-queued-writes` on; `setup`/`discover` are `heapless::Vec` values; the answer stored after the write is acknowledged, its header sent with `notify_raw(.., false)`; `accept` returns `None` outside the window and races the advertising against the window's end (a legacy advertisement has no duration of its own) |
+| `-esp` `idf::ble` (Bluedroid) | prepared writes assembled here (they were refused) and run on the execute; `setup`/`discover` answered by the app at the offset asked for; one peer at a time; `tick()` starts and stops the advertising with the window |
+| `rusty_esp_signal-web` | the page's wasm (`SetupSession`, `offer`), `sim` = the device half behind this router |
+| `docs/provision.html` | rebuilt on it: Connect, the code, the network; `tools/build-provision-page.py` inlines the wasm (`--check`) |
+
+**Held to.** `provision` tests (10): a whole session over the table, the
+refusals (status/discover not writable, the retired UUIDs no one's), a
+wrong code then the peer leaving (Busy until `carrier_closed`), boot and
+forget, a network that never joins reopening the window, `Debug` printing
+neither the network nor the answer, the page agreeing with the table.
+`tools/provision-page-check.mjs` (7): the page's own `session` script and
+inlined wasm against `sim` through fake Web Bluetooth characteristics, the
+notification delivered before and after the write's response; a wrong
+code, another device (refused with no write), the settings checked before
+sealing, a device refusal in words. Headless Chrome loads the page's wasm.
+181 tests on i686 and x86_64; clippy clean (core, web host and wasm32, esp
+`ble`). Firmwares (`c6-ble-provision`, `xiao-s3-sense-hal-ble-provision`,
+`xiao-s3-sense-idf-ble-provision`) moved to the session with the identity
+partition, the owner's `janus` namespace and the chip's RNG, and all three
+build in release; the Bluedroid backend compiled on its first build.
+
+**Found.** Result's phase is the one the record was applied in; a network's
+join shows on `status` right after (the spec now says so). Bluedroid's
+backend refused long writes outright, so a Settings longer than one ATT
+packet could never have reached it. A network that never joins left a
+provisioned device unreachable until a power cycle: the policy's
+`Fallback` now opens the window.
+
+**Not yet.** Nothing on the radio: Chrome's long write and long read, both
+stacks with a real phone, and the device's time per session are M6 (C13)
+and M7 (C6). espino-make's templates still generate the retired calls.
+
+## enc-ble M6: the session on the radio, from an independent central (2026-10-02)
+
+`tools/setup_v1.py` is the oracle's library (the golden fixture unchanged,
+`--check`), with the browser's side added (`Prover`, `aead_open`), held to
+the golden session byte for byte. `tools/setup_central.py` drives a board
+over bleak with it: discover, wrong-code, wrong-device, session (a 263-byte
+long write), replay, second-writer, lockout. On C13 (espino's ledger has the
+table) every scenario behaved as the spec says; device time per session
+about 265-271 ms (Start 259-262 ms). Core changes found on the way: the first
+failed join of a network a session just applied reopens the window (spec 9),
+and the trouble-host backend's `serve_observed` reports each message's time.
+The page sends on Unlock's session and only on `Order` opens a fresh one (9
+page checks).
+
+**`ScanList::push`: one line per name** (2026-10-02). A mesh or dual-band
+router answers a scan from several access points; the list keeps each name
+once, at its strongest. 183 tests on both widths. On C13 the scan list
+reached the page's side sealed in Ready (espino's ledger).

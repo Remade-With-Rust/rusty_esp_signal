@@ -44,6 +44,10 @@ esp-idf-svc = { version = "0.52", default-features = false }
 rusty_esp_core = { git = "https://github.com/Remade-With-Rust/rusty_esp_core", default-features = false, features = ["std"] }
 rusty_esp_signal-core = { path = "../../crates/rusty_esp_signal-core", default-features = false, features = ["std"] }
 rusty_esp_signal-esp = { path = "../../crates/rusty_esp_signal-esp", default-features = false, features = ["esp-idf-ble"] }
+# The device key, and the Track A seams it and the settings live behind:
+# an NVS namespace as a Kv, the chip's RNG.
+rusty_esp_mid-core = { git = "https://github.com/Remade-With-Rust/rusty_esp_mid", default-features = false, features = ["std"] }
+rusty_esp_mid-esp = { git = "https://github.com/Remade-With-Rust/rusty_esp_mid", default-features = false, features = ["esp-idf"] }
 
 [build-dependencies]
 embuild = "0.33"

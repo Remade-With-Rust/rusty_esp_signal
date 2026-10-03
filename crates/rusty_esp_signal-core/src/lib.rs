@@ -38,6 +38,7 @@ pub mod link;
 pub mod lora;
 pub mod provision;
 pub mod radar;
+pub mod setup;
 pub mod wifi;
 
 /// The names a sketch or firmware wants in scope.

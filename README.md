@@ -12,10 +12,13 @@ with no access point, long-range radio, presence from channel state, and a
 millimetre-wave radar. Pure Rust, no C, no FFI, `no_std` by default.
 
 * **A device with no network can still be given one.** A browser hands an
-  ESP32-CAM its credentials over Bluetooth, on a page with no app and no
-  server: **joined in 7.5 seconds**, and the next boot joins alone in 9.5
-  seconds with Bluetooth off entirely. The passphrase never reaches a server, a
-  log, or a command line.
+  ESP32 its network over Bluetooth, on a page with no app and no server,
+  inside an encrypted session that a setup code unlocks (SPAKE2+, the device
+  proving its `did:mata`): the passphrase never crosses the air in the clear
+  and never reaches a server, a log, or a command line. The earlier,
+  unencrypted version **joined in 7.5 seconds** on an ESP32-CAM, and the next
+  boot joined alone in 9.5 seconds with Bluetooth off; the session is timed on
+  the boards next.
 * **Presence from the Wi-Fi channel itself**, judged against a labelled public
   capture rather than our own recording: an empty room reads 17.4% occupancy
   and a walking person 86.1%, with a held-out pair at 60.8%.
@@ -30,7 +33,7 @@ millimetre-wave radar. Pure Rust, no C, no FFI, `no_std` by default.
 
 | what | measured |
 |---|---|
-| provisioning over Bluetooth | **joined in 7.5 s**; the reboot joins alone in **9.5 s** with no Bluetooth |
+| provisioning over Bluetooth (the unencrypted version, now retired) | **joined in 7.5 s**; the reboot joins alone in **9.5 s** with no Bluetooth |
 | the identity behind it | the same `did:mata` held across six reflashes |
 | the advertisement budget | 31 bytes, which is what forced the name and service layout |
 | a failed join | must not spend the modem — a device that cannot join has to stay askable |
@@ -48,14 +51,24 @@ Every number, with the run that produced it:
 ```rust
 use rusty_esp_signal::prelude::*;
 
-// A device with no credentials advertises itself and waits to be told.
-let mut provisioner = Provisioner::new("janus-doorbell");
-if let Some((ssid, psk)) = provisioner.poll()? {
-    match wifi.join(&ssid, &psk) {
-        Ok(()) => provisioner.report(true),
+use rusty_esp_signal::provision::Env;
+use rusty_esp_signal::setup::Reset;
+use rusty_esp_signal::wifi::{Action, Event};
+
+// The owner's settings, the identity store, randomness and the device key.
+let env = Env { settings, identity, rng, signer };
+let mut provisioner = Provisioner::new(StationPolicy::default(), devpub, Reset::PowerOn, now, env)?;
+
+// A stored network is joined at once; without one, the setup window is open
+// and the BLE backend routes the `setup` and `discover` characteristics here.
+// A setup code unlocks the session; only then does a network go in.
+if provisioner.boot(now).action == Action::Connect {
+    let event = match wifi.join(provisioner.credentials().unwrap()) {
+        Ok(()) => Event::Connected,
         // A refusal has to leave the device askable, not spent.
-        Err(_) => provisioner.report(false),
-    }
+        Err(_) => Event::Disconnected,
+    };
+    provisioner.on_event(event, now);
 }
 ```
 

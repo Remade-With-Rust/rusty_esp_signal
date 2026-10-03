@@ -1,22 +1,28 @@
-//! BLE provisioning, the session: what a device does with the writes and
-//! reads that arrive on the provisioning service, and what it hands back
-//! to its Wi-Fi stack.
+//! BLE provisioning: the provisioning service carries the setup session.
 //!
-//! The page a phone opens is `docs/provision.html` — Web Bluetooth, no app.
-//! It reads the DID and the scan list, writes one [`Credentials`] TLV to the
-//! `credentials` characteristic, and watches the `status` characteristic
-//! turn from `Connecting` to `Connected`. This module is the other end:
+//! The page a phone opens is `docs/provision.html`, Web Bluetooth and no
+//! app, running the session's browser half in wasm. It reads `discover`,
+//! subscribes to `setup`, writes the session's messages to `setup` and reads
+//! each answer when its header is notified, and watches `status` turn from
+//! `Connecting` to `Connected`. This module is the other end
+//! ([`Provisioner`]):
 //!
-//! - a write to `credentials` is decoded, stored (the previous secret wiped
-//!   on replacement, both never printable), and turned into the
-//!   [`StationPolicy`]'s `Provisioned` event, whose [`Action`] the backend
-//!   executes;
-//! - a read of `status` is the policy's [`Phase`] as one byte, and every
-//!   phase change is a `status` notification the backend sends;
-//! - a read of `scan` is the [`ScanList`] the backend filled from its last
-//!   Wi-Fi scan, strongest first, as TLV;
-//! - a write anywhere else on the service is refused (`Denied`), a read of
-//!   `credentials` likewise — the secret goes in, never out.
+//! - a write to `setup` is one message of the setup session (the Janus
+//!   umbrella's `docs/setup-protocol.md`; [`crate::setup::Device`]); the
+//!   answer, an `Error` included, is left in the `setup` value and its two
+//!   header bytes are what the backend notifies. A Settings that is applied
+//!   with a network is adopted and turned into the [`StationPolicy`]'s
+//!   `Provisioned` event, whose [`Action`] the backend executes;
+//! - a read of `discover` is the session's Discover, a read of `status` the
+//!   policy's [`Phase`] as one byte, and every phase change is a `status`
+//!   notification the backend sends;
+//! - the scan list ([`ScanList`]) the backend fills from its last Wi-Fi scan
+//!   goes out sealed in the session's Ready, never in the clear;
+//! - the service is advertised only while the setup window is open, and the
+//!   connection is the carrier session: the backend calls
+//!   [`Provisioner::carrier_closed`] when the peer leaves.
+//!
+//! `credentials` (plaintext Wi-Fi in) and the public `scan` are retired.
 //!
 //! No BLE stack and no Wi-Fi stack: a backend routes attribute writes and
 //! reads here by UUID and feeds the policy its link events. Everything is
@@ -26,8 +32,13 @@ use core::fmt;
 
 use rusty_esp_core::Micros;
 use rusty_esp_core::error::{Error, Result};
+use rusty_esp_core::hal::{Kv, Rng};
+use rusty_esp_mid_core::signer::DeviceSigner;
+use zeroize::Zeroize;
 
-use crate::ble::{CHAR_CREDENTIALS, CHAR_SCAN, CHAR_STATUS, GATT_TABLE, Uuid128};
+use crate::ble::{CHAR_DISCOVER, CHAR_SETUP, CHAR_STATUS, GATT_TABLE, Uuid128};
+use crate::setup::device::key;
+use crate::setup::{DEVPUB_LEN, Device, MAX_MESSAGE, Reset, Status, Window, label};
 use crate::wifi::{Action, Credentials, Event, Phase, SSID_MAX_LEN, StationPolicy};
 
 /// TLV tag of a network name in the `scan` value (the same tag the
@@ -173,8 +184,24 @@ impl<const N: usize> ScanList<N> {
 
     /// Insert by signal strength. When the list is full, a network weaker
     /// than every entry is dropped and the weakest entry makes room for a
-    /// stronger one; the caller never has to sort.
+    /// stronger one; the caller never has to sort. A name already listed
+    /// keeps its strongest entry (a mesh answers from several access points).
     pub fn push(&mut self, entry: ScanEntry) {
+        // one line per network name: a mesh or a dual-band router answers a
+        // scan from several access points, and the strongest one is the
+        // one to show
+        if let Some(at) = self.entries[..self.len]
+            .iter()
+            .position(|e| e.ssid() == entry.ssid())
+        {
+            if entry.rssi_dbm <= self.entries[at].rssi_dbm {
+                return;
+            }
+            for j in at..self.len - 1 {
+                self.entries[j] = self.entries[j + 1];
+            }
+            self.len -= 1;
+        }
         if self.len == N {
             if entry.rssi_dbm <= self.entries[N - 1].rssi_dbm {
                 return;
@@ -251,23 +278,130 @@ pub struct Outcome {
     /// `Some(phase byte)` when the `status` characteristic changed and its
     /// subscribers must be notified.
     pub status: Option<u8>,
+    /// `Some(header)` when a `setup` write left an answer in the `setup`
+    /// value: notify these two bytes (`VERSION || kind`) to the peer, which
+    /// then reads the value.
+    pub answer: Option<[u8; 2]>,
 }
 
-/// The provisioning session over the GATT table.
-pub struct Provisioner<const N: usize = SCAN_ENTRIES> {
+impl Outcome {
+    const fn nothing() -> Self {
+        Outcome {
+            action: Action::None,
+            status: None,
+            answer: None,
+        }
+    }
+}
+
+/// What a platform lends the setup session: the owner's settings (NVS
+/// namespace `janus`), the identity store, randomness and the device key.
+pub trait SetupEnv {
+    /// The owner's settings.
+    type Settings: Kv;
+    /// The identity store (adoption, owner pin).
+    type Identity: Kv;
+    /// Randomness for the session's shares.
+    type Rng: Rng;
+    /// The device's `did:mata` key.
+    type Signer: DeviceSigner;
+    /// All four at once, as the session takes them.
+    fn parts(
+        &mut self,
+    ) -> (
+        &mut Self::Settings,
+        &mut Self::Identity,
+        &mut Self::Rng,
+        &Self::Signer,
+    );
+    /// The settings alone, to read.
+    fn settings(&self) -> &Self::Settings;
+}
+
+/// The four parts as one value: the [`SetupEnv`] a firmware usually holds.
+pub struct Env<S, I, R, K> {
+    /// The owner's settings.
+    pub settings: S,
+    /// The identity store.
+    pub identity: I,
+    /// Randomness.
+    pub rng: R,
+    /// The device key.
+    pub signer: K,
+}
+
+impl<S: Kv, I: Kv, R: Rng, K: DeviceSigner> SetupEnv for Env<S, I, R, K> {
+    type Settings = S;
+    type Identity = I;
+    type Rng = R;
+    type Signer = K;
+
+    fn parts(&mut self) -> (&mut S, &mut I, &mut R, &K) {
+        (
+            &mut self.settings,
+            &mut self.identity,
+            &mut self.rng,
+            &self.signer,
+        )
+    }
+
+    fn settings(&self) -> &S {
+        &self.settings
+    }
+}
+
+/// The provisioning service over the GATT table: the setup session on
+/// `setup` and `discover`, the station's phase on `status`.
+///
+/// A backend routes attribute writes and reads here by UUID, notifies what
+/// an [`Outcome`] says to, calls [`Provisioner::carrier_closed`] when the
+/// peer leaves, and advertises only while [`Provisioner::advertising`].
+pub struct Provisioner<E: SetupEnv, const N: usize = SCAN_ENTRIES> {
     policy: StationPolicy,
+    session: Device,
+    env: E,
     credentials: Option<Credentials>,
+    /// The network came from a session and has not joined yet.
+    trial: bool,
     scan: ScanList<N>,
+    answer: [u8; MAX_MESSAGE],
+    answer_len: usize,
 }
 
-impl<const N: usize> Provisioner<N> {
-    /// An unprovisioned device with `policy`'s tunables.
-    #[must_use]
-    pub const fn new(policy: StationPolicy) -> Self {
-        Provisioner {
+impl<E: SetupEnv, const N: usize> Provisioner<E, N> {
+    /// The session for the device whose compressed key is `devpub`, on the
+    /// BLE carrier, after a `reset` at `now`. Reads nothing but the window's
+    /// state; [`Provisioner::boot`] restores a stored network.
+    pub fn new(
+        policy: StationPolicy,
+        devpub: [u8; DEVPUB_LEN],
+        reset: Reset,
+        now: Micros,
+        mut env: E,
+    ) -> Result<Self> {
+        let session = Device::new(label::BLE, devpub, reset, now, env.parts().0)?;
+        Ok(Provisioner {
             policy,
+            session,
+            env,
             credentials: None,
+            trial: false,
             scan: ScanList::new(),
+            answer: [0; MAX_MESSAGE],
+            answer_len: 0,
+        })
+    }
+
+    /// The stored network, if the settings hold one: adopted, and the
+    /// policy asked to join it ([`Action::Connect`]). Without one,
+    /// [`Action::StartProvisioning`].
+    pub fn boot(&mut self, now: Micros) -> Outcome {
+        match stored_network(self.env.settings()) {
+            Some(credentials) => self.adopt(credentials, now),
+            None => Outcome {
+                action: Action::StartProvisioning,
+                ..Outcome::nothing()
+            },
         }
     }
 
@@ -283,13 +417,13 @@ impl<const N: usize> Provisioner<N> {
         self.policy.phase()
     }
 
-    /// The stored credentials, if any. What the Wi-Fi stack joins with.
+    /// The network to join, if any. What the Wi-Fi stack joins with.
     #[must_use]
     pub const fn credentials(&self) -> Option<&Credentials> {
         self.credentials.as_ref()
     }
 
-    /// The scan list the phone reads.
+    /// The scan list the session sends, sealed, in its Ready.
     #[must_use]
     pub const fn scan(&self) -> &ScanList<N> {
         &self.scan
@@ -300,22 +434,57 @@ impl<const N: usize> Provisioner<N> {
         self.scan = scan;
     }
 
-    /// Credentials restored from storage at boot: the same path a BLE
-    /// write takes, without the bus.
-    pub fn restore(&mut self, credentials: Credentials, now: Micros) -> Outcome {
-        self.adopt(credentials, now)
+    /// The platform's parts, for what else the firmware keeps in them.
+    pub fn env(&mut self) -> &mut E {
+        &mut self.env
     }
 
-    /// Drop the credentials (wiped) and return to provisioning — the
-    /// factory-reset button.
-    pub fn forget(&mut self, _now: Micros) -> Outcome {
+    /// Whether the service should be advertised now: only while the
+    /// setup window is open (protocol section 9).
+    pub fn advertising(&self, now: Micros) -> bool {
+        self.session.advertising(now, self.env.settings())
+    }
+
+    /// The window as Discover reports it: open or not, its seconds left
+    /// (`0xFFFF` while unprovisioned), the attempts left. A backend times its
+    /// advertising by it.
+    pub fn window(&self, now: Micros) -> Window {
+        self.session.window(now, self.env.settings())
+    }
+
+    /// The button: the window opens for its 600 s.
+    pub fn button(&mut self, now: Micros) {
+        self.session.button(now);
+    }
+
+    /// Time passed: a session idle past its timeout is dropped.
+    pub fn tick(&mut self, now: Micros) {
+        self.session.tick(now);
+    }
+
+    /// The peer left (the BLE connection is the carrier session): the
+    /// session in flight is dropped and the answer wiped.
+    pub fn carrier_closed(&mut self) {
+        self.session.carrier_closed();
+        self.answer.zeroize();
+        self.answer_len = 0;
+    }
+
+    /// Drop the network (wiped from memory and the settings) and return to
+    /// provisioning: the factory-reset button. The window is open again,
+    /// since the device is unprovisioned.
+    pub fn forget(&mut self, _now: Micros) -> Result<Outcome> {
         let before = self.phase();
+        let (settings, ..) = self.env.parts();
+        settings.remove(key::SSID)?;
+        settings.remove(key::PSK)?;
         self.credentials = None;
         self.policy = StationPolicy::new(self.policy.config());
-        Outcome {
+        Ok(Outcome {
             action: Action::StartProvisioning,
             status: status_if_changed(before, self.phase()),
-        }
+            answer: None,
+        })
     }
 
     fn adopt(&mut self, credentials: Credentials, now: Micros) -> Outcome {
@@ -326,21 +495,58 @@ impl<const N: usize> Provisioner<N> {
         Outcome {
             action,
             status: status_if_changed(before, self.phase()),
+            answer: None,
         }
     }
 
     /// A GATT write of `value` to the characteristic `uuid`.
     ///
-    /// `credentials`: the TLV is decoded ([`Credentials::decode`]) and
-    /// adopted; a malformed write is `InvalidFormat` and changes nothing.
-    /// `status` and `scan` are read-only: `Denied`. A UUID outside the
-    /// provisioning service is `Unsupported` — it is someone else's.
+    /// `setup`: one session message. The answer (an `Error` included) is
+    /// left in the `setup` value and its header comes back to notify; a
+    /// Settings that was applied with a network also adopts it, and the
+    /// policy asks to join. `status` and `discover` are read-only:
+    /// `Denied`. A UUID outside the provisioning service, or a retired one,
+    /// is `Unsupported`.
     pub fn on_write(&mut self, uuid: Uuid128, value: &[u8], now: Micros) -> Result<Outcome> {
-        if uuid == CHAR_CREDENTIALS {
-            let creds = Credentials::decode(value)?;
-            return Ok(self.adopt(creds, now));
+        if uuid == CHAR_SETUP {
+            let mut scan = [0u8; SCAN_MAX_LEN];
+            let scan_len = self.scan.encode(&mut scan)?;
+            let status = Status {
+                phase: self.phase().as_u8(),
+                scan: &scan[..scan_len],
+            };
+            let (settings, identity, rng, signer) = self.env.parts();
+            self.answer.zeroize();
+            let answer = self.session.on_message(
+                value,
+                now,
+                settings,
+                identity,
+                rng,
+                signer,
+                &status,
+                &mut self.answer,
+            );
+            let answer = match answer {
+                Ok(a) => a,
+                Err(e) => {
+                    self.answer_len = 0;
+                    return Err(e);
+                }
+            };
+            self.answer_len = answer.len;
+            let header = [self.answer[0], self.answer[1]];
+            let mut out = match answer.applied.and_then(|a| a.network) {
+                Some(network) => {
+                    self.trial = true;
+                    self.adopt(network, now)
+                }
+                None => Outcome::nothing(),
+            };
+            out.answer = Some(header);
+            return Ok(out);
         }
-        if uuid == CHAR_STATUS || uuid == CHAR_SCAN {
+        if uuid == CHAR_STATUS || uuid == CHAR_DISCOVER {
             return Err(Error::Denied);
         }
         Err(if GATT_TABLE.find(uuid).is_some() {
@@ -351,11 +557,13 @@ impl<const N: usize> Provisioner<N> {
     }
 
     /// A GATT read of the characteristic `uuid` into `out`; returns the
-    /// value length.
+    /// value length. A backend serving a long read takes its slice of this.
     ///
-    /// `status`: one byte, the [`Phase`]. `scan`: the list as TLV.
-    /// `credentials`: `Denied`, always. Anything else: `Unsupported`.
-    pub fn read(&self, uuid: Uuid128, out: &mut [u8]) -> Result<usize> {
+    /// `status`: one byte, the [`Phase`]. `discover`: the session's
+    /// Discover, as of `now`. `setup`: the last answer (empty before the
+    /// first write and after the peer leaves). Anything else:
+    /// `Unsupported`.
+    pub fn read(&self, uuid: Uuid128, now: Micros, out: &mut [u8]) -> Result<usize> {
         if uuid == CHAR_STATUS {
             let Some(slot) = out.first_mut() else {
                 return Err(Error::BufferTooSmall { needed: 1 });
@@ -363,35 +571,76 @@ impl<const N: usize> Provisioner<N> {
             *slot = self.phase().as_u8();
             return Ok(1);
         }
-        if uuid == CHAR_SCAN {
-            return self.scan.encode(out);
+        if uuid == CHAR_DISCOVER {
+            return self.session.discover(now, self.env.settings(), out);
         }
-        if uuid == CHAR_CREDENTIALS {
-            return Err(Error::Denied);
+        if uuid == CHAR_SETUP {
+            let n = self.answer_len;
+            if out.len() < n {
+                return Err(Error::BufferTooSmall { needed: n });
+            }
+            out[..n].copy_from_slice(&self.answer[..n]);
+            return Ok(n);
         }
         Err(Error::Unsupported)
     }
 
     /// A Wi-Fi link event (or a tick) for the policy.
+    ///
+    /// When the policy gives up on the stored network ([`Phase::Fallback`],
+    /// [`Action::StartProvisioning`]) the setup window opens, as the button
+    /// opens it: a network that never joins must not leave the device
+    /// unreachable until someone cuts its power.
+    ///
+    /// So does the first failed join of a network a session just applied:
+    /// the person who typed it is still at the page, and a mistyped
+    /// passphrase is corrected with a new session, not a power cycle. The
+    /// window then runs its 600 s; a network that has joined once no longer
+    /// reopens it this way.
     pub fn on_event(&mut self, event: Event, now: Micros) -> Outcome {
         let before = self.phase();
         let action = self.policy.on(event, now);
+        match event {
+            Event::Connected => self.trial = false,
+            Event::Disconnected if self.trial => {
+                self.trial = false;
+                self.session.button(now);
+            }
+            _ => {}
+        }
+        if action == Action::StartProvisioning {
+            self.session.button(now);
+        }
         Outcome {
             action,
             status: status_if_changed(before, self.phase()),
+            answer: None,
         }
     }
 }
 
-impl<const N: usize> fmt::Debug for Provisioner<N> {
-    /// Never the credentials.
+impl<E: SetupEnv, const N: usize> fmt::Debug for Provisioner<E, N> {
+    /// Never the credentials, never the answer.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Provisioner")
             .field("phase", &self.phase())
             .field("has_credentials", &self.credentials.is_some())
+            .field("in_session", &self.session.in_session())
             .field("scan_len", &self.scan.len())
             .finish()
     }
+}
+
+/// `wifi.ssid` and `wifi.psk` from the settings, when both are there and
+/// make a network.
+fn stored_network(settings: &impl Kv) -> Option<Credentials> {
+    let mut ssid = [0u8; SSID_MAX_LEN];
+    let mut psk = [0u8; 64];
+    let n = settings.get(key::SSID, &mut ssid).ok()??;
+    let m = settings.get(key::PSK, &mut psk).ok()??;
+    let credentials = Credentials::new(&ssid[..n], &psk[..m]).ok();
+    psk.zeroize();
+    credentials
 }
 
 fn status_if_changed(before: Phase, after: Phase) -> Option<u8> {
@@ -401,91 +650,299 @@ fn status_if_changed(before: Phase, after: Phase) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ble::{CHAR_DID, CHAR_MANIFEST, SERVICE_PROVISIONING};
+    use crate::setup::{Browser, Code, RecordWriter, ResultCode, Secrets, Verifier};
     use crate::wifi::PolicyConfig;
+    use rusty_esp_core::hal::host::{InsecureTestRng, MemoryKv};
+    use rusty_esp_mid_core::key::DeviceKey;
+    use std::vec::Vec;
 
-    fn creds_tlv(ssid: &[u8], psk: &[u8]) -> ([u8; 128], usize) {
-        let c = Credentials::new(ssid, psk).unwrap();
-        let mut buf = [0u8; 128];
-        let n = c.encode(&mut buf).unwrap();
-        (buf, n)
+    const CODE: &str = "7KXQ3-M9PRT";
+
+    type Bench = Provisioner<Env<MemoryKv, MemoryKv, InsecureTestRng, DeviceKey>>;
+
+    fn bench(provisioned: bool) -> (Bench, [u8; DEVPUB_LEN]) {
+        let salt = [5u8; 16];
+        let secrets = Secrets::derive(&Code::parse(CODE).unwrap(), &salt, 1_000).unwrap();
+        let mut settings = MemoryKv::new();
+        settings
+            .put(
+                key::SETUP_V,
+                &Verifier::from_secrets(&secrets, &salt, 1_000).encode(),
+            )
+            .unwrap();
+        if provisioned {
+            settings.put(key::SSID, b"old-net").unwrap();
+            settings.put(key::PSK, b"old-pass-123").unwrap();
+        }
+        let signer = DeviceKey::from_secret(&[0x21; 32], "gatt").unwrap();
+        let devpub = *signer.did().pubkey();
+        let env = Env {
+            settings,
+            identity: MemoryKv::new(),
+            rng: InsecureTestRng::seeded(3),
+            signer,
+        };
+        let p = Provisioner::new(
+            StationPolicy::new(PolicyConfig::DEFAULT),
+            devpub,
+            Reset::PowerOn,
+            Micros::from_secs(1),
+            env,
+        )
+        .unwrap();
+        (p, devpub)
+    }
+
+    fn discover(p: &Bench, now: Micros) -> Vec<u8> {
+        let mut v = [0u8; 64];
+        let n = p.read(CHAR_DISCOVER, now, &mut v).unwrap();
+        v[..n].to_vec()
+    }
+
+    /// What the page does on `setup`: write a message, then, on the
+    /// notification, read the value.
+    fn exchange(p: &mut Bench, message: &[u8], now: Micros) -> (Outcome, Vec<u8>) {
+        let out = p.on_write(CHAR_SETUP, message, now).unwrap();
+        let mut v = [0u8; MAX_MESSAGE];
+        let n = p.read(CHAR_SETUP, now, &mut v).unwrap();
+        assert_eq!(
+            out.answer,
+            Some([v[0], v[1]]),
+            "the notification is the answer's header"
+        );
+        (out, v[..n].to_vec())
+    }
+
+    fn start(p: &mut Bench, devpub: &[u8; 33], code: &str, now: Micros) -> (Browser, Vec<u8>) {
+        let mut buf = [0u8; MAX_MESSAGE];
+        let (b, n) = Browser::start(
+            &discover(p, now),
+            &Code::parse(code).unwrap(),
+            Some(devpub),
+            crate::setup::label::BLE,
+            &mut InsecureTestRng::seeded(9),
+            &mut buf,
+        )
+        .unwrap();
+        let (_, reply) = exchange(p, &buf[..n], now);
+        (b, reply)
     }
 
     #[test]
-    fn a_credentials_write_connects_and_status_moves() {
-        let mut p: Provisioner = Provisioner::new(StationPolicy::new(PolicyConfig::DEFAULT));
-        assert_eq!(p.phase(), Phase::Unprovisioned);
-        let (tlv, n) = creds_tlv(b"home-net", b"correct horse battery");
-        let out = p.on_write(CHAR_CREDENTIALS, &tlv[..n], Micros(0)).unwrap();
+    fn a_session_over_the_gatt_table_provisions_and_joins() {
+        let (mut p, devpub) = bench(false);
+        let now = Micros::from_secs(2);
+        assert_eq!(p.boot(now).action, Action::StartProvisioning);
+        assert!(p.advertising(now), "unprovisioned: the window is open");
+        let mut scan = ScanList::new();
+        scan.push(ScanEntry::new(b"home", -48, true).unwrap());
+        p.set_scan(scan);
+
+        let (mut b, reply) = start(&mut p, &devpub, CODE, now);
+        let mut buf = [0u8; MAX_MESSAGE];
+        let n = b.on_reply(&reply, &mut buf).unwrap();
+        let (_, ready) = exchange(&mut p, &buf[..n], now);
+        let mut seen = [0u8; MAX_MESSAGE];
+        let r = b.on_ready(&ready, &mut seen).unwrap();
+        assert_eq!(r.phase, Phase::Unprovisioned.as_u8());
+        let list: ScanList<8> = ScanList::decode(&seen[..r.scan_len]).unwrap();
+        assert_eq!(list.entries()[0].ssid(), b"home", "the scan list went out sealed");
+
+        let mut rec = [0u8; 256];
+        let mut w = RecordWriter::new(&mut rec);
+        w.network(b"home", b"a-home-passphrase").unwrap();
+        let rl = w.len();
+        let n = b.send_settings(&rec[..rl], &mut buf).unwrap();
+        let (out, result) = exchange(&mut p, &buf[..n], now);
         assert_eq!(out.action, Action::Connect);
         assert_eq!(out.status, Some(Phase::Connecting.as_u8()));
-        assert_eq!(p.credentials().unwrap().ssid(), b"home-net");
-        let mut b = [0u8; 4];
-        assert_eq!(p.read(CHAR_STATUS, &mut b).unwrap(), 1);
-        assert_eq!(b[0], Phase::Connecting.as_u8());
-        let joined = p.on_event(Event::Connected, Micros(1_000));
-        assert_eq!(joined.action, Action::None);
+        assert_eq!(b.on_result(&result).unwrap().0, ResultCode::Applied);
+        let c = p.credentials().unwrap();
+        assert_eq!((c.ssid(), c.psk()), (&b"home"[..], &b"a-home-passphrase"[..]));
+        let joined = p.on_event(Event::Connected, now);
         assert_eq!(joined.status, Some(Phase::Connected.as_u8()));
-        // a second identical event is no phase change and no notification
-        assert_eq!(p.on_event(Event::Connected, Micros(2_000)).status, None);
-        assert!(!format!("{p:?}").contains("correct horse"));
-        assert!(format!("{p:?}").contains("has_credentials: true"));
+
+        // the window that a power-on opened closes; so does the advertising
+        assert!(p.advertising(Micros::from_secs(500)));
+        assert!(!p.advertising(Micros::from_secs(700)));
     }
 
     #[test]
-    fn bad_writes_change_nothing_and_the_secret_never_reads_back() {
-        let mut p: Provisioner = Provisioner::new(StationPolicy::default());
+    fn the_table_refuses_what_is_not_the_session() {
+        let (mut p, _) = bench(false);
+        let now = Micros::from_secs(2);
+        assert_eq!(p.on_write(CHAR_STATUS, &[1], now), Err(Error::Denied));
+        assert_eq!(p.on_write(CHAR_DISCOVER, &[0; 59], now), Err(Error::Denied));
+        // the retired characteristics are no one's now
+        let retired = crate::ble::janus_uuid(0x0101);
+        assert_eq!(p.on_write(retired, &[1, 1, b'x'], now), Err(Error::Unsupported));
+        let mut v = [0u8; 300];
         assert_eq!(
-            p.on_write(CHAR_CREDENTIALS, &[1, 3, b'a'], Micros(0)),
-            Err(Error::InvalidFormat)
-        );
-        assert_eq!(p.phase(), Phase::Unprovisioned);
-        assert!(p.credentials().is_none());
-        assert_eq!(p.on_write(CHAR_STATUS, &[2], Micros(0)), Err(Error::Denied));
-        assert_eq!(p.on_write(CHAR_SCAN, &[], Micros(0)), Err(Error::Denied));
-        assert_eq!(
-            p.on_write(CHAR_DID, b"did:mata:x", Micros(0)),
-            Err(Error::Denied)
-        );
-        assert_eq!(
-            p.on_write(crate::ble::janus_uuid(0x7777), &[], Micros(0)),
-            Err(Error::Unsupported)
-        );
-        let (tlv, n) = creds_tlv(b"net", b"passphrase1");
-        p.on_write(CHAR_CREDENTIALS, &tlv[..n], Micros(0)).unwrap();
-        let mut out = [0u8; 128];
-        assert_eq!(p.read(CHAR_CREDENTIALS, &mut out), Err(Error::Denied));
-        assert_eq!(p.read(CHAR_MANIFEST, &mut out), Err(Error::Unsupported));
-        assert_eq!(
-            p.read(SERVICE_PROVISIONING, &mut out),
+            p.read(crate::ble::janus_uuid(0x0103), now, &mut v),
             Err(Error::Unsupported)
         );
         assert_eq!(
-            p.read(CHAR_STATUS, &mut []),
-            Err(Error::BufferTooSmall { needed: 1 })
+            p.on_write(crate::ble::CHAR_DID, &[1], now),
+            Err(Error::Denied),
+            "someone else's characteristic"
         );
+        // nothing to read before the first write
+        assert_eq!(p.read(CHAR_SETUP, now, &mut v), Ok(0));
+        // a malformed message is answered, not dropped: an Error in the value
+        let (_, answer) = exchange(&mut p, &[1, 1, 0], now);
+        assert_eq!(answer[1], crate::setup::message::kind::ERROR);
     }
 
     #[test]
-    fn restore_forget_and_replace() {
-        let mut p: Provisioner = Provisioner::new(StationPolicy::default());
-        let out = p.restore(Credentials::new(b"stored", b"").unwrap(), Micros(5));
+    fn a_wrong_code_then_the_peer_leaves_and_the_device_is_free_again() {
+        let (mut p, devpub) = bench(false);
+        let now = Micros::from_secs(2);
+        let (mut b, reply) = start(&mut p, &devpub, "AAAAA-AAAAA", now);
+        let mut buf = [0u8; MAX_MESSAGE];
+        assert!(b.on_reply(&reply, &mut buf).is_err(), "the browser refuses at Reply");
+        // the session is still in flight until the carrier closes: Busy
+        let (_, busy) = start(&mut p, &devpub, CODE, now);
+        assert_eq!(busy[1], crate::setup::message::kind::ERROR);
+        assert_eq!(ResultCode::from_u8(busy[2]), Some(ResultCode::Busy));
+        p.carrier_closed();
+        let mut v = [0u8; MAX_MESSAGE];
+        assert_eq!(p.read(CHAR_SETUP, now, &mut v), Ok(0), "the answer is wiped");
+        // after the backoff a new connection gets a session
+        let later = now.add_micros(2_000_000);
+        let (mut b, reply) = start(&mut p, &devpub, CODE, later);
+        assert!(b.on_reply(&reply, &mut buf).is_ok());
+    }
+
+    #[test]
+    fn boot_restores_the_stored_network_and_forget_wipes_it() {
+        let (mut p, _) = bench(true);
+        let now = Micros::from_secs(1);
+        let out = p.boot(now);
         assert_eq!(out.action, Action::Connect);
-        assert_eq!(p.phase(), Phase::Connecting);
-        p.on_event(Event::Connected, Micros(6));
-        // new credentials while joined: adopt and reconnect
-        let (tlv, n) = creds_tlv(
-            b"other",
-            b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-        );
-        let out = p.on_write(CHAR_CREDENTIALS, &tlv[..n], Micros(7)).unwrap();
-        assert_eq!(out.action, Action::Connect);
-        assert_eq!(p.credentials().unwrap().ssid(), b"other");
-        let out = p.forget(Micros(8));
+        assert_eq!(p.credentials().unwrap().ssid(), b"old-net");
+        let out = p.forget(now).unwrap();
         assert_eq!(out.action, Action::StartProvisioning);
-        assert_eq!(out.status, Some(Phase::Unprovisioned.as_u8()));
         assert!(p.credentials().is_none());
-        assert_eq!(p.policy().failures(), 0);
+        let mut v = [0u8; 64];
+        assert_eq!(p.env().settings.get(key::SSID, &mut v), Ok(None));
+        assert_eq!(p.env().settings.get(key::PSK, &mut v), Ok(None));
+        assert!(p.advertising(Micros::from_secs(5_000)), "unprovisioned again");
+    }
+
+    #[test]
+    fn a_network_that_never_joins_reopens_the_window() {
+        let (mut p, _) = bench(true);
+        let now = Micros::from_secs(1);
+        assert_eq!(p.boot(now).action, Action::Connect);
+        // long after the power-on's window: closed, and provisioned
+        let mut later = Micros::from_secs(5_000);
+        assert!(!p.advertising(later));
+        // the join fails, the policy waits, retries, fails again...
+        let mut out = p.on_event(Event::Disconnected, later);
+        let mut n = 1;
+        while out.action != Action::StartProvisioning {
+            assert!(n < 64, "the policy never fell back");
+            if let Action::Wait(us) = out.action {
+                later = later.add_micros(us.0);
+                out = p.on_event(Event::Tick, later);
+                assert_eq!(out.action, Action::Connect, "the retry");
+            }
+            assert!(!p.advertising(later), "still closed while it retries");
+            out = p.on_event(Event::Disconnected, later);
+            n += 1;
+        }
+        assert_eq!(p.phase(), Phase::Fallback);
+        assert!(p.advertising(later), "falling back opens the window");
+        assert!(p.advertising(later.add_micros(599_000_000)));
+        assert!(!p.advertising(later.add_micros(601_000_000)), "for the button's 600 s");
+    }
+
+    #[test]
+    fn a_fresh_network_that_fails_its_first_join_reopens_the_window() {
+        // a board reset by its flashing (not a power-on): open only while
+        // unprovisioned
+        let (mut p, devpub) = bench(false);
+        let late = Micros::from_secs(4_000);
+        let mut s = ScanList::new();
+        s.push(ScanEntry::new(b"home", -50, true).unwrap());
+        p.set_scan(s);
+        let (mut b, reply) = start(&mut p, &devpub, CODE, late);
+        let mut buf = [0u8; MAX_MESSAGE];
+        let n = b.on_reply(&reply, &mut buf).unwrap();
+        exchange(&mut p, &buf[..n], late);
+        let mut rec = [0u8; 128];
+        let mut w = RecordWriter::new(&mut rec);
+        w.network(b"home", b"a-mistyped-pass").unwrap();
+        let rl = w.len();
+        let n = b.send_settings(&rec[..rl], &mut buf).unwrap();
+        let (out, _) = exchange(&mut p, &buf[..n], late);
+        assert_eq!(out.action, Action::Connect);
+        p.carrier_closed();
+        assert!(!p.advertising(late), "provisioned now: the window closed");
+        // the join fails: the window opens for the correction
+        p.on_event(Event::Disconnected, late);
+        assert!(p.advertising(late));
+        assert!(!p.advertising(late.add_micros(601_000_000)));
+        // a network that joined once does not reopen it on a drop
+        let (mut p, _) = bench(true);
+        p.boot(late);
+        p.on_event(Event::Connected, late);
+        p.on_event(Event::Disconnected, late);
+        assert!(!p.advertising(late));
+    }
+
+    #[test]
+    fn debug_shows_neither_the_network_nor_the_answer() {
+        let (mut p, _) = bench(true);
+        p.boot(Micros::from_secs(1));
+        let s = format!("{p:?}");
+        assert!(!s.contains("old-pass"), "{s}");
+        assert!(s.contains("has_credentials: true"), "{s}");
+    }
+
+    /// The Web Bluetooth page names the table this router serves, the
+    /// scan list's tags and the phases, and none of the retired
+    /// characteristics. (`tools/provision-page-check.mjs` runs the page's
+    /// session against this router.)
+    #[test]
+    fn the_provisioning_page_agrees_with_the_table() {
+        let page = include_str!("../../../docs/provision.html");
+        let mut buf = [0u8; 36];
+        for (uuid, name) in [
+            (crate::ble::SERVICE_PROVISIONING, "provisioning service"),
+            (CHAR_STATUS, "status"),
+            (CHAR_SETUP, "setup"),
+            (CHAR_DISCOVER, "discover"),
+        ] {
+            let s = uuid.write_hyphenated(&mut buf).unwrap();
+            assert!(page.contains(s), "the page must name the {name} UUID {s}");
+        }
+        for retired in [0x0101, 0x0103] {
+            let s = crate::ble::janus_uuid(retired)
+                .write_hyphenated(&mut buf)
+                .unwrap();
+            assert!(!page.contains(s), "the page names a retired UUID {s}");
+        }
+        for (tag, name) in [
+            (TAG_SSID, "TAG_SSID"),
+            (TAG_RSSI, "TAG_RSSI"),
+            (TAG_SECURED, "TAG_SECURED"),
+        ] {
+            assert!(page.contains(&format!("{name} = {tag}")), "{name}");
+        }
+        for phase in [
+            "Unprovisioned",
+            "Connecting",
+            "Connected",
+            "Backoff",
+            "Fallback",
+        ] {
+            assert!(page.contains(phase), "{phase}");
+        }
+        assert!(
+            page.contains("const PAGE_WASM = \""),
+            "the page carries its wasm: run tools/build-provision-page.py"
+        );
     }
 
     #[test]
@@ -517,56 +974,27 @@ mod tests {
     }
 
     #[test]
-    fn a_full_scan_of_eight_long_names_fits_the_characteristic() {
-        let mut p: Provisioner = Provisioner::new(StationPolicy::default());
-        let mut list = ScanList::new();
+    fn a_network_seen_through_several_access_points_is_listed_once() {
+        let mut list: ScanList<4> = ScanList::new();
+        list.push(ScanEntry::new(b"home", -70, true).unwrap());
+        list.push(ScanEntry::new(b"cafe", -60, false).unwrap());
+        list.push(ScanEntry::new(b"home", -45, true).unwrap()); // the mesh's nearer node
+        list.push(ScanEntry::new(b"home", -80, true).unwrap()); // a farther one
+        let seen: std::vec::Vec<(&[u8], i8)> =
+            list.entries().iter().map(|e| (e.ssid(), e.rssi_dbm)).collect();
+        assert_eq!(seen, [(&b"home"[..], -45), (&b"cafe"[..], -60)]);
+    }
+
+    #[test]
+    fn a_full_scan_of_eight_long_names_fits_one_ready() {
+        let mut list: ScanList<8> = ScanList::new();
         for i in 0..8u8 {
             list.push(ScanEntry::new(&[b'a' + i; 32], -50 - i as i8, i % 2 == 0).unwrap());
         }
-        p.set_scan(list);
         let mut out = [0u8; SCAN_MAX_LEN];
-        let n = p.read(CHAR_SCAN, &mut out).unwrap();
+        let n = list.encode(&mut out).unwrap();
         assert_eq!(n, 6 * 40, "six of eight 40-byte entries fit in 240");
-        assert_eq!(ScanList::<8>::decode(&out[..n]).unwrap().len(), 6);
-    }
-
-    /// The Web Bluetooth page names the same UUIDs and tags this crate does.
-    #[test]
-    fn the_provisioning_page_agrees_with_the_table() {
-        let page = include_str!("../../../docs/provision.html");
-        let mut buf = [0u8; 36];
-        for (uuid, name) in [
-            (SERVICE_PROVISIONING, "provisioning service"),
-            (CHAR_CREDENTIALS, "credentials"),
-            (CHAR_STATUS, "status"),
-            (CHAR_SCAN, "scan"),
-            (crate::ble::SERVICE_MANIFEST, "manifest service"),
-            (CHAR_DID, "did"),
-            (crate::ble::CHAR_TICKET, "ticket"),
-        ] {
-            let s = uuid.write_hyphenated(&mut buf).unwrap();
-            assert!(page.contains(s), "the page must name the {name} UUID {s}");
-        }
-        for (tag, name) in [
-            (TAG_SSID, "TAG_SSID"),
-            (crate::wifi::TAG_PSK, "TAG_PSK"),
-            (TAG_RSSI, "TAG_RSSI"),
-            (TAG_SECURED, "TAG_SECURED"),
-        ] {
-            assert!(page.contains(&format!("{name} = {tag}")), "{name}");
-        }
-        for phase in [
-            "Unprovisioned",
-            "Connecting",
-            "Connected",
-            "Backoff",
-            "Fallback",
-        ] {
-            assert!(page.contains(phase), "{phase}");
-        }
-        assert!(
-            !page.contains("console.log(psk"),
-            "the page never logs the secret"
-        );
+        // Ready: header, then sealed (phase || scan) and its tag
+        assert!(2 + 1 + n + crate::setup::TAG_LEN <= MAX_MESSAGE);
     }
 }

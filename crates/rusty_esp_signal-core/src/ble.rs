@@ -117,14 +117,27 @@ pub const fn janus_uuid(short: u16) -> Uuid128 {
     Uuid128(bytes)
 }
 
-/// Provisioning service, `…-000000000100`: Wi-Fi credentials in, status out.
+/// Provisioning service, `…-000000000100`: the setup session (the Janus
+/// umbrella's `docs/setup-protocol.md`, section 11.1) and the phase.
+///
+/// `…-0101` (`credentials`, plaintext Wi-Fi in) and `…-0103` (`scan`, the
+/// networks in the clear) are retired: the settings arrive sealed in the
+/// session and the scan list goes out sealed in its Ready. Their UUIDs are
+/// not reused.
 pub const SERVICE_PROVISIONING: Uuid128 = janus_uuid(0x0100);
-/// `credentials`, `…-0101`: WRITE, the `wifi::Credentials` TLV.
-pub const CHAR_CREDENTIALS: Uuid128 = janus_uuid(0x0101);
 /// `status`, `…-0102`: READ|NOTIFY, the `wifi::Phase` as one byte.
 pub const CHAR_STATUS: Uuid128 = janus_uuid(0x0102);
-/// `scan`, `…-0103`: READ, visible SSIDs as TLV tag-1 entries.
-pub const CHAR_SCAN: Uuid128 = janus_uuid(0x0103);
+/// `setup`, `…-0104`: WRITE|READ|NOTIFY, the session's messages. The
+/// browser writes one; the device puts its answer in the value and notifies
+/// the answer's two header bytes; the browser reads the value.
+pub const CHAR_SETUP: Uuid128 = janus_uuid(0x0104);
+/// `discover`, `…-0105`: READ, the device's Discover.
+pub const CHAR_DISCOVER: Uuid128 = janus_uuid(0x0105);
+
+/// Bytes of the largest `setup` value: one session message.
+pub const SETUP_VALUE_LEN: u16 = 512;
+/// Bytes of the `discover` value.
+pub const DISCOVER_VALUE_LEN: u16 = 59;
 
 /// Manifest service, `…-000000000200`: who this device is.
 pub const SERVICE_MANIFEST: Uuid128 = janus_uuid(0x0200);
@@ -307,22 +320,22 @@ pub const ATT_MAX_VALUE_LEN: u16 = 512;
 /// Characteristics of [`SERVICE_PROVISIONING`].
 pub const PROVISIONING_CHARACTERISTICS: [Characteristic; 3] = [
     Characteristic {
-        uuid: CHAR_CREDENTIALS,
-        props: Props::WRITE,
-        max_len: 100,
-        name: "credentials",
-    },
-    Characteristic {
         uuid: CHAR_STATUS,
         props: Props::READ.union(Props::NOTIFY),
         max_len: 1,
         name: "status",
     },
     Characteristic {
-        uuid: CHAR_SCAN,
+        uuid: CHAR_SETUP,
+        props: Props::WRITE.union(Props::READ).union(Props::NOTIFY),
+        max_len: SETUP_VALUE_LEN,
+        name: "setup",
+    },
+    Characteristic {
+        uuid: CHAR_DISCOVER,
         props: Props::READ,
-        max_len: 240,
-        name: "scan",
+        max_len: DISCOVER_VALUE_LEN,
+        name: "discover",
     },
 ];
 
@@ -424,9 +437,9 @@ pub const LEGACY_ADV_NAME_BUDGET: usize =
 ///
 /// | service      | characteristic | props        | max | value |
 /// |--------------|----------------|--------------|-----|-------|
-/// | provisioning | credentials    | WRITE        | 100 | `wifi::Credentials` TLV |
 /// | provisioning | status         | READ, NOTIFY | 1   | `wifi::Phase` as u8 |
-/// | provisioning | scan           | READ         | 240 | SSIDs as TLV tag 1 entries |
+/// | provisioning | setup          | WRITE, READ, NOTIFY | 512 | the setup session's messages |
+/// | provisioning | discover       | READ         | 59  | the setup session's Discover |
 /// | manifest     | manifest       | READ         | 512 | signed capability manifest |
 /// | manifest     | did            | READ         | 55  | `did:mata:` string |
 /// | manifest     | ticket         | READ         | 128 | `janus1…` ticket string |
@@ -573,20 +586,32 @@ mod tests {
                 assert_eq!(c.max_len, max_len, "{name} max_len");
             }
         };
-        expect(CHAR_CREDENTIALS, "credentials", Props::WRITE, 100);
         expect(CHAR_STATUS, "status", Props::READ | Props::NOTIFY, 1);
-        expect(CHAR_SCAN, "scan", Props::READ, 240);
+        expect(
+            CHAR_SETUP,
+            "setup",
+            Props::WRITE | Props::READ | Props::NOTIFY,
+            512,
+        );
+        expect(CHAR_DISCOVER, "discover", Props::READ, 59);
         expect(CHAR_MANIFEST, "manifest", Props::READ, 512);
         expect(CHAR_DID, "did", Props::READ, 55);
         expect(CHAR_TICKET, "ticket", Props::READ, 128);
         expect(CHAR_RSSI, "rssi", Props::READ | Props::NOTIFY, 1);
         expect(CHAR_UPTIME, "uptime", Props::READ, 4);
         expect(CHAR_PRESENCE, "presence", Props::READ | Props::NOTIFY, 2);
-        // The credentials characteristic carries the largest wifi TLV.
+        // `setup` carries the session's largest message, `discover` its
+        // Discover; the retired UUIDs are gone from the table.
         assert_eq!(
-            usize::from(PROVISIONING_CHARACTERISTICS[0].max_len),
-            crate::wifi::MAX_ENCODED_LEN
+            usize::from(SETUP_VALUE_LEN),
+            crate::setup::MAX_MESSAGE
         );
+        assert_eq!(
+            usize::from(DISCOVER_VALUE_LEN),
+            crate::setup::message::DISCOVER_LEN
+        );
+        assert_eq!(GATT_TABLE.find(janus_uuid(0x0101)), None);
+        assert_eq!(GATT_TABLE.find(janus_uuid(0x0103)), None);
         // No value exceeds what ATT can carry.
         for c in GATT_TABLE.characteristics() {
             assert!(c.max_len <= ATT_MAX_VALUE_LEN, "{}", c.name);
@@ -597,7 +622,7 @@ mod tests {
     #[test]
     fn find_misses_services_and_strangers() {
         assert_eq!(GATT_TABLE.find(SERVICE_PROVISIONING), None);
-        assert_eq!(GATT_TABLE.find(janus_uuid(0x0104)), None);
+        assert_eq!(GATT_TABLE.find(janus_uuid(0x0106)), None);
         assert_eq!(GATT_TABLE.find(Uuid128::new([0xff; 16])), None);
         assert_eq!(
             GATT_TABLE.find_service(SERVICE_TELEMETRY).map(|s| s.name),

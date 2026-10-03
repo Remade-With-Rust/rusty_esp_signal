@@ -1,0 +1,14 @@
+[build]
+target = "xtensa-esp32s3-none-elf"
+
+[target.xtensa-esp32s3-none-elf]
+runner = "espflash flash --monitor"
+# `-nostartfiles` (killing-C X11): the gcc driver would add crti.o/crtn.o --
+# six bytes of `_init`/`_fini` that nothing calls, the last C in the image.
+rustflags = ["-C", "link-arg=-Tlinkall.x", "-C", "link-arg=-nostartfiles"]
+
+[unstable]
+build-std = ["core", "alloc"]
+
+[env]
+ESP_LOG = "info"

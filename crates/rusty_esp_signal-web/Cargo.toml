@@ -1,0 +1,37 @@
+# The provisioning page's wasm (`docs/provision.html`): the setup session's
+# browser half from `rusty_esp_signal-core::setup`, bound for JavaScript.
+# The page moves bytes over Web Bluetooth; everything it checks, derives or
+# seals is here.
+#
+# `sim` adds the device half behind the same GATT router the firmware runs
+# (`provision::Provisioner`), for the host test that drives the page's own
+# script against it (`tools/provision-page-check.mjs`). The page never
+# carries it.
+[package]
+name = "rusty_esp_signal-web"
+description = "The Janus provisioning page's wasm: the setup session's browser half, for Web Bluetooth."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+sim = ["rusty_esp_core/std"]
+
+[dependencies]
+rusty_esp_signal-core = { workspace = true }
+rusty_esp_core = { workspace = true, features = ["alloc"] }
+# The CLI that binds the page is 0.2.128; the two must match exactly.
+wasm-bindgen = "=0.2.128"
+js-sys = "0.3"
+zeroize = { workspace = true }
+
+[lints]
+workspace = true

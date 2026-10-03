@@ -1,0 +1,75 @@
+# Janus S3 on Track B — XIAO ESP32-S3 Sense, no_std on esp-hal: Wi-Fi
+# provisioning over BLE with no ESP-IDF and no Bluedroid under it. The twin
+# of `xiao-s3-sense-idf-ble-provision`, row X3 of the killing-C plan, and
+# `c6-ble-provision`'s stack on the S3 with the join it could not do.
+#
+# A separate cargo project on purpose (Xtensa target, the esp toolchain,
+# build-std). Build from this directory. See README.md for the kill test.
+
+[package]
+name = "xiao-s3-sense-hal-ble-provision"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Janus S3 on Track B: XIAO ESP32-S3 Sense provisioned over BLE (trouble-host on esp-radio) through the setup session, joining Wi-Fi with the network it applied and restarting into station mode."
+
+[[bin]]
+name = "xiao-s3-sense-hal-ble-provision"
+harness = false # no cargo test harness on the chip
+
+[features]
+# The radio's and the host's own log lines on the serial port (HCI, the
+# device address, coex), at the level `ESP_LOG` names: 48 KB of image, for
+# the bench. `cargo build --release --features diag`.
+diag = ["esp-radio/log-04", "esp-println/log-04", "trouble-host/log", "dep:log"]
+
+[dependencies]
+# The chip is selected HERE (not in a library): esp-hal, esp-radio and
+# esp-rtos get the esp32s3 feature, and the -esp crate's features turn on
+# the backends cargo then compiles for this chip. `coex` is the S3's one
+# modem shared by both radios: the join happens while the phone is still
+# connected over BLE, so it can be told the outcome.
+esp-hal = { version = "=1.2.0", features = ["esp32s3", "unstable", "rt"] }
+esp-radio = { version = "=1.0.0-beta.1", features = ["esp32s3", "wifi", "ble", "coex", "unstable"] }
+esp-rtos = { version = "=0.4.0", features = ["esp32s3", "esp-radio", "embassy"] }
+esp-alloc = { version = "=0.11.0", features = ["esp32s3"] }
+esp-bootloader-esp-idf = { version = "=0.6.0", features = ["esp32s3"] }
+esp-println = { version = "=0.18.0", features = ["esp32s3"] }
+esp-backtrace = { version = "=0.20.0", features = ["esp32s3", "panic-handler", "println"] }
+embassy-executor = "0.10"
+embassy-time = "0.5"
+embassy-futures = "0.1"
+embassy-net = { version = "0.9", default-features = false, features = ["proto-ipv4", "dhcpv4", "udp", "tcp", "medium-ethernet"] }
+trouble-host = { version = "0.7", features = ["gatt", "peripheral"] }
+bt-hci = "0.9"
+static_cell = "2"
+log = { version = "0.4", optional = true }
+# The SPI flash through the ROM's routines, in Rust: the settings' and the
+# identity's home.
+esp-storage = { version = "=0.10.0", features = ["esp32s3"] }
+
+# This repo's crates by path; the siblings by git URL (the repo's
+# .cargo/config.toml patches them to local checkouts).
+rusty_esp_signal-core = { path = "../../crates/rusty_esp_signal-core", default-features = false, features = ["alloc"] }
+rusty_esp_signal-esp = { path = "../../crates/rusty_esp_signal-esp", default-features = false, features = ["ble", "embassy-net"] }
+rusty_esp_core = { git = "https://github.com/Remade-With-Rust/rusty_esp_core", version = "0.1", default-features = false, features = ["alloc"] }
+# The device key, and the Track B seams it lives behind: the partition table,
+# a partition as NVS flash, the TRNG.
+rusty_esp_mid-core = { git = "https://github.com/Remade-With-Rust/rusty_esp_mid", default-features = false, features = ["alloc"] }
+rusty_esp_mid-esp = { git = "https://github.com/Remade-With-Rust/rusty_esp_mid", default-features = false, features = ["esp-hal"] }
+
+# The IDF twin's profile, so the two are compared like for like.
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = "z"
+panic = "abort"
+
+# A standalone cargo project: not a member of the rusty_esp_signal workspace.
+[workspace]
