@@ -1149,6 +1149,7 @@ mod private {
                     )
                     .await
                     .map(|_| i as u8);
+                crate::tx_stats::attempt(&last_res);
                 if matches!(last_res, Err(TxError::MacProtocol(_))) {
                     // The peer may have received this MPDU even if its ACK was
                     // lost. Mark later attempts as retries of the same frame.

@@ -10,12 +10,32 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use portable_atomic::AtomicU64;
 
 use crate::async_driver::TxError;
+use crate::ll::{ChannelAccessError, MacProtocolError};
 
 static FRAMES: AtomicU32 = AtomicU32::new(0);
 static FAILED: AtomicU32 = AtomicU32::new(0);
 static FIRST_OK: AtomicU32 = AtomicU32::new(0);
 static ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 static RADIO_US: AtomicU64 = AtomicU64::new(0);
+static ACK_TIMEOUT: AtomicU32 = AtomicU32::new(0);
+static MAC_OTHER: AtomicU32 = AtomicU32::new(0);
+static ACCESS_TIMEOUT: AtomicU32 = AtomicU32::new(0);
+static ACCESS_COLLISION: AtomicU32 = AtomicU32::new(0);
+static OTHER: AtomicU32 = AtomicU32::new(0);
+
+/// One attempt's outcome, by kind: what a failed attempt failed of.
+pub(crate) fn attempt<T>(result: &Result<T, TxError>) {
+    let counter = match result {
+        Ok(_) => return,
+        Err(TxError::MacProtocol(MacProtocolError::AckTimeout)) => &ACK_TIMEOUT,
+        Err(TxError::MacProtocol(_)) => &MAC_OTHER,
+        Err(TxError::ChannelAccess(ChannelAccessError::Timeout)) => &ACCESS_TIMEOUT,
+        Err(TxError::ChannelAccess(ChannelAccessError::Collision)) => &ACCESS_COLLISION,
+        #[allow(unreachable_patterns)]
+        Err(_) => &OTHER,
+    };
+    counter.fetch_add(1, Ordering::Relaxed);
+}
 
 /// One frame's outcome: `Ok(i)` is the index of the attempt that succeeded.
 pub(crate) fn record(result: &Result<u8, TxError>, micros: u64) {
@@ -47,6 +67,16 @@ pub struct TxStats {
     pub attempts: u32,
     /// Microseconds from first start to last result, summed over frames.
     pub radio_us: u64,
+    /// Failed attempts: no ACK in time.
+    pub ack_timeout: u32,
+    /// Failed attempts: another MAC protocol error (CTS timeout, key...).
+    pub mac_other: u32,
+    /// Failed attempts: channel access timed out.
+    pub access_timeout: u32,
+    /// Failed attempts: channel access collided (another queue won).
+    pub access_collision: u32,
+    /// Failed attempts of any other kind.
+    pub other: u32,
 }
 
 /// Read the counters.
@@ -58,5 +88,10 @@ pub fn snapshot() -> TxStats {
         first_ok: FIRST_OK.load(Ordering::Relaxed),
         attempts: ATTEMPTS.load(Ordering::Relaxed),
         radio_us: RADIO_US.load(Ordering::Relaxed),
+        ack_timeout: ACK_TIMEOUT.load(Ordering::Relaxed),
+        mac_other: MAC_OTHER.load(Ordering::Relaxed),
+        access_timeout: ACCESS_TIMEOUT.load(Ordering::Relaxed),
+        access_collision: ACCESS_COLLISION.load(Ordering::Relaxed),
+        other: OTHER.load(Ordering::Relaxed),
     }
 }

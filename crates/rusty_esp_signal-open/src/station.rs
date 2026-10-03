@@ -293,6 +293,10 @@ pub async fn run_station(
                 let mut rate = RateControl::new();
                 while control.connected() {
                     Timer::after(LINK_POLL).await;
+                    // JANUS_OPEN_RATE=fixed builds the fixed starting rate (the A/B)
+                    if option_env!("JANUS_OPEN_RATE") == Some("fixed") {
+                        continue;
+                    }
                     if let Some(next) = rate.tick(esp_wifi_hal::tx_stats::snapshot()) {
                         control.override_phy_rate(next.into());
                     }
