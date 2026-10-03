@@ -1292,3 +1292,12 @@ page checks).
 router answers a scan from several access points; the list keeps each name
 once, at its strongest. 183 tests on both widths. On C13 the scan list
 reached the page's side sealed in Ready (espino's ledger).
+
+## enc-ble M7, the host half (2026-10-02, night)
+
+`setup_central.py provision`: a network, sealed (the passphrase from an
+environment variable, never printed), then the join watched on `status`;
+`tools/ble-provision.ps1` in the umbrella is now its wrapper (the plaintext
+tool it replaces is in git history). The page lists the device's networks and
+says, for a typed name, that an SSID is case-sensitive and the ESP32 radios
+are 2.4 GHz only. Page check 9/9, `--check` reproduces it.

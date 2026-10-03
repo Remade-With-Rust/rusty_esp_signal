@@ -11,6 +11,8 @@ trip per message (the device's own time is in its serial log).
 Scenarios:
     discover        read `discover`: the DID, the window, the attempts left
     ready           unlock and open Ready: the networks the device scanned
+    provision       a network (--ssid, the passphrase from --psk-env VAR, never
+                    printed), sealed; then the join watched on `status`
     wrong-code      a session with a wrong code: refused at Reply, nothing applied
     wrong-device    a session expecting another DID: refused before any write
     session         a whole session (a name, and a fresh verifier for the SAME
@@ -42,6 +44,7 @@ ERRORS = {0x01: "Malformed", 0x02: "Version", 0x03: "Busy", 0x04: "WindowClosed"
           0x06: "NoVerifier", 0x07: "Order", 0x08: "Confirm", 0x09: "Seal", 0x20: "BadNetwork",
           0x21: "BadName", 0x22: "BadMaker", 0x23: "BadVerifier", 0x24: "BadAdoption",
           0x25: "UnknownTag", 0x26: "StoreFailed"}
+PHASES = {0: "Unprovisioned", 1: "Connecting", 2: "Connected", 3: "Backoff", 4: "Fallback"}
 RECORDING = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "setup-central-recording.json")
 
 
@@ -218,6 +221,40 @@ async def scenario(args):
             out["verdict"] = f"{len(out['ready']['networks'])} networks in Ready"
             return out
 
+        if args.scenario == "provision":
+            # a network, sealed: the passphrase from the environment, never
+            # printed; then the join watched on `status`
+            psk = os.environ.get(args.psk_env or "", "")
+            if not args.ssid or not psk:
+                raise SystemExit(json.dumps({"verdict": "refused", "note": "--ssid and --psk-env (a set variable) are needed"}))
+            phases = []
+            t0 = time.perf_counter()
+            await link.client.start_notify(STATUS, lambda _c, d: phases.append(
+                (round(time.perf_counter() - t0, 1), PHASES.get(bytes(d)[0], bytes(d)[0]))))
+            pr = v1.Prover(disc, code(args))
+            reply = await link.exchange(pr.start(), "Start")
+            ready = await link.exchange(pr.reply(reply), "Confirm")
+            phase, scan = pr.open_ready(ready)
+            out["ready"] = {"phase": PHASES.get(phase, phase), "networks": len(parse_scan(scan))}
+            record = v1.record_tlv(0x01, args.ssid.encode()) + v1.record_tlv(0x02, psk.encode())
+            if args.set_name:
+                record += v1.record_tlv(0x03, args.set_name.encode())
+            t0 = time.perf_counter()
+            result = await link.exchange(pr.seal_settings(record), "Settings")
+            record = b""
+            code_byte, phase = pr.open_result(result)
+            out["result"] = {"code": "Applied" if code_byte == 0 else ERRORS.get(code_byte, hex(code_byte)),
+                             "phase": PHASES.get(phase, phase)}
+            if code_byte == 0:
+                end = time.perf_counter() + args.watch
+                while time.perf_counter() < end and link.client.is_connected:
+                    if phases and phases[-1][1] in ("Connected", "Fallback"):
+                        break
+                    await asyncio.sleep(0.2)
+            out["status"] = phases
+            out["verdict"] = phases[-1][1] if phases else out["result"]["code"]
+            return out
+
         if args.scenario == "session":
             pr = v1.Prover(disc, code(args))
             recorded = {"start": pr.start().hex()}
@@ -296,8 +333,11 @@ def main():
     ap.add_argument("--expect-did")
     ap.add_argument("--name", default="janus-s3", help="the advertised name ('' for any)")
     ap.add_argument("--set-name", help="the device name the session sets")
+    ap.add_argument("--ssid", help="provision: the network's name")
+    ap.add_argument("--psk-env", help="provision: the environment variable holding its passphrase")
+    ap.add_argument("--watch", type=float, default=40, help="provision: seconds to watch the join")
     args = ap.parse_args()
-    if args.scenario in ("session", "second-writer", "ready") and not args.code_file:
+    if args.scenario in ("session", "second-writer", "ready", "provision") and not args.code_file:
         ap.error("this scenario needs --code-file")
     out = asyncio.run(scenario(args))
     out["at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
