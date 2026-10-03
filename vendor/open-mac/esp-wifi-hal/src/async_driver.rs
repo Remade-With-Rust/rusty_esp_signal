@@ -1185,7 +1185,7 @@ mod private {
             if let Some(byte) = mpdu_buf.get_mut(1) {
                 *byte &= !bit!(3);
             }
-            crate::tx_stats::record(&last_res, tx_started.elapsed().as_micros());
+            crate::tx_stats::record(&last_res, tx_started.elapsed().as_micros(), mpdu_buf.len());
             if let Err(error) = last_res {
                 // Upper layers may enqueue without awaiting a completion handle.
                 // Keep exhausted MAC/medium failures visible without logging payloads.

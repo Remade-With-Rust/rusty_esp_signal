@@ -17,6 +17,7 @@ static FAILED: AtomicU32 = AtomicU32::new(0);
 static FIRST_OK: AtomicU32 = AtomicU32::new(0);
 static ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 static RADIO_US: AtomicU64 = AtomicU64::new(0);
+static BYTES: AtomicU64 = AtomicU64::new(0);
 static ACK_TIMEOUT: AtomicU32 = AtomicU32::new(0);
 static MAC_OTHER: AtomicU32 = AtomicU32::new(0);
 static ACCESS_TIMEOUT: AtomicU32 = AtomicU32::new(0);
@@ -79,11 +80,12 @@ pub(crate) fn attempt<T>(result: &Result<T, TxError>) {
 }
 
 /// One frame's outcome: `Ok(i)` is the index of the attempt that succeeded.
-pub(crate) fn record(result: &Result<u8, TxError>, micros: u64) {
+pub(crate) fn record(result: &Result<u8, TxError>, micros: u64, len: usize) {
     FRAMES.fetch_add(1, Ordering::Relaxed);
     RADIO_US.fetch_add(micros, Ordering::Relaxed);
     match result {
         Ok(i) => {
+            BYTES.fetch_add(len as u64, Ordering::Relaxed);
             ATTEMPTS.fetch_add(u32::from(*i) + 1, Ordering::Relaxed);
             if *i == 0 {
                 FIRST_OK.fetch_add(1, Ordering::Relaxed);
@@ -108,6 +110,8 @@ pub struct TxStats {
     pub attempts: u32,
     /// Microseconds from first start to last result, summed over frames.
     pub radio_us: u64,
+    /// MPDU bytes of the frames that were delivered (acknowledged).
+    pub bytes: u64,
     /// Failed attempts: no ACK in time.
     pub ack_timeout: u32,
     /// Failed attempts: another MAC protocol error (CTS timeout, key...).
@@ -135,6 +139,7 @@ pub fn snapshot() -> TxStats {
         first_ok: FIRST_OK.load(Ordering::Relaxed),
         attempts: ATTEMPTS.load(Ordering::Relaxed),
         radio_us: RADIO_US.load(Ordering::Relaxed),
+        bytes: BYTES.load(Ordering::Relaxed),
         ack_timeout: ACK_TIMEOUT.load(Ordering::Relaxed),
         mac_other: MAC_OTHER.load(Ordering::Relaxed),
         access_timeout: ACCESS_TIMEOUT.load(Ordering::Relaxed),

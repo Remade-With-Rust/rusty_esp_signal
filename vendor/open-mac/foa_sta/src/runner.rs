@@ -216,7 +216,7 @@ impl ConnectionRunner<'_, '_> {
                 continue;
             };
             let _ = sta_tx_rx.tx_endpoint.transmit_edca(
-                EdcaAccessCategory::default(),
+                data_access_category(),
                 tx_buf,
                 written,
                 TxPlcpParameters {
@@ -519,5 +519,20 @@ fn data_rts_strategy() -> foa::esp_wifi_hal::async_driver::RtsStrategy {
         foa::esp_wifi_hal::async_driver::RtsStrategy::DriverControlled
     } else {
         foa::esp_wifi_hal::async_driver::RtsStrategy::Forced(false)
+    }
+}
+
+/// The EDCA access category data frames contend in (E1, the family's
+/// change). Upstream sends them as best effort: AIFSN 3, CWmin 15. These
+/// are non-QoS data frames, whose 802.11 default (DCF) waits DIFS, which is
+/// AIFSN 2; building with `JANUS_OPEN_AC=vi` sends them as video, AIFSN 2
+/// and CWmin 7, so a frame waits less for the medium. That puts the board
+/// ahead of other stations' best-effort traffic on a shared network, so it
+/// is a build choice, not the default.
+fn data_access_category() -> EdcaAccessCategory {
+    if option_env!("JANUS_OPEN_AC") == Some("vi") {
+        EdcaAccessCategory::Video
+    } else {
+        EdcaAccessCategory::default()
     }
 }

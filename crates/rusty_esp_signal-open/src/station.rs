@@ -120,7 +120,8 @@ static RATE_NOW: AtomicU8 = AtomicU8::new(0);
 /// timeout each, so the rate steps down; a run of clean seconds steps it
 /// back up. Every frame still falls back down the ladder on its own
 /// failures (vendored foa_sta's retry chain); this only moves where the
-/// chain starts.
+/// chain starts. Since [`SampledRate`] it is the A/B's control arm
+/// (`JANUS_OPEN_RATE=threshold`).
 struct RateControl {
     index: usize,
     good_run: u8,
@@ -164,6 +165,124 @@ impl RateControl {
         RATE_NOW.store(next as u8, Ordering::Relaxed);
         Some(LADDER[next])
     }
+}
+
+/// Seconds of traffic at the chosen rate between probes of a neighbour.
+const PROBE_EVERY: u8 = 10;
+/// A probed rate takes over only if its goodput beats the chosen rate's by
+/// this much (per mille of it): measurement noise must not flap the rate.
+const PROBE_WIN_PERMILLE: u64 = 1030;
+/// Below this share of first-attempt successes the chosen rate is failing
+/// outright: a step down at once, without waiting for a probe.
+const RATE_COLLAPSE_BELOW_PERMILLE: u32 = 300;
+
+static RATE_PROBES: AtomicU32 = AtomicU32::new(0);
+static GOODPUT_KBPS: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
+
+/// The starting rate for data frames, chosen by measured goodput (E1's
+/// second rate control, in the manner of Minstrel's sampling). Each second
+/// the driver's counters give the delivered MPDU bytes and the radio time
+/// they took, retries, ACK timeouts and contention included: what a rate
+/// actually delivers per microsecond of the radio, with its failures'
+/// cost counted, where [`RateControl`] looked only at how often the first
+/// attempt failed. Every [`PROBE_EVERY`] seconds one second is spent at a
+/// neighbouring rate (alternately faster and slower), and the faster
+/// deliverer of the two is kept.
+struct SampledRate {
+    index: usize,
+    /// The neighbour being tried this second, if any.
+    probing: Option<usize>,
+    since_probe: u8,
+    probe_up: bool,
+    /// Per rate on [`LADDER`]: the goodput last measured, kbit/s (0: never).
+    goodput: [u32; 8],
+    last: esp_wifi_hal::tx_stats::TxStats,
+}
+
+impl SampledRate {
+    fn new() -> Self {
+        let index = LADDER.iter().position(|r| *r == DATA_RATE).unwrap_or(0);
+        RATE_NOW.store(index as u8, Ordering::Relaxed);
+        Self {
+            index,
+            probing: None,
+            since_probe: 0,
+            probe_up: true,
+            goodput: [0; 8],
+            last: esp_wifi_hal::tx_stats::snapshot(),
+        }
+    }
+
+    fn settle(&mut self, index: usize) -> Option<esp_wifi_hal::rates::OfdmRate> {
+        if index != self.index {
+            self.index = index;
+            RATE_STEPS.fetch_add(1, Ordering::Relaxed);
+            RATE_NOW.store(index as u8, Ordering::Relaxed);
+        }
+        self.since_probe = 0;
+        Some(LADDER[index])
+    }
+
+    /// One second's counters: the rate to move to, if any.
+    fn tick(&mut self, now: esp_wifi_hal::tx_stats::TxStats) -> Option<esp_wifi_hal::rates::OfdmRate> {
+        let frames = now.frames.wrapping_sub(self.last.frames);
+        let first_ok = now.first_ok.wrapping_sub(self.last.first_ok);
+        let bytes = now.bytes.wrapping_sub(self.last.bytes);
+        let radio_us = now.radio_us.wrapping_sub(self.last.radio_us);
+        self.last = now;
+        let active = self.probing.unwrap_or(self.index);
+        let measured = frames >= RATE_MIN_FRAMES && radio_us > 0;
+        if measured {
+            let kbps = u32::try_from(bytes * 8_000 / radio_us).unwrap_or(u32::MAX);
+            let old = self.goodput[active];
+            // a probe's second stands alone; the chosen rate's seconds blend
+            self.goodput[active] = if self.probing.is_some() || old == 0 {
+                kbps
+            } else {
+                ((u64::from(old) * 3 + u64::from(kbps)) / 4) as u32
+            };
+            GOODPUT_KBPS[active].store(self.goodput[active], Ordering::Relaxed);
+        }
+        if let Some(probe) = self.probing {
+            if !measured {
+                // an idle second says nothing: keep trying the neighbour
+                return None;
+            }
+            self.probing = None;
+            let wins = u64::from(self.goodput[probe]) * 1000
+                > u64::from(self.goodput[self.index]) * PROBE_WIN_PERMILLE;
+            return self.settle(if wins { probe } else { self.index });
+        }
+        if !measured {
+            return None;
+        }
+        if first_ok * 1000 / frames < RATE_COLLAPSE_BELOW_PERMILLE && self.index + 1 < LADDER.len() {
+            return self.settle(self.index + 1);
+        }
+        self.since_probe += 1;
+        if self.since_probe < PROBE_EVERY {
+            return None;
+        }
+        self.since_probe = 0;
+        let up = (self.index > 0).then(|| self.index - 1);
+        let down = (self.index + 1 < LADDER.len()).then(|| self.index + 1);
+        let probe = if self.probe_up { up.or(down) } else { down.or(up) }?;
+        self.probe_up = !self.probe_up;
+        self.probing = Some(probe);
+        RATE_PROBES.fetch_add(1, Ordering::Relaxed);
+        Some(LADDER[probe])
+    }
+}
+
+/// The goodput last measured at each rate on the ladder (54 down to 6
+/// Mbit/s), in kbit/s of MPDU bytes per radio microsecond (0: never tried),
+/// and how many probes the rate control has made.
+#[must_use]
+pub fn rate_goodput() -> ([u32; 8], u32) {
+    (
+        core::array::from_fn(|i| GOODPUT_KBPS[i].load(Ordering::Relaxed)),
+        RATE_PROBES.load(Ordering::Relaxed),
+    )
 }
 
 /// The data rate the station starts frames at now, in Mbit/s, and how many
@@ -290,14 +409,20 @@ pub async fn run_station(
             }
             Action::StartProvisioning => return Phase::Fallback,
             Action::None => {
-                let mut rate = RateControl::new();
+                let mut threshold = RateControl::new();
+                let mut sampled = SampledRate::new();
                 while control.connected() {
                     Timer::after(LINK_POLL).await;
-                    // JANUS_OPEN_RATE=fixed builds the fixed starting rate (the A/B)
-                    if option_env!("JANUS_OPEN_RATE") == Some("fixed") {
-                        continue;
-                    }
-                    if let Some(next) = rate.tick(esp_wifi_hal::tx_stats::snapshot()) {
+                    let counters = esp_wifi_hal::tx_stats::snapshot();
+                    // JANUS_OPEN_RATE builds the A/B's arms: `fixed` keeps the
+                    // starting rate, `threshold` the first-attempt thresholds,
+                    // anything else the measured goodput
+                    let next = match option_env!("JANUS_OPEN_RATE") {
+                        Some("fixed") => None,
+                        Some("threshold") => threshold.tick(counters),
+                        _ => sampled.tick(counters),
+                    };
+                    if let Some(next) = next {
                         control.override_phy_rate(next.into());
                     }
                 }
