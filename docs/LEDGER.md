@@ -1713,3 +1713,34 @@ Half the frames still fail their first attempt at 54 Mbit/s on this link:
 the starting rate is too high for it, and each failure costs an ACK
 timeout. An adaptive starting rate (down when first attempts fail, up
 when they succeed, from these counters) is the next step.
+
+### E1 follow-up: an adaptive data rate — past 10 Mbit/s, past esp-radio at rest (2026-10-03)
+
+The transmit counters now say what each failed attempt failed of. With a
+fixed 54 Mbit/s start, every one of the 10,792 failed attempts in a run
+was an ACK timeout (no other MAC error, no channel-access timeout or
+collision): the rate, not the medium. `rusty_esp_signal-open`'s link watch
+now moves where data frames start, once a second from the counters: a step
+down the 802.11g ladder when under 60 % of at least 20 frames got through
+first time, a step up after five seconds above 90 % (each frame still falls
+back on its own failures). On the XIAO over the owner's hotspot, back to
+back (`JANUS_OPEN_RATE=fixed` builds the other arm):
+
+| board → laptop | fixed 54 Mbit/s | adaptive |
+|---|---:|---:|
+| at rest (Mbit/s, lost) | 6.13 (0 %) | **14.92 (0 %)** |
+| under the stream | 9.14 (0 %) | **11.97 (0 %)** |
+| the board's send loop, 2,000 × 1,400 B | 3.62 s | **1.50 s (0.75 ms a frame)** |
+| first-attempt successes / attempts per frame | 64 % / 1.70 | **82 % / 1.34** |
+| radio time per frame (whole run) | 2.11 ms | **1.19 ms** |
+| failed attempts, all ACK timeouts | 10,792 | 5,037 |
+| frames exhausted | 2 of 15,285 | 2 of 14,898 |
+| where the rate settled | 54 (fixed) | **48 Mbit/s, 3 moves** |
+| the stream while tested | 14.98 fps | 14.96 fps |
+
+The open MAC now sends faster than esp-radio did at rest in the same place
+(8.7 Mbit/s, the earlier A/B) and a little slower under the stream (12.0
+against 13.6). From FoA as vendored (6 Mbit/s, RTS on every frame: 3.55 at
+rest) it is 4.2×. The two fixed-54 runs today read 8.29 and 6.13 at rest:
+a phone hotspot moves run to run, which is why every comparison here is
+two arms back to back. NOT Wi-Fi certified.
