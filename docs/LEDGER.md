@@ -1578,3 +1578,83 @@ kill test (WPA2, 100/100 pings, the page, ffmpeg decodes 1,500 frames of
 (`tools/e0-build.py` builds the probes on either; images
 `F:/jt-w/e0/c11s-app.bin` 673,504 B and `c15-app.bin` 435,328 B). Until
 then C15 is Host and `wifi-sta-open` a development build.
+
+## E1 of the experiments plan: the open MAC on the XIAO — kill test passed, E0's table on both arms (2026-10-03)
+
+**Not Wi-Fi certified.** No spare S3 exists, so by the owner's decision the
+bench XIAO took the open MAC's first boot (a full 8 MB backup first; the
+board was given back with its previous image, dldeploy's C13, restored
+from it). The network was the owner's phone hotspot (2.4 GHz; the home
+router's 2.4 GHz side was off that day), set into the board's nvs by C13's
+setup session from Chrome, so no passphrase passed through any tool.
+
+**B1, the first boot, found three things, in order:**
+
+1. *The radio was deaf on our port.* The probe brought the MAC up in 28 ms
+   and ran clean, but FoA's scan heard nothing on any channel, where
+   esp-radio on the same board had just heard three networks. Upstream's
+   own `wifi_smoke`, built at its pins (esp-hal 1.1, esp-phy 0.2), heard 43
+   frames on the board; the same loop on ours heard 0. The cause:
+   **esp-phy 0.3 brings a combo module's radio up out of the Wi-Fi RX
+   state** (`phy_init_param_set(1)` in `enable_phy`, as ESP-IDF does) and
+   leaves `phy_wifi_enable_set(1)` to the Wi-Fi driver; esp-radio does it,
+   upstream's MAC (written against 0.2) does not. One call after
+   `enable_phy()` (vendor/open-mac/UPSTREAM.md): 48 frames, and FoA's scan
+   hears 20–26 networks a pass.
+2. *FoA's join overflowed a 43 KB main stack* (a write to the stack guard,
+   in the ROM's memset). The open arm now takes the BLE cells' dram2 heap
+   split: 116,728 B of main stack; E0 measured the join's peak at 55,552 B.
+3. *The station is silent.* `rusty_esp_signal-open` now counts joins and
+   keeps the last failure's reason; C15 prints them until the link is up.
+   That showed `unable-to-find-ess` while the phone's hotspot was off, and
+   the join as soon as it came back.
+
+**The kill test** (C11's, `tools/e1-kill.py`, over the hotspot; the laptop
+on it for the run): C15 joined WPA2 and took a lease 60 ms after the link,
+**100/100 pings** (9 / 37 / 166 ms min / median / max), the page **403**
+without the token and **200** with it, and ffmpeg decoded **1,500 frames**
+of `/stream` at 12.93 fps with no error; the DID the board's own. C15's
+status stays **Host**: the plan keeps the open stack off by default (D-E2),
+and making it orderable is the owner's call, not a test's.
+
+**E0's table on both arms** (E0's probes, `tools/e0-build.py`, on C11 as a
+station over esp-radio and on C15 over the open MAC: the same camera page,
+the same 128 KB heap — C15's split 72 KB in dram2 + 56 KB static — the same
+board, the same hotspot, one run each, back to back. A phone hotspot is a
+noisier network than E0's router: the network rows are one run each and
+read as such.)
+
+| | C11 as a station (esp-radio) | C15 (the open MAC) |
+|---|---:|---:|
+| internal heap at radio init / once joined (B) | 53,108 / 53,912 | **108 / 108** |
+| internal heap at the last minute line / peak live (B) | 89,260 / 115,394 | **35,308 / 35,393** |
+| radio task stacks (esp-rtos) | 2, 15,048 B | **none** |
+| main stack used at most / size (B) | 11,840 / 48,456 | 55,552 / 115,448 |
+| static RAM, all origins (census, B) | 324,736 | 328,228 |
+| camera sleep lateness, radio off: p99.9 / max | ≤100 µs / 4.2 ms | ≤100 µs / 3.4 ms |
+| idle: p99.9 / max | ≤300 µs / 116 ms | **≤100 µs / 84 ms** |
+| under UDP: p99 / max | ≤400 µs / 73 ms | ≤300 µs / 67 ms |
+| under the stream: p99 / max | ≤600 µs / 93 ms | ≤600 µs / 101 ms |
+| joining: p99.9 / max | ≤20.1 ms / 781 ms | ≤20.1 ms / 377 ms |
+| ping at rest / under the stream, p50 / p99 (ms) | 25 / 104, 30 / 582 | **18 / 84, 19 / 107** |
+| UDP echo 64 B at rest, p50 / p99 (ms), lost | 22.8 / 108, 0 | **12.9 / 80.5**, 10 of 500 |
+| up, laptop → board (Mbit/s, lost): at rest / under the stream | 31.0 (0.15 %) / 9.2 (**59 %**) | 23.9 (0 %) / **14.8 (1.5 %)** |
+| down, board → laptop (Mbit/s, lost): at rest / under the stream | **8.7 (0 %) / 13.6 (0 %)** | 3.5 (0.7 %) / 2.7 (0.6 %) |
+| the stream while tested | 13.98 fps | 13.20 fps |
+
+**What it says.** The heap is where the open MAC wins outright: esp-radio
+takes 53 KB at init and peaks 80 KB above the open MAC over the run, whose
+buffers are static (the census's +3.5 KB) and whose radio needs no task
+stacks. The price is stack: FoA's join runs on the main stack and peaks at
+55 KB, which the dram2 split pays for. Jitter is the same or better with
+the open MAC, except while joining (its scan is busy). Latency is lower
+and receiving under load holds (esp-radio dropped 59 % of a burst under
+the stream; E0 suspected its receive queue of 5). **Sending is the open
+MAC's weak side**: 2.5–5× slower board → laptop, with a little loss —
+FoA's transmit path (one frame in flight, its rate control) is where E2's
+and the next row's work starts. The census row is E0's: the same page is
+653,565 B with 320,540 B of C in 8 archives on esp-radio, and 419,583 B
+with 33,507 B (`libphy.a` alone) on the open MAC.
+
+Raw: `F:/jt-w/e0/{c11s,c15}-results.json` and `-serial.txt` (tokens
+redacted), `F:/jt-w/e1/c15-kill.json`.
