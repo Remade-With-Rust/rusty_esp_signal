@@ -59,6 +59,162 @@ use zeroize::Zeroize;
 
 type HmacSha256 = Hmac<Sha256>;
 
+// ---------------------------------------------------------------------------
+// The block engine
+// ---------------------------------------------------------------------------
+
+/// SHA-256's compression function, run over whole 64-byte blocks: the one
+/// piece of the link's HMAC a chip can do faster than software.
+///
+/// `state` holds the eight working words **in the digest's byte order**:
+/// word `i` is `u32::from_le_bytes(digest[4 * i..4 * i + 4])` (the IV's first
+/// word, `0x6a09e667` in FIPS 180-4, is `0x67e6096a` here). That is the
+/// layout the S3's SHA unit keeps in its H registers, so the hardware engine
+/// moves words without swapping them; the software engine swaps at its
+/// edges (round 3). `blocks` is a whole number of 64-byte blocks of message. An implementation runs every block from `state` and leaves the
+/// result in `state`. Nothing else: padding, lengths and the HMAC are this
+/// module's.
+///
+/// **Why it exists (round 2, R3).** A sealed-and-opened 220-byte frame is
+/// ten compressions, and `sha2`'s software arm on an ESP32-S3 spends ~62 us
+/// on each at 80 MHz; the chip's SHA accelerator, given the midstate and
+/// the blocks, does one in ~6 us. `rusty_esp_signal-esp` has that engine
+/// (`hal::sha::EspSha`); [`SoftSha`] is the oracle every engine is tested
+/// against and what [`Session::seal`] and [`Session::open`] use.
+pub trait Sha256Blocks {
+    /// Run `blocks` (a multiple of 64 bytes) through the compression
+    /// function from `state`.
+    fn compress(&mut self, state: &mut [u32; 8], blocks: &[u8]);
+
+    /// `first` then `second` (each a multiple of 64 bytes, either empty)
+    /// from `state`: a message's whole blocks and its padded tail in one
+    /// call, so an engine that must load and unload its state per call
+    /// (the SHA unit) does it once.
+    fn compress2(&mut self, state: &mut [u32; 8], first: &[u8], second: &[u8]) {
+        self.compress(state, first);
+        self.compress(state, second);
+    }
+}
+
+/// A [`MAX_FRAME`]-byte frame buffer on a 4-byte boundary. A frame sealed
+/// into one, or opened from one, starts its signed bytes on a word, so a
+/// [`Sha256Blocks`] engine can read them a word at a time (the SHA unit's
+/// does; round 2, R3).
+#[repr(C, align(4))]
+#[derive(Clone)]
+pub struct FrameBuf(pub [u8; MAX_FRAME]);
+
+impl FrameBuf {
+    /// All zeros.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self([0u8; MAX_FRAME])
+    }
+}
+
+impl Default for FrameBuf {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A 64- or 128-byte buffer on a 4-byte boundary, so an engine can read it
+/// a word at a time.
+#[repr(C, align(4))]
+struct Aligned<const N: usize>([u8; N]);
+
+/// The software engine: `sha2`'s own compression function.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SoftSha;
+
+impl Sha256Blocks for SoftSha {
+    // `sha2` 0.10's block function takes `generic-array` 0.14's type, which
+    // that crate now marks deprecated by name; there is no other way in.
+    #[allow(deprecated)]
+    fn compress(&mut self, state: &mut [u32; 8], blocks: &[u8]) {
+        // `sha2` wants the words as numbers
+        let mut numeric = state.map(u32::swap_bytes);
+        for block in blocks.chunks_exact(64) {
+            sha2::compress256(
+                &mut numeric,
+                core::slice::from_ref(sha2::digest::generic_array::GenericArray::from_slice(block)),
+            );
+        }
+        *state = numeric.map(u32::swap_bytes);
+    }
+}
+
+/// SHA-256's initial state, in the digest byte order the engines take.
+const IV: [u32; 8] = [
+    0x6a09_e667_u32.swap_bytes(),
+    0xbb67_ae85_u32.swap_bytes(),
+    0x3c6e_f372_u32.swap_bytes(),
+    0xa54f_f53a_u32.swap_bytes(),
+    0x510e_527f_u32.swap_bytes(),
+    0x9b05_688c_u32.swap_bytes(),
+    0x1f83_d9ab_u32.swap_bytes(),
+    0x5be0_cd19_u32.swap_bytes(),
+];
+
+/// An HMAC-SHA256 key as its two midstates: the state after the key's
+/// inner pad block and after its outer pad block. Every message resumes
+/// from these, so a key's pads are hashed once per session, not per frame.
+/// They are as secret as the key and are zeroised with it.
+#[derive(Clone)]
+struct Keyed {
+    inner: [u32; 8],
+    outer: [u32; 8],
+}
+
+impl Keyed {
+    fn wipe(&mut self) {
+        self.inner.zeroize();
+        self.outer.zeroize();
+    }
+}
+
+/// HMAC-SHA256 of `msg` under `k`, on `engine`: RFC 2104 from the two
+/// midstates, padding per FIPS 180-4. Two engine calls: the message's whole
+/// blocks with its padded tail (one or two blocks), then the outer block.
+fn hmac_with<E: Sha256Blocks + ?Sized>(engine: &mut E, k: &Keyed, msg: &[u8]) -> [u8; 32] {
+    let mut st = k.inner;
+    let whole = msg.len() / 64 * 64;
+    let rest = &msg[whole..];
+    let mut tail = Aligned([0u8; 128]);
+    let tail = &mut tail.0;
+    tail[..rest.len()].copy_from_slice(rest);
+    tail[rest.len()] = 0x80;
+    let n = if rest.len() + 9 <= 64 { 64 } else { 128 };
+    // the inner hash has already absorbed the 64-byte pad block
+    let bits = ((64 + msg.len()) as u64) * 8;
+    tail[n - 8..n].copy_from_slice(&bits.to_be_bytes());
+    engine.compress2(&mut st, &msg[..whole], &tail[..n]);
+
+    let mut outer = Aligned([0u8; 64]);
+    let outer = &mut outer.0;
+    for (i, w) in st.iter().enumerate() {
+        outer[4 * i..4 * i + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    outer[32] = 0x80;
+    outer[56..64].copy_from_slice(&((64u64 + 32) * 8).to_be_bytes());
+    let mut st = k.outer;
+    engine.compress(&mut st, outer);
+    let mut out = [0u8; 32];
+    for (i, w) in st.iter().enumerate() {
+        out[4 * i..4 * i + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    out
+}
+
+/// Equal in time that does not depend on where two tags differ.
+fn ct_eq(a: &[u8; TAG_LEN], b: &[u8]) -> bool {
+    let mut d = 0u8;
+    for (x, y) in a.iter().zip(b) {
+        d |= x ^ y;
+    }
+    core::hint::black_box(d) == 0 && b.len() == TAG_LEN
+}
+
 /// Wire version of the envelope and the handshake.
 pub const VERSION: u8 = 1;
 /// Bytes of HMAC-SHA256 kept per frame and per handshake message.
@@ -256,6 +412,10 @@ pub struct Session {
     peer: Did,
     k_send: [u8; KEY_LEN],
     k_recv: [u8; KEY_LEN],
+    /// HMAC-SHA256 keyed with `k_send` / `k_recv` once, as two midstates
+    /// each: the key's two pad blocks are not hashed again on every frame.
+    mac_send: Keyed,
+    mac_recv: Keyed,
     send_seq: u32,
     exhausted: bool,
     window: ReplayWindow,
@@ -279,6 +439,10 @@ impl Drop for Session {
     fn drop(&mut self) {
         self.k_send.zeroize();
         self.k_recv.zeroize();
+        // the midstates are as secret as the keys, and plain words now, so
+        // `zeroize` reaches them (it could not reach `hmac`'s states)
+        self.mac_send.wipe();
+        self.mac_recv.wipe();
     }
 }
 
@@ -319,6 +483,17 @@ impl Session {
     /// [`MAX_PAYLOAD`] is `Unsupported` (this is a datagram link, fragment
     /// above it); an exhausted sequence space is `Denied`.
     pub fn seal(&mut self, payload: &[u8], out: &mut [u8]) -> Result<usize> {
+        self.seal_with(&mut SoftSha, payload, out)
+    }
+
+    /// [`Session::seal`] with the HMAC's blocks on `engine` (a chip's SHA
+    /// accelerator). The same bytes as `seal` for any correct engine.
+    pub fn seal_with<E: Sha256Blocks + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        payload: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize> {
         if payload.len() > MAX_PAYLOAD {
             return Err(Error::Unsupported);
         }
@@ -338,7 +513,9 @@ impl Session {
         out[1..3].copy_from_slice(&self.id.to_be_bytes());
         out[3..7].copy_from_slice(&seq.to_be_bytes());
         out[HEADER_LEN..HEADER_LEN + payload.len()].copy_from_slice(payload);
-        let tag = mac(&self.k_send, &[&out[..HEADER_LEN + payload.len()]])?;
+        let full = hmac_with(engine, &self.mac_send, &out[..HEADER_LEN + payload.len()]);
+        let mut tag = [0u8; TAG_LEN];
+        tag.copy_from_slice(&full[..TAG_LEN]);
         out[HEADER_LEN + payload.len()..needed].copy_from_slice(&tag);
         self.counters.sent = self.counters.sent.wrapping_add(1);
         Ok(needed)
@@ -351,6 +528,16 @@ impl Session {
     /// counted as `replayed`). The tag is checked before the window so an
     /// attacker cannot advance or poison the window with forged frames.
     pub fn open<'a>(&mut self, frame: &'a [u8]) -> Result<&'a [u8]> {
+        self.open_with(&mut SoftSha, frame)
+    }
+
+    /// [`Session::open`] with the HMAC's blocks on `engine`. The same
+    /// verdicts as `open` for any correct engine.
+    pub fn open_with<'a, E: Sha256Blocks + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        frame: &'a [u8],
+    ) -> Result<&'a [u8]> {
         let env = Envelope::parse(frame).inspect_err(|_| {
             self.counters.foreign = self.counters.foreign.wrapping_add(1);
         })?;
@@ -359,7 +546,10 @@ impl Session {
             return Err(Error::Denied);
         }
         let signed_len = frame.len() - TAG_LEN;
-        if !verify(&self.k_recv, &[&frame[..signed_len]], &env.tag) {
+        let full = hmac_with(engine, &self.mac_recv, &frame[..signed_len]);
+        let mut want = [0u8; TAG_LEN];
+        want.copy_from_slice(&full[..TAG_LEN]);
+        if !ct_eq(&want, &env.tag[..]) {
             self.counters.bad_tag = self.counters.bad_tag.wrapping_add(1);
             return Err(Error::Crypto);
         }
@@ -488,6 +678,8 @@ impl Handshake {
             peer: their_did,
             k_send: keys.k_r2i,
             k_recv: keys.k_i2r,
+            mac_send: keyed(&keys.k_r2i),
+            mac_recv: keyed(&keys.k_i2r),
             send_seq: 0,
             exhausted: false,
             window: ReplayWindow::new(),
@@ -551,6 +743,8 @@ impl Handshake {
             peer: their_did,
             k_send: keys.k_i2r,
             k_recv: keys.k_r2i,
+            mac_send: keyed(&keys.k_i2r),
+            mac_recv: keyed(&keys.k_r2i),
             send_seq: 0,
             exhausted: false,
             window: ReplayWindow::new(),
@@ -689,6 +883,24 @@ fn mac(key: &[u8; KEY_LEN], parts: &[&[u8]]) -> Result<[u8; TAG_LEN]> {
     Ok(tag)
 }
 
+/// An HMAC-SHA256 key as its two midstates, ready for every message.
+/// Once per session, so the software engine is enough.
+fn keyed(key: &[u8; KEY_LEN]) -> Keyed {
+    let mut ipad = [0x36u8; 64];
+    let mut opad = [0x5cu8; 64];
+    for (i, k) in key.iter().enumerate() {
+        ipad[i] ^= k;
+        opad[i] ^= k;
+    }
+    let mut inner = IV;
+    let mut outer = IV;
+    SoftSha.compress(&mut inner, &ipad);
+    SoftSha.compress(&mut outer, &opad);
+    ipad.zeroize();
+    opad.zeroize();
+    Keyed { inner, outer }
+}
+
 /// Constant-time truncated verification.
 fn verify(key: &[u8; KEY_LEN], parts: &[&[u8]], tag: &[u8; TAG_LEN]) -> bool {
     let Ok(mut m) = HmacSha256::new_from_slice(key) else {
@@ -707,6 +919,84 @@ fn verify(key: &[u8; KEY_LEN], parts: &[&[u8]], tag: &[u8; TAG_LEN]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An engine that is the software one but counts what it was given, so
+    /// a test can see the seal and open paths really go through it.
+    struct Counting(usize);
+    impl Sha256Blocks for Counting {
+        fn compress(&mut self, state: &mut [u32; 8], blocks: &[u8]) {
+            assert_eq!(blocks.len() % 64, 0, "engines get whole blocks");
+            self.0 += blocks.len() / 64;
+            SoftSha.compress(state, blocks);
+        }
+    }
+
+    #[test]
+    fn the_midstate_hmac_is_the_hmac_crate_at_every_length() {
+        // every tail shape: empty, short, the 55/56 boundary where the
+        // length no longer fits, whole blocks, and past MAX_FRAME
+        let mut x: u32 = 0x5EED_1234;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x as u8
+        };
+        for round in 0..4 {
+            let mut key = [0u8; KEY_LEN];
+            for b in &mut key {
+                *b = next();
+            }
+            let k = keyed(&key);
+            for len in 0..=300 {
+                let msg: std::vec::Vec<u8> = (0..len).map(|_| next()).collect();
+                let mut m = <HmacSha256 as Mac>::new_from_slice(&key).unwrap();
+                m.update(&msg);
+                let want: [u8; 32] = m.finalize().into_bytes().into();
+                assert_eq!(
+                    hmac_with(&mut SoftSha, &k, &msg),
+                    want,
+                    "round {round} len {len}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn seal_with_and_open_with_use_the_engine_and_match_seal_and_open() {
+        // handshake() is seeded: two runs give the same keys
+        let (mut si, mut sr) = handshake();
+        let (mut ti, mut tr) = handshake();
+        let mut a = [0u8; MAX_FRAME];
+        let mut b = [0u8; MAX_FRAME];
+        let mut e = Counting(0);
+        for len in [0usize, 1, 48, 49, 57, 120, 121, MAX_PAYLOAD] {
+            let payload: std::vec::Vec<u8> = (0..len).map(|i| (i * 7) as u8).collect();
+            let na = si.seal(&payload, &mut a).unwrap();
+            let before = e.0;
+            let nb = ti.seal_with(&mut e, &payload, &mut b).unwrap();
+            assert!(e.0 > before, "seal_with went around the engine");
+            assert_eq!(na, nb);
+            // same keys, same sequence: the same frame
+            assert_eq!(a[..na], b[..nb]);
+            let before = e.0;
+            assert_eq!(tr.open_with(&mut e, &b[..nb]).unwrap(), &payload[..]);
+            assert!(e.0 > before, "open_with went around the engine");
+            assert_eq!(sr.open(&a[..na]).unwrap(), &payload[..]);
+            // and a flipped tag bit is refused on the engine path too
+            let mut bad = b;
+            bad[nb - 1] ^= 1;
+            assert_eq!(tr.open_with(&mut e, &bad[..nb]), Err(Error::Crypto));
+        }
+    }
+
+    #[test]
+    fn a_session_wipes_its_midstates() {
+        let mut k = keyed(&[7u8; KEY_LEN]);
+        k.wipe();
+        assert_eq!(k.inner, [0u32; 8]);
+        assert_eq!(k.outer, [0u32; 8]);
+    }
 
     /// xorshift64*: deterministic entropy for tests only.
     struct TestRng(u64);
@@ -1059,6 +1349,8 @@ mod tests {
             peer: DeviceKey::from_seed_for_tests("golden", "x").did(),
             k_send: key,
             k_recv: key,
+            mac_send: keyed(&key),
+            mac_recv: keyed(&key),
             send_seq: 7,
             exhausted: false,
             window: ReplayWindow::new(),

@@ -26,7 +26,9 @@ use lora_phy::{DelayNs, LoRa, RxMode};
 use rusty_esp_signal_core::esp_core::Error;
 use rusty_esp_signal_core::esp_core::error::Result;
 use rusty_esp_signal_core::esp_core::{Micros, Rng};
-use rusty_esp_signal_core::link::{DEFAULT_LIFETIME, Handshake, MAX_FRAME, Session};
+use rusty_esp_signal_core::link::{
+    DEFAULT_LIFETIME, FrameBuf, Handshake, MAX_FRAME, Session, Sha256Blocks, SoftSha,
+};
 use rusty_esp_signal_core::lora::{Bw, Cr, Params, Sf};
 use rusty_esp_signal_core::mid::did::Did;
 use rusty_esp_signal_core::mid::key::DeviceKey;
@@ -231,8 +233,21 @@ impl<RK: RadioKind, DLY: DelayNs> LoraLink<RK, DLY> {
     /// cleared the region duty cycle for `params.airtime(payload.len())`
     /// first (`lora::DutyCycle::try_send`).
     pub async fn send(&mut self, session: &mut Session, payload: &[u8]) -> Result<()> {
-        let mut frame = [0u8; MAX_FRAME];
-        let n = session.seal(payload, &mut frame)?;
+        self.send_with(&mut SoftSha, session, payload).await
+    }
+
+    /// [`Self::send`] with the frame's HMAC blocks on `engine` --
+    /// `hal::sha::EspSha` for the chip's SHA unit (feature `sha-accel`).
+    /// The same frame as `send`.
+    pub async fn send_with(
+        &mut self,
+        engine: &mut impl Sha256Blocks,
+        session: &mut Session,
+        payload: &[u8],
+    ) -> Result<()> {
+        let mut buf = FrameBuf::new();
+        let frame = &mut buf.0;
+        let n = session.seal_with(engine, payload, frame)?;
         self.radio
             .prepare_for_tx(
                 &self.modulation,
@@ -249,17 +264,29 @@ impl<RK: RadioKind, DLY: DelayNs> LoraLink<RK, DLY> {
     /// written into `out`. A refused frame returns the core error (counted in
     /// the session).
     pub async fn recv<'o>(&mut self, session: &mut Session, out: &'o mut [u8]) -> Result<&'o [u8]> {
-        let mut frame = [0u8; MAX_FRAME];
+        self.recv_with(&mut SoftSha, session, out).await
+    }
+
+    /// [`Self::recv`] with the frame's HMAC blocks on `engine`. The same
+    /// verdicts as `recv`.
+    pub async fn recv_with<'o>(
+        &mut self,
+        engine: &mut impl Sha256Blocks,
+        session: &mut Session,
+        out: &'o mut [u8],
+    ) -> Result<&'o [u8]> {
+        let mut buf = FrameBuf::new();
+        let frame = &mut buf.0;
         self.radio
             .prepare_for_rx(RxMode::Continuous, &self.modulation, &self.rx_packet)
             .await
             .map_err(|_| Error::Hardware)?;
         let (len, _status) = self
             .radio
-            .rx(&self.rx_packet, &mut frame)
+            .rx(&self.rx_packet, frame)
             .await
             .map_err(|_| Error::Hardware)?;
-        let plain = session.open(&frame[..len as usize])?;
+        let plain = session.open_with(engine, &frame[..len as usize])?;
         if out.len() < plain.len() {
             return Err(Error::BufferTooSmall {
                 needed: plain.len(),

@@ -7,6 +7,8 @@
 // esp-hal only.
 pub mod ld2410;
 pub mod rng;
+#[cfg(feature = "sha-accel")]
+pub mod sha;
 
 // These need esp-radio (the Wi-Fi/ESP-NOW driver).
 #[cfg(feature = "esp-radio")]
@@ -15,3 +17,7 @@ pub mod csi;
 pub mod link;
 #[cfg(feature = "esp-radio")]
 pub mod station;
+
+// The IP stack needs embassy-net on top of esp-radio.
+#[cfg(feature = "embassy-net")]
+pub mod netstack;

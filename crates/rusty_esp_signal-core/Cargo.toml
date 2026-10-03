@@ -24,11 +24,16 @@ alloc = ["rusty_esp_core/alloc", "rusty_esp_dsp/alloc", "rusty_esp_mid-core/allo
 rusty_esp_core = { workspace = true }
 rusty_esp_dsp = { workspace = true }
 rusty_esp_mid-core = { workspace = true }
-p256 = { workspace = true }
-sha2 = { workspace = true }
+# `ecdsa`: the setup session verifies the device's signature in the browser.
+p256 = { workspace = true, features = ["ecdsa"] }
+# `compress`: the bare block function, which the link's HMAC runs through
+# a `Sha256Blocks` engine (round 2, R3).
+sha2 = { workspace = true, features = ["compress"] }
 hmac = { workspace = true }
 hkdf = { workspace = true }
 zeroize = { workspace = true }
+chacha20poly1305 = { workspace = true }
+subtle = { workspace = true }
 
 [lints]
 workspace = true

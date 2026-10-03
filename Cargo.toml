@@ -42,7 +42,23 @@ sha2 = { version = "0.10", default-features = false }
 hmac = { version = "0.12", default-features = false }
 hkdf = { version = "0.12", default-features = false }
 zeroize = { version = "1", default-features = false }
+# The setup session (enc-ble): its AEAD and its constant-time comparisons.
+chacha20poly1305 = { version = "0.10", default-features = false }
+subtle = { version = "2.5", default-features = false }
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# The provisioning page's wasm (`rusty_esp_signal-web`, inlined into
+# `docs/provision.html` by `tools/build-provision-page.py`) is a download on a
+# phone: size first. Except sha2, the setup code's PBKDF2 loop, the one hot
+# loop the page runs while the person waits (espino measured 1.9x for 3.9 KB).
+[profile.wasm-release]
+inherits = "release"
+opt-level = "s"
+lto = "fat"
+strip = true
+
+[profile.wasm-release.package.sha2]
+opt-level = 3

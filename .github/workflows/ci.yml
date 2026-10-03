@@ -93,3 +93,30 @@ jobs:
       # Track B on a RISC-V part builds on stable; espup is only for Xtensa.
       - run: cargo build --release
         working-directory: firmware/${{ matrix.project }}
+
+  # Track B on the S3 (Xtensa): the esp toolchain from espup, no ESP-IDF.
+  firmware-xtensa:
+    name: firmware (${{ matrix.project }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - xiao-s3-sense-hal-ble-provision
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authorise private sibling fetches
+        if: ${{ env.JANUS_GIT_TOKEN != '' }}
+        shell: bash
+        run: git config --global url."https://x-access-token:${JANUS_GIT_TOKEN}@github.com/".insteadOf "https://github.com/"
+      - uses: esp-rs/xtensa-toolchain@v1.5
+        with:
+          default: true
+          buildtargets: esp32s3
+          # ldproxy links an ESP-IDF app. This is bare metal and does not
+          # need it; installing it would only cost time.
+          ldproxy: false
+      # `build-std = ["core", "alloc"]` in the firmware's .cargo/config.toml
+      # needs rust-src, which the action above installs.
+      - run: cargo build --release
+        working-directory: firmware/${{ matrix.project }}
