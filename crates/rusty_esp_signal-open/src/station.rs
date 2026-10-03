@@ -293,8 +293,8 @@ static PROB_PERMILLE: [AtomicU32; 8] = [const { AtomicU32::new(PROB_UNKNOWN) }; 
 static OVERHEAD_US: AtomicU32 = AtomicU32::new(0);
 
 /// The starting rate for data frames by expected throughput (E1's third
-/// rate control, Minstrel's in outline). The driver counts attempts and
-/// ACKs per rate; one data frame in [`foa_sta::SAMPLE_EVERY`] starts at a
+/// rate control, Minstrel's in outline). The driver counts first attempts
+/// and their ACKs per rate; one data frame in [`foa_sta::SAMPLE_EVERY`] starts at a
 /// neighbouring rate (within two steps, a different one each second), so
 /// every rate near the chosen one keeps a fresh success probability at the
 /// cost of a few frames, where [`SampledRate`] spent a whole second at it.

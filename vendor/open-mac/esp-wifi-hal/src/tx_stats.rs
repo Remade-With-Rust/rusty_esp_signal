@@ -66,8 +66,12 @@ pub(crate) fn woke(slot: usize) {
     TIMED.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Per OFDM rate, 54 down to 6 Mbit/s: the attempts that went on the air
-/// (answered, or timed out waiting for the ACK), and those answered.
+/// Per OFDM rate, 54 down to 6 Mbit/s: the frames whose first attempt went
+/// on the air at that rate (answered, or timed out waiting for the ACK),
+/// and those answered. Only first attempts: a retry follows a failure, so
+/// it carries that failure's conditions, and counting retries made the
+/// rates the retry chain falls to read worse than the rate above them
+/// (2026-10-03: 24 Mbit/s at 69 %, 36 at 97 %).
 static RATE_ATTEMPTS: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
 static RATE_ACKED: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
 
@@ -86,11 +90,11 @@ pub const fn ofdm_index(rate: OfdmRate) -> usize {
     }
 }
 
-/// One attempt at `rate`: counted for the rate if it was on the air and
-/// either answered or not (a lost channel-access contest says nothing
-/// about the rate).
-pub(crate) fn attempt_at<T>(rate: &TxPhyRate, result: &Result<T, TxError>) {
-    let PhyRate::Ofdm(rate) = rate else {
+/// One attempt at `rate`: counted for the rate if it was a frame's first,
+/// went on the air, and was either answered or not (a lost channel-access
+/// contest says nothing about the rate).
+pub(crate) fn attempt_at<T>(rate: &TxPhyRate, result: &Result<T, TxError>, first: bool) {
+    let (true, PhyRate::Ofdm(rate)) = (first, rate) else {
         return;
     };
     let acked = match result {
@@ -105,8 +109,9 @@ pub(crate) fn attempt_at<T>(rate: &TxPhyRate, result: &Result<T, TxError>) {
     }
 }
 
-/// Per OFDM rate (54 down to 6 Mbit/s): attempts on the air, and how many
-/// of them were acknowledged, since boot.
+/// Per OFDM rate (54 down to 6 Mbit/s): frames whose first attempt was on
+/// the air at that rate, and how many of those were acknowledged, since
+/// boot.
 #[must_use]
 pub fn rate_snapshot() -> [(u32, u32); 8] {
     core::array::from_fn(|i| {
