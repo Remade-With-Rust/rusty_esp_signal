@@ -1506,3 +1506,75 @@ The stream itself while the tests ran: 646 JPEGs in 206.6 s (3.13 fps, 0.06 Mbit
   that only spaced frames. With a 64 KB ring and a burst allowance, C13
   streams 14.7 fps where it streamed 6.1, in the same light.
 
+## E1 of the experiments plan: the open lower MAC, host half — built, not booted (2026-10-03)
+
+**Not Wi-Fi certified.** The decisions (the owner's, 2026-10-03): D-E1 yes,
+D-E2 station only with the PHY untouched (no power, channel or regulatory
+change by our code), D-E3 vendor and port to the family's pins. No
+sacrificial S3 is on the bench, so nothing here has run on a radio: the
+first boot waits for one (the bench rule; the authors' warning).
+
+**What came in** (`vendor/open-mac/UPSTREAM.md` has the commits, licences,
+credits and every change): OpenSensor's `esp-wifi-hal` at `f159fcf`, the
+last commit before that fork began replacing `libphy` with Rust (so D-E2
+holds by construction; upstream's S3 port was esp32-open-mac PR #23,
+closed unmerged); the S3 Wi-Fi register mapping at `opensensor/esp-pacs`
+`37b54bd` (esp-rs/esp-pacs#511), as a register crate of its own over
+svd2rust's generic module from the PAC esp-hal 1.2 links, so nothing else
+in an image is patched; FoA's `foa` and `foa_sta` at `39f4476`.
+
+**The port** onto esp-hal 1.2.0 / esp-phy 0.3.0 / esp-wifi-sys 0.3.0 (from
+1.1 / 0.2 / 0.2) took three changes beyond manifests: two OS-adapter slots
+renamed as esp-wifi-sys 0.3 names them; `phy_printf` and `sprintf` defined
+in Rust (libphy's only reasons to link `libprintf.a`: its diagnostics,
+counted and never formatted); and a compile-time assertion that the two
+OS-adapter slots the S3 ROM reads by offset (`_slowclk_cal_get` at 0x148,
+`_coex_pti_get` at 0x1a8, as the reviewed C reference pins them from IDF
+v5.4) are where 0.3 puts them. They are.
+
+**Upstream's S3 host tests, on the port** (`tools/open-mac-host-tests.py`,
+Windows with clang and a one-call `mmap` shim; the test files unchanged):
+the C reference's regressions (3 groups), the Rust MAC initialization
+against that reference access by access, `s3_mac_helpers` (6),
+`s3_phy` (5), `ht20` (3), `rx` (4) and the S3 DMA list (5): all pass.
+
+**The seam.** `crates/rusty_esp_signal-open` (not published: crates.io
+refuses the vendored path dependencies; cells take it by git URL):
+`stack()` gives the embassy-net stack with DHCP over FoA's station on the
+chip's base MAC, `mac_task`/`sta_task`/`net_task` to spawn, `join()`, and
+`run_station`/`station_task` driving the core's `StationPolicy` over FoA as
+`hal::station` does over esp-radio (FoA has no awaitable link loss: a
+joined station polls `connected()` once a second). Empty without its
+`esp32s3` feature; the vendor tree is excluded from the workspace (a path
+dependency inside it would otherwise join it and be built for the host).
+`firmware/xiao-s3-open-sta` is the probe: one join from the build
+environment, DHCP, 100 gateway pings.
+
+**The census, the same camera page on both arms** (espino's C11 generated
+as a station, and C15, the same manifest with `wifi-sta-open`; `verify`
+closes on both):
+
+| | C11 as a station (esp-radio) | C15 (the open MAC) |
+|---|---:|---:|
+| image B | 653,565 | **419,583** |
+| C B (share) | 320,540 (49.0 %) | **33,507 (8.0 %)** |
+| blob symbols / archives | 1,710 / 8 | **180 / 1** (`libphy.a`) |
+| blob code / data / bss B | 276,000 / 44,540 / 10,920 | 32,200 / 1,307 / 46 |
+| Rust code / data / bss B | 212,143 / 116,436 / 218,057 | 265,150 / 118,843 / 265,962 |
+| static bss, all origins B | 324,736 | 328,228 |
+
+`libnet80211`, `libpp`, `libwpa_supplicant`, `libprintf`, `libcoexist`,
+`libbtbb`, `libregulatory`, `libespnow` are gone; `libphy.a` is the one
+archive left, as E6's claim will say. The station, the WPA2 handshake and
+the lower MAC are 53 KB more Rust. Static RAM is level (+3.5 KB): the open
+MAC's receive buffers are static Rust where esp-radio takes its own from
+the heap (53 KB at `WifiController::new`, E0), which the board run will
+weigh.
+
+**What waits for the board.** B1: the probe's first boot on a sacrificial
+S3 (scan, WPA2 join, DHCP, pings). B2: C15 on the bench XIAO through C11's
+kill test (WPA2, 100/100 pings, the page, ffmpeg decodes 1,500 frames of
+`/stream`), and E0's table re-taken on both arms with the same runner
+(`tools/e0-build.py` builds the probes on either; images
+`F:/jt-w/e0/c11s-app.bin` 673,504 B and `c15-app.bin` 435,328 B). Until
+then C15 is Host and `wifi-sta-open` a development build.
