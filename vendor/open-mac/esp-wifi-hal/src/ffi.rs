@@ -7,6 +7,16 @@ pub(crate) use crate::c3_phy::{disable_wifi_agc, enable_wifi_agc};
 #[cfg(feature = "esp32s3")]
 pub(crate) use crate::s3_phy::{disable_wifi_agc, enable_wifi_agc};
 
+// The S3's ROM calls through this table by offset (E1, the port to
+// esp-wifi-sys 0.3): the two slots the reviewed C reference pins
+// (docs/esp32s3/src/hal_mac.c upstream, `_Static_assert`s from IDF v5.4's
+// header) must not move, whatever a newer esp-wifi-sys renames.
+const _: () = {
+    use crate::esp_wifi_sys::include::wifi_osi_funcs_t as T;
+    assert!(core::mem::offset_of!(T, _slowclk_cal_get) == 0x148, "SDK ABI: _slowclk_cal_get");
+    assert!(core::mem::offset_of!(T, _coex_pti_get) == 0x1a8, "SDK ABI: _coex_pti_get");
+};
+
 #[cfg(osi_funcs_required)]
 #[allow(non_upper_case_globals)]
 #[cfg_attr(not(osi_funcs_in_rom), unsafe(no_mangle))]

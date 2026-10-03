@@ -42,6 +42,9 @@ esp-hal 1.1, esp-phy 0.2.0, esp-wifi-sys 0.2.0):
   defined in Rust (counted, the format string logged under `log`, the
   arguments never read), so the linker leaves `libprintf.a` out: libphy's
   only reason for it. Census on the probe: `libphy.a` the one C archive.
+  And a compile-time check that the two OS-adapter slots the S3 ROM and
+  the reviewed C reference pin (`_slowclk_cal_get` at 0x148,
+  `_coex_pti_get` at 0x1a8) have not moved: they have not in 0.3.
 - `esp32s3-wifi-regs/`: a crate of its own around the upstream files:
   `Cargo.toml`, `src/lib.rs` (the `WIFI` peripheral at `0x6003_3000`, as
   upstream's lib.rs lines, less their `Debug` impl), and svd2rust's
@@ -51,3 +54,13 @@ esp-hal 1.1, esp-phy 0.2.0, esp-wifi-sys 0.2.0):
   (each `workspace = true` replaced by the version the workspace named,
   esp-hal and esp-config moved to the family's 1.2.0 / 0.8.0), `esp-wifi-hal`
   by path, an `esp32s3` feature in place of `esp32` / `esp32s2`.
+
+## Host tests
+
+`host-tests/esp32s3/` is upstream's `docs/esp32s3/tests/` and
+`docs/esp32s3/src/hal_mac.c` at `f159fcf`, unchanged; `host-tests/win/`
+is ours (the one `mmap` call, on Windows). `tools/open-mac-host-tests.py`
+runs what upstream's `run-rust-tests.sh` runs for the S3, against these
+sources: the C reference's regressions, the Rust MAC initialization
+against that reference, four of the crate's own test modules, the DMA
+list. All pass on the port (2026-10-03).
