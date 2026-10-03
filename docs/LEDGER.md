@@ -1309,3 +1309,194 @@ path. `ble::advertised_name`: the name cut to what a legacy scan response
 carries (29 bytes, at a character boundary), used by both backends; a 64-byte
 owner's name made Bluedroid refuse the service. The prepared-write assembly
 carried a 262-byte Settings on the radio. espino's ledger has the run.
+
+## E0 of the experiments plan: the blob's bill — every later row's baseline (2026-10-03)
+
+What esp-radio costs the XIAO ESP32-S3 Sense today, on C13 as it is (the
+camera page provisioned over BLE, station on the owner's network, Track B,
+esp-radio 1.0.0-beta.1 with `wifi`, `ble`, `coex`), so that E1 (the open
+lower MAC) and every row after it is a difference from these numbers. One
+board run, one image, serial plus the laptop's runner.
+
+**Method.** The image is C13 as espino generates it plus probes
+(`tools/e0-build.py` adds `tools/e0/e0.rs` to a copy; the cell's template
+carries none of it):
+
+- *Heap.* The 160 KiB internal heap is the probe's own array, painted
+  `0xA5` before esp-alloc gets it; esp-alloc's `alloc-hooks` keep the live
+  internal bytes, their peak, and every live block of 1 KiB or more. A
+  freed block is painted again until the address is up.
+- *Stacks.* esp-rtos (without its `esp-alloc` feature) takes each task's
+  stack from `malloc_internal`: a 4-byte header, a 16-byte alignment
+  prefix, then the blob's depth plus 64 B of watchpoint room rounded to
+  16. Those blocks are 16·k + 4 bytes, which no buffer the radio takes is;
+  the paint left at a stack's bottom is what it never used. The main stack
+  (embassy's executor and every interrupt) is painted below main's frame at
+  entry; the 2,480 B already above that frame count as used.
+- *Jitter.* Every sleep of the camera task (1 ms per frame, 2 ms while it
+  waits for a picture) is timed for how late it woke (a histogram in
+  100 µs buckets), and the period between good grabs is kept, per state:
+  radio never started (the first 30 s: the camera runs, esp-rtos is up,
+  `WifiController::new` not yet called), joining, idle, under a UDP test,
+  under the stream, both. The tables are in PSRAM (see the finding below).
+- *Network.* The laptop is on the same home network (its 5 GHz side, the
+  board on 2.4 GHz, one consumer router between; the laptop's own Wi-Fi was
+  never taken). `tools/e0-run.py measure`: 100 pings; UDP echo 500 × 64 B
+  and 300 × 1,400 B back to back, and 60 × 64 B 250 ms apart; 2,000 × 1,400 B
+  up (counted and timed by the board) and down (sent by the board as fast as
+  embassy-net's `send_to` takes them, counted and timed by the laptop) —
+  all once at rest and once under `/stream`, read and JPEG-checked by the
+  runner. The probe's own UDP socket and the page's buffers come from the
+  heap after the `dhcp` line, so they are not in the radio's bill.
+- *Surface.* `c-census.py blob` (new, the mirror of `rom`): the call and
+  reference graph from the disassembly (a call or jump to a function's first
+  address; an `l32r` literal holding one), each function charged to its
+  archive through the linker map. The receive path is the closure from the
+  station's six entries into the blob's layers (`wDev_ProcessFiq`,
+  `wDev_ProcessRxSucData`, `ppRxPkt`, `sta_rx_cb`, `wpa_sm_rx_eapol`,
+  `ieee80211_handle_rx_frm`): the blob calls between its layers through
+  tables filled at init (`*_funcs_init`), so no call edge joins them and
+  each needs its own root. A reference counts as an edge, so "reached" is
+  an upper bound. `verify` closes on the image (1,484,561 B charged of
+  1,484,561 loaded; 2,434 of 2,434 C symbols in the archive charged).
+
+The DID on the boot line is the board's (unchanged); the page token is
+redacted in every saved line. Raw files: `F:/jt-w/e0/` (serial.txt,
+results.json, blob.json, census.json; run 1, on the build before the stack
+detector was right, in `run1/`).
+
+**RAM** (internal heap of 160 KiB; `used` is esp-alloc's region count, `live` the hooks' sum of live block sizes)
+
+| point of the boot | internal used B | free B | live B | peak live B | PSRAM used B |
+|---|---:|---:|---:|---:|---:|
+| boot | 0 | 163,840 | 0 | 0 | 0 |
+| camera | 80 | 163,760 | 78 | 78 | 98,560 |
+| before-radio | 80 | 163,760 | 78 | 78 | 103,840 |
+| radio-init | 53,272 | 110,568 | 53,222 | 53,394 | 103,840 |
+| stack-spawned | 53,292 | 110,548 | 53,242 | 53,467 | 103,840 |
+| dhcp | 54,100 | 109,740 | 54,044 | 60,892 | 103,840 |
+| last minute line (t = 485 s) | 89,448 | 74,392 | 89,392 | 114,868 | 103,840 |
+
+The radio's bill on the heap: **53,192 B** at `WifiController::new`, **54,020 B** once joined with an address (the embassy-net stack's own buffers are static, not in this).
+
+esp-rtos stacks (the last reading): **2 tasks, 15,048 B** of the heap; the main stack (embassy and every interrupt): 11,840 B used at most of 17,336 B.
+
+| stack at | size B | used at most B | never touched B |
+|---|---:|---:|---:|
+| `0x3fcaa23c` | 6,756 | 2,384 | 4,340 |
+| `0x3fcb3c68` | 8,292 | 988 | 7,272 |
+
+Live internal blocks of 1 KiB or more: before-radio 0 (0 B), radio-init 14 (43,480 B), dhcp 14 (43,480 B).
+
+Static, from the census: the blob archives hold 366,344 B of code, 53,131 B of initialised data (flash constants and RAM `.data`) and 11,653 B of `.bss`.
+
+**Jitter** (the camera task: its 1 ms and 2 ms sleeps, how late each woke; the period between good grabs)
+
+| state | grabs | period mean µs | sd µs | min µs | max µs | sleeps | late mean µs | p50 ≤ | p99 ≤ | p99.9 ≤ | max µs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| off | 96 | 311,399 | 59,506 | 1,175 | 324,180 | 3,534 | 24 | 100 | 100 | 100 | 9,416 |
+| joining | 14 | 283,002 | 211,325 | 35,602 | 903,473 | 422 | 490 | 100 | 200 | 20,100 | 196,705 |
+| idle | 624 | 317,904 | 43,746 | 1,146 | 432,295 | 22,077 | 74 | 100 | 100 | 700 | 115,833 |
+| udp | 135 | 324,161 | 796 | 324,084 | 324,262 | 4,676 | 119 | 100 | 700 | 1,400 | 73,218 |
+| stream | 462 | 312,935 | 58,437 | 34,232 | 468,263 | 15,928 | 118 | 100 | 900 | 1,700 | 107,113 |
+| stream+udp | 199 | 308,596 | 68,634 | 34,050 | 468,265 | 6,635 | 173 | 100 | 1,100 | 2,500 | 105,452 |
+
+**Latency** (ms, p50 / p99 / max; laptop on the home network's 5 GHz side, the board on 2.4 GHz, one router between)
+
+| test | at rest | under the stream |
+|---|---|---|
+| ICMP echo, 100 | 117.0 / 264.0 / 264.0 (7 lost) | 107.0 / 253.0 / 253.0 (6 lost) |
+| UDP echo 64 B, 500 | 3.0 / 257.27 / 271.75 | 3.52 / 261.95 / 335.22 |
+| UDP echo 1,400 B, 300 | 4.72 / 260.39 / 305.29 | 5.87 / 267.03 / 426.56 |
+| UDP echo 64 B, 60, 250 ms apart | 73.86 / 227.4 / 227.4 (2 lost) | 74.44 / 400.09 / 400.09 (9 lost) |
+
+**Throughput** (2,000 datagrams of 1,400 B)
+
+| direction | at rest | under the stream |
+|---|---|---|
+| up (laptop → board, board-timed) | 8.24 Mbit/s, 74.35 % lost | 5.35 Mbit/s, 85.9 % lost |
+| down (board → laptop, laptop-timed) | 4.32 Mbit/s, 0.0 % lost | 2.57 Mbit/s, 0.0 % lost |
+
+The stream itself while the tests ran: 646 JPEGs in 206.6 s (3.13 fps, 0.06 Mbit/s).
+
+**Surface** (`c-census.py blob` on this image)
+
+2,109 blob functions, 324,584 B of code. Rust enters **65** of them (a call or its address handed over); **1,636** (260,834 B) are reachable from those. The station's receive path, from its 6 entries, reaches **597 blob functions (100,404 B)** and 10 Rust functions.
+
+| archive | functions | code B | Rust's entries | receive path | B |
+|---|---:|---:|---:|---:|---:|
+| `libnet80211.a` | 641 | 113,821 | 22 | 269 | 52,484 |
+| `libbtdm_app.a` | 472 | 77,858 | 19 | 0 | 0 |
+| `libpp.a` | 470 | 55,036 | 1 | 191 | 22,091 |
+| `libwpa_supplicant.a` | 274 | 39,504 | 2 | 102 | 18,753 |
+| `libphy.a` | 183 | 29,200 | 8 | 23 | 2,760 |
+| `libprintf.a` | 17 | 4,540 | 0 | 12 | 4,316 |
+| `libbtbb.a` | 18 | 2,963 | 1 | 0 | 0 |
+| `libcoexist.a` | 34 | 1,662 | 12 | 0 | 0 |
+
+**What the table says.**
+
+- **RAM: 53 KB of the heap at init, and nothing more once joined.** The 14
+  blocks of 1 KiB or more are 43,480 B of it: ten 2,220 B buffers
+  (22,200 B), the two esp-rtos task stacks (15,048 B: 6,756 B, the Wi-Fi
+  task's 6,656 B depth, used at most 2,384; and 8,292 B, used at most 988),
+  one 4,632 B and one 1,600 B block; the other ~9.7 KB is small blocks.
+  Joining adds 828 B. The later growth to 89,448 B is the page's buffers
+  (15,360 B) and this probe's UDP socket (~20 KB), both taken after the
+  `dhcp` line; the peak live, 114,868 B, is about 25 KB above that steady
+  state: the radio's buffers in flight under load. Three quarters of the
+  stacks' 15 KB was never touched. The archives add 11,653 B of `.bss`.
+- **Jitter: the radio's tasks are the long tail.** With the radio never
+  started the camera's sleeps woke at most 9.4 ms late and 99.9 % within
+  100 µs. With it up and idle, p99.9 is 700 µs and the worst 116 ms;
+  under the stream or a UDP test p99 is 0.7–1.1 ms and p99.9 1.4–2.5 ms,
+  with single wakes 73–107 ms late. Joining is the worst state: 197 ms. The
+  period between grabs is the sensor's (311–324 ms with the radio off as
+  on; see the camera finding below), so the jitter shows in the sleeps, not
+  the frame rate.
+- **Latency: 3 ms when busy, 70–120 ms when it has been quiet.** Back to
+  back, a 64 B UDP echo takes 3.0 ms at the median; 250 ms apart, 74 ms;
+  pings 1 s apart, 117 ms (7 of 100 lost at rest). The router answers the
+  laptop in 1–6 ms, and the blob reports power save off
+  (`esp_wifi_get_ps` = `WIFI_PS_NONE`, which esp-radio sets at init), so the
+  wake cost is not the station's modem sleep as configured; whether it is
+  the router holding frames for a station it believes asleep, or the blob,
+  is open. E1 runs the same runner on the same router, which separates the
+  two. The p99 of every busy test sits at 255–267 ms whatever the size: the
+  same stall, met about one time in a hundred.
+- **Throughput: about 4 Mbit/s down, 5–8 Mbit/s up, and most of a burst
+  dropped.** A burst of 2,000 datagrams from the laptop (sent at ~400
+  Mbit/s) reached the board 513 times at rest (8.2 Mbit/s over its
+  arrival) and 282 times under the stream; nothing says yet whether the
+  router or the board's receive queue (esp-radio's rx queue of 5, X9) drops
+  them. Down, `send_to` paces the board with no loss: 4.3 Mbit/s at rest,
+  2.6 under the stream.
+- **Surface: 597 blob functions, 100 KB, read every received frame.** Of
+  2,109 blob functions linked (324,584 B of code), Rust enters 65 directly
+  (64 without the probe's power-save query)
+  (Wi-Fi, BLE, PHY and coexistence entry points) and 1,636 are reachable
+  from them. The station's receive path reaches 597 (100,404 B): 269 in
+  net80211, 191 in pp, 102 in the supplicant, 23 in the PHY and 12 in
+  libprintf; Bluetooth's archives are off it. The blob calls back into 19
+  Rust functions, 10 from the receive path (the allocator, `memmove`,
+  `strlen`, time, randomness, the event post and printf).
+
+**Found on the way.**
+
+- *The main stack is what static RAM leaves.* The probe's first build put
+  5 KB of timing tables and 3 KB of UDP buffers in static RAM; the main
+  stack shrank from C13's 18,496 B to 9,120 B, and the provisioning boot
+  (BLE up, the camera running) overflowed it. On the S3 the overflow
+  watchpoint fires with no stack left to report from, so the board froze
+  with no panic line: the camera's own periodic line stopped too. With the
+  tables in PSRAM and the buffers on the heap, E0's main stack is 17,592 B
+  (C13's less 904 B for the probe's block table), and the BLE provisioning
+  boot used at most 15,472 B of it: under 2 KB to spare here, about 3 KB
+  on C13 as it ships. Any cell that grows static RAM by a few KB should be checked
+  against that.
+- *The camera runs at 3.2 frames a second on this board.* The OV3660 at a
+  20 MHz XCLK, QVGA JPEG, quality scale 12: 311 ms between pictures with
+  the radio off, the same with it on; the stream delivered 3.13 fps (646
+  JPEGs in 207 s, all whole). The cell's 15 fps cap is never reached. Not
+  a radio cost, and not E0's to fix; the cell's own row.
+
