@@ -1769,3 +1769,49 @@ in an ACK timeout and doubling the next backoff. The camera on core 1 is
 worth 4 % under the stream. What is left to try: a rate choice by expected
 throughput rather than first-attempt success, and the video access
 category (AIFSN 2, CWmin 7) for the camera's frames.
+
+### E1 follow-up: the rate by measured goodput, and the video access category (2026-10-03)
+
+Three builds back to back on the XIAO over the owner's hotspot, the camera
+task on the second core in all three (now C15's default on the open MAC):
+the control (the first-attempt thresholds), C1 (the rate by measured
+goodput: delivered bytes over the radio time they took, a one-second probe
+of a neighbouring rate every 10 s) and C2 (C1 with data frames in the
+video access category, AIFSN 2 and CWmin 7, `JANUS_OPEN_AC=vi`):
+
+| | control | C1 | C2 |
+|---|---:|---:|---:|
+| board -> laptop at rest (Mbit/s) | 11.39 | 11.26 | 17.39 |
+| board -> laptop under the stream | 9.39 | 9.94 | 12.21 |
+| the board's send loop a frame, at rest / under the stream | 974 / 1,183 µs | 991 / 1,122 µs | 641 / 914 µs |
+| first attempts through / attempts a frame (whole run) | 80 % / 1.38 | 87 % / 1.25 | 91 % / 1.17 |
+| failed attempts, all ACK timeouts | 6,108 | 3,984 | 2,788 |
+| where the rate ended | 54 (2 moves) | 36 (4 moves, 15 probes) | 48 (7 moves, 16 probes) |
+| the laptop's own send rate in the up test, at rest / under the stream | 46.6 / 35.4 | 28.8 / 60.1 | **390.4 / 315.2** |
+| the stream | 14.9 fps | 14.97 fps | 14.96 fps |
+
+The control read 9.39 under the stream where the same build read 12.39 in
+the run before: the hotspot was slower today, and the arms compare with
+each other, not with that run. C1's measured goodput put 36 Mbit/s ahead
+of 48 under the stream (12.3 against 8.4 Mbit/s a radio microsecond) and
+took 6 % there; its per-second readings are noisy (5 to 13 at one rate)
+and the rate moved back and forth.
+
+C2 is NOT a clean result. Its gain over C1 (54 % at rest, 23 % under the
+stream; 350 µs a frame off the board's send loop) is several times what
+the shorter wait can save (one slot of AIFS and about four of mean
+backoff, some 45 µs an attempt), and during C2 the laptop's own sending
+ran at 390 and 315 Mbit/s where it ran at 29 to 60 in the other two arms:
+the laptop's link to the hotspot changed under C2. Every frame the board
+sends is relayed by the hotspot to the laptop on the same channel, so a
+faster laptop leg leaves the board more air, and the board's per-frame
+time falls with it. The same change likely made C2's at-rest up test (the
+laptop's burst at 390 Mbit/s, 12.6 % lost, 3.11 Mbit/s over a 6 s
+spread) the outlier it is; the board transmits nothing in that test but
+ACKs, which the access category does not touch. What C2 says: the video
+category did no harm, and its at-rest and under-stream numbers are the
+best of the session. What it does not say is how much of that is the
+category. That needs C1 and C2 interleaved (C1, C2, C1, C2) with the
+laptop's send rate checked alongside. NOT Wi-Fi certified; the category
+puts the board ahead of other stations' best-effort traffic, so it stays a
+build choice.
