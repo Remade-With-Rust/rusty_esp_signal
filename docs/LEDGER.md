@@ -1826,3 +1826,56 @@ altogether, not merely onto a faster leg of it. Same conclusion, firmer
 cause: C2's numbers cannot be credited to the access category.
 tools/e0-run.py now records the laptop's band, channel, rates and signal
 before and after each phase's tests.
+
+### E1 follow-up: the rate by expected throughput, and the laptop's band (2026-10-03)
+
+The rate control now works as Minstrel does in outline: the driver counts
+attempts and ACKs per OFDM rate, foa_sta starts one data frame in 16 at a
+neighbouring rate (within two steps, a different one each second), and
+each rate's expected throughput is its success probability times a
+1,500-byte frame over that frame's airtime plus the per-attempt overhead
+the board measures. tools/e0-run.py now records the laptop's own link
+(band, channel, rates, signal) before and after each phase. Three builds,
+two rounds, A B C A B C, on the XIAO over the owner's hotspot, the laptop
+set to prefer 5 GHz: A (the whole-second probe, `JANUS_OPEN_RATE=probe`),
+B (expected throughput), C (B with `JANUS_OPEN_AC=vi`). Board -> laptop,
+Mbit/s, with the laptop's band:
+
+| | at rest | under the stream | camera |
+|---|---:|---:|---:|
+| A1 | 12.54 (5 GHz) | 14.69 (5 GHz) | 14.96 fps |
+| B1 | **15.60** (5 GHz) | 13.46 (5 GHz) | 14.89 fps |
+| C1 | 13.73 (5 GHz) | 13.80 (5 GHz) | 13.91 fps |
+| A2 | 11.76 (2.4 GHz) | 11.53 (2.4 GHz) | 14.90 fps |
+| B2 | 11.41 (2.4 GHz) | 11.74 (2.4, then 5 GHz) | 13.82 fps |
+| C2 | 14.21 (5 GHz) | 14.41 (5 GHz) | 14.28 fps |
+
+"Prefer 5 GHz" is a preference, not a lock: the laptop was on 2.4 GHz
+(channel 11) for A2 and B2 and back on channel 44 by C2. That made the
+session's largest effect the laptop's band, not any lever: with the
+laptop on 5 GHz the board sent 12.5 to 15.6 Mbit/s, on 2.4 GHz 11.4 to
+11.8, and B's measured overhead an attempt was 456 µs on 5 GHz against
+1,169 on 2.4 GHz (the hotspot relaying every frame on the board's own
+channel). Every earlier comparison in this ledger was made with the band
+unrecorded.
+
+Within one band the levers do not separate at this sample size: on 5 GHz
+A, B and C land between 12.5 and 15.6, and one run of A differs by 2.2
+between its own two phases. The open MAC now matches or passes
+esp-radio's 13.59 under the stream when the laptop is on 5 GHz (13.5 to
+14.7, five phases), but esp-radio's number was taken with the band
+unrecorded, so that comparison is not clean either. 15 under the stream
+was not reached (best 14.69).
+
+What the runs do show: B's rate choice is stable (2 to 3 moves a run,
+settling on 36 or 48 Mbit/s, where A's probe moved 8 times in A2), and its
+model reads sensibly at the top (36 Mbit/s 94 to 98 % acknowledged, 48 at
+78 to 88 %, 54 at 48 to 59 %). Its lower rates read too low (24 Mbit/s 69
+%, 18 down to 10 %): they are mostly tried as retries right after a
+failure, so their counts carry the failure's conditions. Counting only
+each frame's first attempt per rate would remove that bias. The video
+category cut B's measured overhead an attempt (305 and 479 µs against
+456) but added no throughput that two rounds can see, and the camera ran
+a little slower in both C runs (13.91 and 14.28 fps against 14.89 to
+14.96 in A and B on 5 GHz): it stays off by default. B stays the default
+rate control.
