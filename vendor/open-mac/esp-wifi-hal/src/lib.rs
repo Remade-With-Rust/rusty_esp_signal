@@ -72,6 +72,9 @@ mod c3_phy;
 mod ffi;
 /// The PHY's diagnostic prints since boot (E1: `phy_printf` is Rust here).
 pub use ffi::phy_printf_calls;
+/// Transmit counters (E1, the family's addition): what the radio did with
+/// the frames it was given.
+pub mod tx_stats;
 #[cfg(any(feature = "esp32s3", feature = "esp32c3"))]
 mod ht20;
 pub mod ll;

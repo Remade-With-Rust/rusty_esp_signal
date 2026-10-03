@@ -1686,3 +1686,30 @@ flight, the completion and the wake per frame), not the radio. That is the
 next measurement (esp-wifi-hal's `timing-probe`). The two runs are one each
 over a phone hotspot; the receive and ping rows moved both ways between
 them and are not attributed to the change.
+
+### E1 follow-up: RTS/CTS off for data frames, and the radio's counters (2026-10-03)
+
+The driver sends an RTS before every unicast frame unless told otherwise
+(`RtsStrategy::DriverControlled`); 802.11's default RTS threshold (2,347
+bytes) is above every MPDU here. Data frames now go without one
+(`Forced(false)`; `JANUS_OPEN_RTS=on` builds upstream's behaviour). The
+vendored driver also counts what it does with each frame (`tx_stats`:
+frames, exhausted, first-attempt successes, attempts, radio time), and C15
+prints them. On the XIAO over the owner's hotspot, the two builds back to
+back with E0's runner (both with the 54 Mbit/s chain):
+
+| | RTS on (upstream) | RTS off |
+|---|---:|---:|
+| down, board → laptop, at rest / under the stream (Mbit/s) | 5.81 / 5.40 | **8.29 / 7.27** |
+| the board's send loop, 2,000 × 1,400 B | 3.81 s (1.91 ms a frame) | **2.66 s (1.33 ms)** |
+| frames that exhausted every attempt | 79 of 15,472 | **0 of 15,174** |
+| first-attempt successes / attempts per frame | 56 % / 1.90 | 51 % / 2.00 |
+| the stream while tested | 13.7 fps | 14.97 fps |
+| ping p50 / p99 at rest (ms) | 31 / 90 | 11 / 39 |
+
+From FoA as vendored (6 Mbit/s, RTS on every frame: 3.55 / 3.01 Mbit/s) to
+here is 2.3× at rest; esp-radio sent 8.7 Mbit/s at rest in the same place.
+Half the frames still fail their first attempt at 54 Mbit/s on this link:
+the starting rate is too high for it, and each failure costs an ACK
+timeout. An adaptive starting rate (down when first attempts fail, up
+when they succeed, from these counters) is the next step.

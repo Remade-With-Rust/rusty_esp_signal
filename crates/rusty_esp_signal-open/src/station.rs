@@ -75,6 +75,13 @@ fn reason(e: &StaError) -> u8 {
     }
 }
 
+/// The open MAC's transmit counters (the vendored driver's `tx_stats`):
+/// frames, failures, first-attempt successes, attempts, radio time.
+#[must_use]
+pub fn tx_stats() -> esp_wifi_hal::tx_stats::TxStats {
+    esp_wifi_hal::tx_stats::snapshot()
+}
+
 /// The joins tried, the joins that succeeded, and why the last one that
 /// failed did: what a cell prints while it waits for its link (FoA's
 /// station says nothing on its own; its logs can carry key material).

@@ -59,6 +59,12 @@ esp-hal 1.1, esp-phy 0.2.0, esp-wifi-sys 0.2.0):
   padded with 6 Mbit/s to eight), where upstream sent every data frame at
   6 Mbit/s with seven retries; other rates keep upstream's behaviour.
   `rusty_esp_signal-open` sets the station's rate to 54 Mbit/s on joining.
+  Data frames also go without RTS/CTS (`Forced(false)`; upstream's driver
+  default sends one before every unicast frame); `JANUS_OPEN_RTS=on`
+  builds upstream's behaviour.
+- `esp-wifi-hal/src/tx_stats.rs` (new) and its call in `async_driver.rs`:
+  per-frame transmit counters (frames, exhausted, first-attempt successes,
+  attempts, radio time), read with `tx_stats::snapshot()`.
 - `esp32s3-wifi-regs/`: a crate of its own around the upstream files:
   `Cargo.toml`, `src/lib.rs` (the `WIFI` peripheral at `0x6003_3000`, as
   upstream's lib.rs lines, less their `Debug` impl), and svd2rust's

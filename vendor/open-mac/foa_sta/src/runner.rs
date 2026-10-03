@@ -226,6 +226,7 @@ impl ConnectionRunner<'_, '_> {
                 TxMacParameters {
                     key_slot_index: key_slot,
                     wait_for_ack: true,
+                    rts_strategy: data_rts_strategy(),
                     // Each newly generated MSDU needs a fresh MPDU sequence;
                     // the driver keeps it unchanged across its MAC retries.
                     override_seq_num: true,
@@ -507,4 +508,16 @@ fn data_retry_behaviour(rate: foa::esp_wifi_hal::rates::TxPhyRate) -> RetryBehav
     }
     while chain.push(TxPhyRate::Ofdm(OfdmRate::Mbits6)).is_ok() {}
     RetryBehaviour::MultiRateRetry(chain)
+}
+
+/// RTS/CTS for data frames (E1, the family's change). The driver's default
+/// sends an RTS before every unicast frame; 802.11's default RTS threshold
+/// (2,347 bytes) is above any MPDU here, so data frames go without one.
+/// Building with `JANUS_OPEN_RTS=on` keeps upstream's behaviour (the A/B).
+fn data_rts_strategy() -> foa::esp_wifi_hal::async_driver::RtsStrategy {
+    if option_env!("JANUS_OPEN_RTS") == Some("on") {
+        foa::esp_wifi_hal::async_driver::RtsStrategy::DriverControlled
+    } else {
+        foa::esp_wifi_hal::async_driver::RtsStrategy::Forced(false)
+    }
 }

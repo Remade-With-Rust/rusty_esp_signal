@@ -1103,6 +1103,7 @@ mod private {
             // We start transmitting and adapt the rate as required. As soon, as a transmission
             // succeeds, we return.
             let mut last_res = Ok::<u8, TxError>(0);
+            let tx_started = esp_hal::time::Instant::now();
 
             let mut edca_contention_state = if let HardwareTxQueue::Edcaf(edca_ac) = queue {
                 EdcaContentionState::new(
@@ -1178,6 +1179,7 @@ mod private {
             if let Some(byte) = mpdu_buf.get_mut(1) {
                 *byte &= !bit!(3);
             }
+            crate::tx_stats::record(&last_res, tx_started.elapsed().as_micros());
             if let Err(error) = last_res {
                 // Upper layers may enqueue without awaiting a completion handle.
                 // Keep exhausted MAC/medium failures visible without logging payloads.
