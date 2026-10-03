@@ -1744,3 +1744,28 @@ against 13.6). From FoA as vendored (6 Mbit/s, RTS on every frame: 3.55 at
 rest) it is 4.2×. The two fixed-54 runs today read 8.29 and 6.13 at rest:
 a phone hotspot moves run to run, which is why every comparison here is
 two arms back to back. NOT Wi-Fi certified.
+
+### E1 follow-up: where the time goes under the camera stream (2026-10-03)
+
+Each attempt now splits into the hardware's part (start to the MAC
+interrupt: contention, air, the ACK or its timeout) and the wake's
+(interrupt to the waiting task running). Two builds back to back on the
+XIAO over the owner's hotspot: A (adaptive rate, the split) and B (A with
+the camera task alone on the S3's second core, `E0_CAMERA_CORE1=1`):
+
+| | A | B (camera on core 1) |
+|---|---:|---:|
+| board → laptop at rest / under the stream (Mbit/s) | 13.85 / 11.86 | 13.76 / **12.39** |
+| burst at rest: hardware / wake per attempt | 558 / 36 µs | 588 / 36 µs |
+| burst under the stream: hardware / wake per attempt | 616 / 64 µs | 623 / 60 µs |
+| first attempts through, at rest / under the stream | 85 / 83 % | 88 / 85 % |
+| the stream | 14.97 fps | 14.95 fps |
+
+The wake is small and the camera is not what lengthens it (core 1 left it
+at 60 µs); the radio is the time: about 560–620 µs an attempt where a clean
+48 Mbit/s attempt on an idle channel is about 410 µs (267 on air, the ACK
+exchange, AIFS and the mean backoff), with one attempt in six still ending
+in an ACK timeout and doubling the next backoff. The camera on core 1 is
+worth 4 % under the stream. What is left to try: a rate choice by expected
+throughput rather than first-attempt success, and the video access
+category (AIFSN 2, CWmin 7) for the camera's frames.
