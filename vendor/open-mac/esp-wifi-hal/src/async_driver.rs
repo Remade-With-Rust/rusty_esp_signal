@@ -39,6 +39,7 @@ fn mac_handler() {
         let tx_queue_status = Ok(());
         unsafe {
             LowLevelDriver::process_tx_status(tx_queue_status, |queue| {
+                crate::tx_stats::mark(queue.hardware_slot());
                 HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()].signal(tx_queue_status);
             })
         };
@@ -47,6 +48,7 @@ fn mac_handler() {
         let tx_queue_status = Err(ChannelAccessError::Timeout);
         unsafe {
             LowLevelDriver::process_tx_status(tx_queue_status, |queue| {
+                crate::tx_stats::mark(queue.hardware_slot());
                 HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()].signal(tx_queue_status);
                 LowLevelDriver::set_tx_queue_status(queue, HardwareTxQueueStatus::Disabled);
             })
@@ -56,6 +58,7 @@ fn mac_handler() {
         let tx_queue_status = Err(ChannelAccessError::Collision);
         unsafe {
             LowLevelDriver::process_tx_status(tx_queue_status, |queue| {
+                crate::tx_stats::mark(queue.hardware_slot());
                 HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()].signal(tx_queue_status);
                 LowLevelDriver::set_tx_queue_status(queue, HardwareTxQueueStatus::Disabled);
             })
@@ -954,6 +957,7 @@ mod private {
 
                 // This compensates for other slots being marked as done, without it being used at all.
                 hardware_tx_result_signal.reset();
+                crate::tx_stats::started(queue.hardware_slot());
                 ll_driver.start_tx_queue(queue);
             }
 
@@ -975,6 +979,7 @@ mod private {
                         }
                     })
                     .map_err(TxError::ChannelAccess)?;
+                crate::tx_stats::woke(queue.hardware_slot());
 
                 tx_done_wait_drop_guard.detonate();
 

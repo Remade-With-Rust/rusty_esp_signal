@@ -22,6 +22,47 @@ static MAC_OTHER: AtomicU32 = AtomicU32::new(0);
 static ACCESS_TIMEOUT: AtomicU32 = AtomicU32::new(0);
 static ACCESS_COLLISION: AtomicU32 = AtomicU32::new(0);
 static OTHER: AtomicU32 = AtomicU32::new(0);
+/// Per hardware slot: when the attempt started, and when its interrupt came.
+static STARTED_AT: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+static SIGNALLED_AT: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+static HW_US: AtomicU64 = AtomicU64::new(0);
+static WAKE_US: AtomicU64 = AtomicU64::new(0);
+static TIMED: AtomicU32 = AtomicU32::new(0);
+
+fn now_us() -> u64 {
+    esp_hal::time::Instant::now().duration_since_epoch().as_micros()
+}
+
+/// An attempt is about to start on `slot`.
+pub(crate) fn started(slot: usize) {
+    if let Some(at) = STARTED_AT.get(slot) {
+        at.store(now_us(), Ordering::Relaxed);
+    }
+}
+
+/// The MAC interrupt is signalling `slot`'s result (called in the handler).
+pub(crate) fn mark(slot: usize) {
+    if let Some(at) = SIGNALLED_AT.get(slot) {
+        at.store(now_us(), Ordering::Relaxed);
+    }
+}
+
+/// The task waiting on `slot` is running again: split the attempt into the
+/// hardware's part (start to interrupt: contention, air, the ACK or its
+/// timeout) and the wake's (interrupt to the task resuming).
+pub(crate) fn woke(slot: usize) {
+    let (Some(started), Some(signalled)) = (STARTED_AT.get(slot), SIGNALLED_AT.get(slot)) else {
+        return;
+    };
+    let (start, signal, now) =
+        (started.load(Ordering::Relaxed), signalled.load(Ordering::Relaxed), now_us());
+    if start == 0 || signal < start || now < signal {
+        return;
+    }
+    HW_US.fetch_add(signal - start, Ordering::Relaxed);
+    WAKE_US.fetch_add(now - signal, Ordering::Relaxed);
+    TIMED.fetch_add(1, Ordering::Relaxed);
+}
 
 /// One attempt's outcome, by kind: what a failed attempt failed of.
 pub(crate) fn attempt<T>(result: &Result<T, TxError>) {
@@ -77,6 +118,12 @@ pub struct TxStats {
     pub access_collision: u32,
     /// Failed attempts of any other kind.
     pub other: u32,
+    /// Attempts timed for the split below.
+    pub timed: u32,
+    /// Their microseconds from start to the interrupt: the hardware's part.
+    pub hw_us: u64,
+    /// Their microseconds from the interrupt to the task resuming: the wake.
+    pub wake_us: u64,
 }
 
 /// Read the counters.
@@ -93,5 +140,8 @@ pub fn snapshot() -> TxStats {
         access_timeout: ACCESS_TIMEOUT.load(Ordering::Relaxed),
         access_collision: ACCESS_COLLISION.load(Ordering::Relaxed),
         other: OTHER.load(Ordering::Relaxed),
+        timed: TIMED.load(Ordering::Relaxed),
+        hw_us: HW_US.load(Ordering::Relaxed),
+        wake_us: WAKE_US.load(Ordering::Relaxed),
     }
 }
