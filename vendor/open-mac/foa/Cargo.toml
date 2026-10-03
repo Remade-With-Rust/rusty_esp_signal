@@ -10,28 +10,30 @@ homepage = "https://esp32-open-mac.be/"
 repository = "https://github.com/esp32-open-mac/FoA"
 
 [dependencies]
-embassy-futures = { workspace = true }
-embassy-sync = { workspace = true }
-embassy-time = { workspace = true }
+embassy-futures = "0.1.2"
+embassy-sync = "0.8.0"
+embassy-time = "0.5.1"
 
-esp-hal = { workspace = true }
-esp-config = { workspace = true }
+esp-hal = { version = "=1.2.0", features = ["unstable"] }
+esp-config = "0.8.0"
 
-esp-wifi-hal = "0.3.1"
+esp-wifi-hal = { path = "../esp-wifi-hal" }
 static_cell = "2.1.1"
 critical-section = "1.2.0"
-portable-atomic = { workspace = true }
+portable-atomic = { version = "1.15.0", default-features = false }
 
-ieee80211 = { workspace = true }
-log = { workspace = true, optional = true }
-defmt = { workspace = true, optional = true }
-defmt-or-log = { workspace = true }
-futures-util = { workspace = true }
+ieee80211 = "0.5.9"
+log = { version = "0.4.33", optional = true }
+defmt = { version = "1.1.1", optional = true }
+defmt-or-log = { version = "0.2.3", default-features = false }
+futures-util = { version = "0.3.34", default-features = false }
 
 [build-dependencies]
-esp-config = { workspace = true, features = ["build"] }
+esp-config = { version = "0.8.0", features = ["build"] }
 
 [features]
+# The S3 only (E1, H2; upstream: esp32, esp32s2)
+esp32s3 = ["esp-hal/esp32s3", "esp-wifi-hal/esp32s3"]
 arc_buffers = []
 multi_rate_retry = []
 # Opt-in metadata-only completion tracing; select `log` or `defmt` separately.
@@ -45,5 +47,3 @@ defmt = [
     "esp-hal/defmt",
 ]
 
-esp32 = ["esp-hal/esp32", "esp-wifi-hal/esp32"]
-esp32s2 = ["esp-hal/esp32s2", "esp-wifi-hal/esp32s2"]

@@ -63,8 +63,11 @@ static g_osi_funcs_p: &crate::esp_wifi_sys::include::wifi_osi_funcs_t =
         _rand: None,
         _dport_access_stall_other_cpu_start_wrap: None,
         _dport_access_stall_other_cpu_end_wrap: None,
-        _wifi_apb80m_request: None,
-        _wifi_apb80m_release: None,
+        // esp-wifi-sys 0.3 (the family's pin; the PHY this links) names
+        // these two slots for the sleep lock; upstream's 0.2 called them
+        // the APB 80 MHz request. Unused either way.
+        _wifi_pm_sleep_lock_acquire: None,
+        _wifi_pm_sleep_lock_release: None,
         _phy_disable: None,
         _phy_enable: None,
         _phy_update_country_info: None,
@@ -215,6 +218,50 @@ unsafe extern "C" fn phy_exit_critical(level: u32) {
             level,
         ))
     };
+}
+
+/// How many times the PHY asked to print (`phy_printf_calls`).
+static PHY_PRINTF_CALLS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// libphy's one call into `libprintf` (E1, the family's change): its
+/// calibration diagnostics. Defined here, the linker never pulls
+/// `libprintf.a`, the PHY's only reason for it. The C signature is variadic;
+/// only the format string is read (the Xtensa call passes the rest in
+/// registers and on the caller's frame, which a callee that ignores them
+/// leaves alone). With the `log` feature the format string is logged as it
+/// is, arguments unexpanded; always, the call is counted.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn phy_printf(format: *const core::ffi::c_char) -> i32 {
+    PHY_PRINTF_CALLS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    #[cfg(feature = "log")]
+    if !format.is_null() {
+        // SAFETY: the PHY passes a NUL-terminated format string
+        let text = unsafe { core::ffi::CStr::from_ptr(format) };
+        log::info!("phy: {}", text.to_str().unwrap_or("(not UTF-8)").trim_end());
+    }
+    #[cfg(not(feature = "log"))]
+    let _ = format;
+    0
+}
+
+/// The other `libprintf` symbol libphy names (`phy_debug.o`'s `sprintf`):
+/// its code is garbage-collected from the image, but the reference alone
+/// would pull `libprintf.a`'s one object in at symbol resolution, and with
+/// it a second `phy_printf`. Writes an empty string; counted with
+/// `phy_printf`; the arguments are not read.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn sprintf(buffer: *mut core::ffi::c_char, _format: *const core::ffi::c_char) -> i32 {
+    PHY_PRINTF_CALLS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    if !buffer.is_null() {
+        // SAFETY: a caller's sprintf buffer holds at least the terminator
+        unsafe { buffer.write(0) };
+    }
+    0
+}
+
+/// The calls the PHY made to `phy_printf` (or `sprintf`) since boot.
+pub fn phy_printf_calls() -> u32 {
+    PHY_PRINTF_CALLS.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 /// **************************************************************************

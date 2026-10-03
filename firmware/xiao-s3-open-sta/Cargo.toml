@@ -1,0 +1,46 @@
+[package]
+name = "xiao-s3-open-sta"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "E1's probe: an ESP32-S3 Wi-Fi station on the open lower MAC (esp-wifi-hal) and FoA, with Espressif's libphy the only radio blob. NOT Wi-Fi certified."
+
+[[bin]]
+name = "xiao-s3-open-sta"
+path = "src/main.rs"
+test = false
+bench = false
+doctest = false
+
+[dependencies]
+# The chip is selected HERE. No esp-radio: the MAC is the vendored
+# esp-wifi-hal, the station FoA's; esp-rtos is only embassy's time driver.
+esp-hal = { version = "=1.2.0", features = ["esp32s3", "unstable", "rt"] }
+esp-rtos = { version = "=0.4.0", features = ["esp32s3", "embassy"] }
+esp-alloc = { version = "=0.11.0", features = ["esp32s3"] }
+esp-bootloader-esp-idf = { version = "=0.6.0", features = ["esp32s3"] }
+esp-println = { version = "=0.18.0", features = ["esp32s3"] }
+esp-backtrace = { version = "=0.20.0", features = ["esp32s3", "panic-handler", "println"] }
+embassy-executor = "0.10"
+embassy-time = "0.5"
+embassy-net = { version = "0.9", default-features = false, features = ["proto-ipv4", "dhcpv4", "icmp", "udp", "tcp", "medium-ethernet", "auto-icmp-echo-reply"] }
+static_cell = "2"
+
+# the open MAC and the station (rusty_esp_signal/vendor/open-mac, E1)
+esp-wifi-hal = { path = "../../vendor/open-mac/esp-wifi-hal", features = ["esp32s3"] }
+foa = { path = "../../vendor/open-mac/foa", features = ["esp32s3"] }
+foa_sta = { path = "../../vendor/open-mac/foa_sta", features = ["esp32s3"] }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = "z"
+panic = "abort"
+
+# A standalone cargo project: not a member of the rusty_esp_signal workspace.
+[workspace]

@@ -27,4 +27,27 @@ history here and listed below.
 
 ## Changes (H2 onward)
 
-None yet.
+The port onto the family's pins (esp-hal 1.2.0 and the esp-phy 0.3.0 /
+esp-wifi-sys-esp32s3 0.3.0 / esp-sync 0.3.0 it pairs with; upstream was on
+esp-hal 1.1, esp-phy 0.2.0, esp-wifi-sys 0.2.0):
+
+- `esp-wifi-hal/Cargo.toml`: those pins; the S3 alone (the ESP32, S2 and C3
+  features and their PAC / esp-wifi-sys dependencies removed); the
+  workspace profiles and the `[patch.crates-io]` table removed (a vendored
+  crate's patches are its firmware's business; nothing is patched).
+- `esp-wifi-hal/src/lib.rs`: the PAC is `esp32s3-wifi-regs`.
+- `esp-wifi-hal/src/ffi.rs`: esp-wifi-sys 0.3 names two OS-adapter slots
+  `_wifi_pm_sleep_lock_acquire` / `_release` (0.2: `_wifi_apb80m_request` /
+  `_release`); both `None`, as upstream. `phy_printf` and `sprintf` are
+  defined in Rust (counted, the format string logged under `log`, the
+  arguments never read), so the linker leaves `libprintf.a` out: libphy's
+  only reason for it. Census on the probe: `libphy.a` the one C archive.
+- `esp32s3-wifi-regs/`: a crate of its own around the upstream files:
+  `Cargo.toml`, `src/lib.rs` (the `WIFI` peripheral at `0x6003_3000`, as
+  upstream's lib.rs lines, less their `Debug` impl), and svd2rust's
+  `src/generic.rs` + `src/generic/raw.rs` copied unchanged from the esp32s3
+  PAC 0.36.0 that esp-hal 1.2.0 links (MIT OR Apache-2.0).
+- `foa/Cargo.toml`, `foa_sta/Cargo.toml`: out of their upstream workspace
+  (each `workspace = true` replaced by the version the workspace named,
+  esp-hal and esp-config moved to the family's 1.2.0 / 0.8.0), `esp-wifi-hal`
+  by path, an `esp32s3` feature in place of `esp32` / `esp32s2`.

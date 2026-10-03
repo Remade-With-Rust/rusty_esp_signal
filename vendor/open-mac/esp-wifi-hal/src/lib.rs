@@ -70,6 +70,8 @@ mod c3_mac;
 #[cfg(feature = "esp32c3")]
 mod c3_phy;
 mod ffi;
+/// The PHY's diagnostic prints since boot (E1: `phy_printf` is Rust here).
+pub use ffi::phy_printf_calls;
 #[cfg(any(feature = "esp32s3", feature = "esp32c3"))]
 mod ht20;
 pub mod ll;
@@ -96,7 +98,7 @@ cfg_select! {
         use esp_wifi_sys_esp32s2 as esp_wifi_sys;
     }
     feature = "esp32s3" => {
-        use esp32s3 as esp_pac;
+        use esp32s3_wifi_regs as esp_pac;
         use esp_wifi_sys_esp32s3 as esp_wifi_sys;
     }
     feature = "esp32c3" => {
