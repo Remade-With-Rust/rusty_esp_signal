@@ -274,9 +274,144 @@ impl SampledRate {
     }
 }
 
+/// The airtime of a 1,500-byte MPDU at each rate on [`LADDER`], preamble
+/// and SIGNAL included: 20 µs + 4 µs a symbol of 4 x rate bits, for the
+/// 16 service bits, the frame and the 6 tail bits.
+const AIRTIME_1500_US: [u32; 8] = [244, 272, 356, 524, 688, 1024, 1356, 2024];
+/// A rate's success probability is updated once it has this many attempts.
+const PROB_MIN_ATTEMPTS: u32 = 16;
+/// An attempt's time beyond its frame's airtime (AIFS, backoff, SIFS and
+/// the ACK; the others' frames while we wait): bounds on the measurement.
+const OVERHEAD_MIN_US: u32 = 100;
+const OVERHEAD_MAX_US: u32 = 2_000;
+/// A rate takes over only if its expected throughput beats the chosen
+/// rate's by this much (per mille).
+const EXPECT_WIN_PERMILLE: u64 = 1030;
+const PROB_UNKNOWN: u32 = u32::MAX;
+
+static PROB_PERMILLE: [AtomicU32; 8] = [const { AtomicU32::new(PROB_UNKNOWN) }; 8];
+static OVERHEAD_US: AtomicU32 = AtomicU32::new(0);
+
+/// The starting rate for data frames by expected throughput (E1's third
+/// rate control, Minstrel's in outline). The driver counts attempts and
+/// ACKs per rate; one data frame in [`foa_sta::SAMPLE_EVERY`] starts at a
+/// neighbouring rate (within two steps, a different one each second), so
+/// every rate near the chosen one keeps a fresh success probability at the
+/// cost of a few frames, where [`SampledRate`] spent a whole second at it.
+/// A rate's expected throughput is its success probability times a
+/// 1,500-byte frame over that frame's airtime plus the per-attempt
+/// overhead measured on the board (contention, the ACK or its timeout,
+/// the hotspot's own frames): a property of the rate, not of whatever
+/// traffic the last second carried.
+struct ExpectedRate {
+    index: usize,
+    /// Per rate, the success probability in per mille ([`PROB_UNKNOWN`]: none yet).
+    prob: [u32; 8],
+    /// Per rate, attempts and ACKs not yet folded into `prob`.
+    pending: [(u32, u32); 8],
+    overhead_us: u32,
+    sample_step: u8,
+    last_rates: [(u32, u32); 8],
+    last: esp_wifi_hal::tx_stats::TxStats,
+}
+
+impl ExpectedRate {
+    fn new() -> Self {
+        let index = LADDER.iter().position(|r| *r == DATA_RATE).unwrap_or(0);
+        RATE_NOW.store(index as u8, Ordering::Relaxed);
+        Self {
+            index,
+            prob: [PROB_UNKNOWN; 8],
+            pending: [(0, 0); 8],
+            overhead_us: 150,
+            sample_step: 0,
+            last_rates: esp_wifi_hal::tx_stats::rate_snapshot(),
+            last: esp_wifi_hal::tx_stats::snapshot(),
+        }
+    }
+
+    /// The expected throughput at rate `i`, kbit/s (0: not known).
+    fn throughput(&self, i: usize) -> u32 {
+        if self.prob[i] == PROB_UNKNOWN {
+            return 0;
+        }
+        self.prob[i] * 12_000 / (AIRTIME_1500_US[i] + self.overhead_us)
+    }
+
+    /// One second's counters: the rate to move to, if any.
+    fn tick(
+        &mut self,
+        now: esp_wifi_hal::tx_stats::TxStats,
+        rates: [(u32, u32); 8],
+    ) -> Option<esp_wifi_hal::rates::OfdmRate> {
+        for i in 0..LADDER.len() {
+            let pending = &mut self.pending[i];
+            pending.0 += rates[i].0.wrapping_sub(self.last_rates[i].0);
+            pending.1 += rates[i].1.wrapping_sub(self.last_rates[i].1);
+            if pending.0 >= PROB_MIN_ATTEMPTS {
+                let p = (pending.1 * 1000 / pending.0).min(1000);
+                self.prob[i] = if self.prob[i] == PROB_UNKNOWN { p } else { (self.prob[i] * 3 + p) / 4 };
+                *pending = (0, 0);
+                PROB_PERMILLE[i].store(self.prob[i], Ordering::Relaxed);
+            }
+        }
+        self.last_rates = rates;
+        let timed = now.timed.wrapping_sub(self.last.timed);
+        let hw_us = now.hw_us.wrapping_sub(self.last.hw_us);
+        self.last = now;
+        if timed >= RATE_MIN_FRAMES {
+            let per_attempt = u32::try_from(hw_us / u64::from(timed)).unwrap_or(u32::MAX);
+            let overhead = per_attempt
+                .saturating_sub(AIRTIME_1500_US[self.index])
+                .clamp(OVERHEAD_MIN_US, OVERHEAD_MAX_US);
+            self.overhead_us = (self.overhead_us * 3 + overhead) / 4;
+            OVERHEAD_US.store(self.overhead_us, Ordering::Relaxed);
+        }
+        for i in 0..LADDER.len() {
+            GOODPUT_KBPS[i].store(self.throughput(i), Ordering::Relaxed);
+        }
+        let best = (0..LADDER.len()).max_by_key(|&i| self.throughput(i)).unwrap_or(self.index);
+        let moved = best != self.index
+            && u64::from(self.throughput(best)) * 1000
+                > u64::from(self.throughput(self.index)) * EXPECT_WIN_PERMILLE;
+        if moved {
+            self.index = best;
+            RATE_STEPS.fetch_add(1, Ordering::Relaxed);
+            RATE_NOW.store(best as u8, Ordering::Relaxed);
+        }
+        // the next second's sample: the neighbours within two steps in turn
+        const OFFSETS: [isize; 4] = [-1, 1, -2, 2];
+        let mut sample = None;
+        for _ in 0..OFFSETS.len() {
+            let j = self.index as isize + OFFSETS[usize::from(self.sample_step) % OFFSETS.len()];
+            self.sample_step = self.sample_step.wrapping_add(1);
+            if (0..LADDER.len() as isize).contains(&j) {
+                sample = Some(LADDER[j as usize]);
+                break;
+            }
+        }
+        foa_sta::set_data_sample_rate(sample);
+        RATE_PROBES.fetch_add(1, Ordering::Relaxed);
+        moved.then(|| LADDER[self.index])
+    }
+}
+
+/// The expected-throughput rate control's model: each rate's success
+/// probability in per mille (54 down to 6 Mbit/s; `u32::MAX`: not yet
+/// measured) and the per-attempt overhead it measured, µs.
+#[must_use]
+pub fn rate_model() -> ([u32; 8], u32) {
+    (
+        core::array::from_fn(|i| PROB_PERMILLE[i].load(Ordering::Relaxed)),
+        OVERHEAD_US.load(Ordering::Relaxed),
+    )
+}
+
 /// The goodput last measured at each rate on the ladder (54 down to 6
 /// Mbit/s), in kbit/s of MPDU bytes per radio microsecond (0: never tried),
-/// and how many probes the rate control has made.
+/// and how many probes the rate control has made. Under [`ExpectedRate`]
+/// (the default) the figures are its expected throughput for a 1,500-byte
+/// frame and the probes are its sampling seconds.
 #[must_use]
 pub fn rate_goodput() -> ([u32; 8], u32) {
     (
@@ -411,21 +546,25 @@ pub async fn run_station(
             Action::None => {
                 let mut threshold = RateControl::new();
                 let mut sampled = SampledRate::new();
+                let mut expected = ExpectedRate::new();
                 while control.connected() {
                     Timer::after(LINK_POLL).await;
                     let counters = esp_wifi_hal::tx_stats::snapshot();
                     // JANUS_OPEN_RATE builds the A/B's arms: `fixed` keeps the
                     // starting rate, `threshold` the first-attempt thresholds,
-                    // anything else the measured goodput
+                    // `probe` the measured goodput of whole seconds, anything
+                    // else the expected throughput
                     let next = match option_env!("JANUS_OPEN_RATE") {
                         Some("fixed") => None,
                         Some("threshold") => threshold.tick(counters),
-                        _ => sampled.tick(counters),
+                        Some("probe") => sampled.tick(counters),
+                        _ => expected.tick(counters, esp_wifi_hal::tx_stats::rate_snapshot()),
                     };
                     if let Some(next) = next {
                         control.override_phy_rate(next.into());
                     }
                 }
+                foa_sta::set_data_sample_rate(None);
                 action = policy.on(Event::Disconnected, now());
             }
         }

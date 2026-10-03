@@ -1,4 +1,8 @@
-use core::{future::pending, marker::PhantomData};
+use core::{
+    future::pending,
+    marker::PhantomData,
+    sync::atomic::{AtomicU32, AtomicU8, Ordering},
+};
 
 use embassy_futures::{
     join::join,
@@ -215,12 +219,13 @@ impl ConnectionRunner<'_, '_> {
             else {
                 continue;
             };
+            let rate = data_frame_rate(sta_tx_rx.phy_rate());
             let _ = sta_tx_rx.tx_endpoint.transmit_edca(
                 data_access_category(),
                 tx_buf,
                 written,
                 TxPlcpParameters {
-                    rate: sta_tx_rx.phy_rate(),
+                    rate,
                     ..Default::default()
                 },
                 TxMacParameters {
@@ -232,7 +237,7 @@ impl ConnectionRunner<'_, '_> {
                     override_seq_num: true,
                     ..Default::default()
                 },
-                data_retry_behaviour(sta_tx_rx.phy_rate()),
+                data_retry_behaviour(rate),
             );
             trace!(
                 "Transmitted {} bytes to {}",
@@ -481,18 +486,40 @@ impl StaRunner<'_, '_> {
 /// attempts: a good link sends at the station's rate, a poor one ends where
 /// upstream always was, with one more try. Other rates keep upstream's
 /// behaviour.
+/// The 802.11g rates, fastest first.
+const LADDER: [foa::esp_wifi_hal::rates::OfdmRate; 8] = {
+    use foa::esp_wifi_hal::rates::OfdmRate::*;
+    [Mbits54, Mbits48, Mbits36, Mbits24, Mbits18, Mbits12, Mbits9, Mbits6]
+};
+
+/// One data frame in this many starts at the sample rate, when one is set.
+pub const SAMPLE_EVERY: u32 = 16;
+/// The sample rate's hardware code (`OfdmRate as u8`); 0 is none.
+static SAMPLE_RATE: AtomicU8 = AtomicU8::new(0);
+static DATA_FRAMES: AtomicU32 = AtomicU32::new(0);
+
+/// Start one data frame in [`SAMPLE_EVERY`] at `rate` (E1, the family's
+/// addition): the rate control learns how a rate it is not using would do
+/// from a few frames, not from a second of them. `None` stops sampling.
+pub fn set_data_sample_rate(rate: Option<foa::esp_wifi_hal::rates::OfdmRate>) {
+    SAMPLE_RATE.store(rate.map_or(0, |r| r as u8), Ordering::Relaxed);
+}
+
+/// The rate this data frame starts at: the station's, or the sample rate's
+/// for one frame in [`SAMPLE_EVERY`].
+fn data_frame_rate(rate: foa::esp_wifi_hal::rates::TxPhyRate) -> foa::esp_wifi_hal::rates::TxPhyRate {
+    let code = SAMPLE_RATE.load(Ordering::Relaxed);
+    if code == 0 || DATA_FRAMES.fetch_add(1, Ordering::Relaxed) % SAMPLE_EVERY != SAMPLE_EVERY - 1 {
+        return rate;
+    }
+    LADDER
+        .iter()
+        .find(|r| **r as u8 == code)
+        .map_or(rate, |r| foa::esp_wifi_hal::rates::TxPhyRate::Ofdm(*r))
+}
+
 fn data_retry_behaviour(rate: foa::esp_wifi_hal::rates::TxPhyRate) -> RetryBehaviour {
     use foa::esp_wifi_hal::rates::{OfdmRate, TxPhyRate};
-    const LADDER: [OfdmRate; 8] = [
-        OfdmRate::Mbits54,
-        OfdmRate::Mbits48,
-        OfdmRate::Mbits36,
-        OfdmRate::Mbits24,
-        OfdmRate::Mbits18,
-        OfdmRate::Mbits12,
-        OfdmRate::Mbits9,
-        OfdmRate::Mbits6,
-    ];
     let TxPhyRate::Ofdm(first) = rate else {
         return RetryBehaviour::RetryUntil(7);
     };

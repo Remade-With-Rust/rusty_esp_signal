@@ -10,6 +10,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use portable_atomic::AtomicU64;
 
 use crate::async_driver::TxError;
+use crate::rates::{OfdmRate, PhyRate, TxPhyRate};
 use crate::ll::{ChannelAccessError, MacProtocolError};
 
 static FRAMES: AtomicU32 = AtomicU32::new(0);
@@ -63,6 +64,54 @@ pub(crate) fn woke(slot: usize) {
     HW_US.fetch_add(signal - start, Ordering::Relaxed);
     WAKE_US.fetch_add(now - signal, Ordering::Relaxed);
     TIMED.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Per OFDM rate, 54 down to 6 Mbit/s: the attempts that went on the air
+/// (answered, or timed out waiting for the ACK), and those answered.
+static RATE_ATTEMPTS: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
+static RATE_ACKED: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
+
+/// Where `rate` sits in [`rate_snapshot`]: 54 Mbit/s first, 6 last.
+#[must_use]
+pub const fn ofdm_index(rate: OfdmRate) -> usize {
+    match rate {
+        OfdmRate::Mbits54 => 0,
+        OfdmRate::Mbits48 => 1,
+        OfdmRate::Mbits36 => 2,
+        OfdmRate::Mbits24 => 3,
+        OfdmRate::Mbits18 => 4,
+        OfdmRate::Mbits12 => 5,
+        OfdmRate::Mbits9 => 6,
+        OfdmRate::Mbits6 => 7,
+    }
+}
+
+/// One attempt at `rate`: counted for the rate if it was on the air and
+/// either answered or not (a lost channel-access contest says nothing
+/// about the rate).
+pub(crate) fn attempt_at<T>(rate: &TxPhyRate, result: &Result<T, TxError>) {
+    let PhyRate::Ofdm(rate) = rate else {
+        return;
+    };
+    let acked = match result {
+        Ok(_) => true,
+        Err(TxError::MacProtocol(MacProtocolError::AckTimeout)) => false,
+        Err(_) => return,
+    };
+    let i = ofdm_index(*rate);
+    RATE_ATTEMPTS[i].fetch_add(1, Ordering::Relaxed);
+    if acked {
+        RATE_ACKED[i].fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Per OFDM rate (54 down to 6 Mbit/s): attempts on the air, and how many
+/// of them were acknowledged, since boot.
+#[must_use]
+pub fn rate_snapshot() -> [(u32, u32); 8] {
+    core::array::from_fn(|i| {
+        (RATE_ATTEMPTS[i].load(Ordering::Relaxed), RATE_ACKED[i].load(Ordering::Relaxed))
+    })
 }
 
 /// One attempt's outcome, by kind: what a failed attempt failed of.

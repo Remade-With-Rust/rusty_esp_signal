@@ -1815,3 +1815,14 @@ category. That needs C1 and C2 interleaved (C1, C2, C1, C2) with the
 laptop's send rate checked alongside. NOT Wi-Fi certified; the category
 puts the board ahead of other stations' best-effort traffic, so it stays a
 build choice.
+
+Correction, the same day: the hotspot serves two bands. After the run the
+laptop was on the owner's hotspot on channel 44 (5 GHz, 802.11ax, 1,201 Mbit/s
+receive); the board is 2.4 GHz only. The laptop's 29 to 60 Mbit/s sends
+in the control and C1 fit a 2.4 GHz link, its 315 to 390 in C2 a 5 GHz
+one: the laptop most likely changed band between C1 and C2, which moves
+the hotspot's relay of every board frame off the board's channel
+altogether, not merely onto a faster leg of it. Same conclusion, firmer
+cause: C2's numbers cannot be credited to the access category.
+tools/e0-run.py now records the laptop's band, channel, rates and signal
+before and after each phase's tests.
