@@ -2296,7 +2296,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rusty_esp_core"
-version = "0.1.1"
+version = "0.1.2"
 
 [[package]]
 name = "rusty_esp_dsp"
@@ -2308,7 +2308,7 @@ dependencies = [
 
 [[package]]
 name = "rusty_esp_mid-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "base64",
  "bs58",
@@ -2324,7 +2324,7 @@ dependencies = [
 
 [[package]]
 name = "rusty_esp_signal"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "rusty_esp_signal-core",
  "rusty_esp_signal-esp",
@@ -2332,7 +2332,7 @@ dependencies = [
 
 [[package]]
 name = "rusty_esp_signal-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chacha20poly1305",
  "hkdf",
@@ -2348,7 +2348,7 @@ dependencies = [
 
 [[package]]
 name = "rusty_esp_signal-esp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bt-hci 0.9.0",
  "edge-dhcp",
@@ -2373,7 +2373,7 @@ dependencies = [
 
 [[package]]
 name = "rusty_esp_signal-web"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "js-sys",
  "rusty_esp_core",
@@ -3260,8 +3260,8 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[patch.unused]]
 name = "rusty_esp_alloc"
-version = "0.1.1"
+version = "0.1.2"
 
 [[patch.unused]]
 name = "rusty_esp_mid-esp"
-version = "0.1.1"
+version = "0.1.2"

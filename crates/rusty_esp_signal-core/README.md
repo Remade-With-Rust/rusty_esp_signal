@@ -2,7 +2,7 @@
 
 [![Remade With Rust](https://img.shields.io/badge/Remade%20With-Rust-000?logo=rust&logoColor=fff)](https://github.com/remade-with-rust) [![By Mata Network](https://img.shields.io/badge/by-Mata%20Network-5b2be0)](https://www.mata.network) [![crates.io](https://img.shields.io/crates/v/rusty_esp_signal-core.svg)](https://crates.io/crates/rusty_esp_signal-core) [![docs.rs](https://docs.rs/rusty_esp_signal-core/badge.svg)](https://docs.rs/rusty_esp_signal-core) [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](https://github.com/Remade-With-Rust/rusty_esp_signal/blob/main/LICENSE-MIT)
 
-The pure half of the radio package: the provisioning protocol, the authenticated peer-to-peer link framing, presence from channel state, the radar's wire format, and the Wi-Fi station policy — with no drivers in it. `no_std` + `alloc`, `forbid(unsafe)`.
+The pure half of the radio package: the setup session (SPAKE2+ on P-256, the device proving its `did:mata`, the settings sealed with ChaCha20-Poly1305) and the provisioning service that carries it, the authenticated peer-to-peer link framing, presence from channel state, the radar's wire format, and the Wi-Fi station policy — with no drivers in it. `no_std` + `alloc`, `forbid(unsafe)`.
 
 Presence is judged against a **labelled public capture** rather than our own recording, and the held-out pair is reported beside the fitted one.
 

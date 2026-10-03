@@ -2,7 +2,7 @@
 
 [![Remade With Rust](https://img.shields.io/badge/Remade%20With-Rust-000?logo=rust&logoColor=fff)](https://github.com/remade-with-rust) [![By Mata Network](https://img.shields.io/badge/by-Mata%20Network-5b2be0)](https://www.mata.network) [![crates.io](https://img.shields.io/crates/v/rusty_esp_signal-esp.svg)](https://crates.io/crates/rusty_esp_signal-esp) [![docs.rs](https://docs.rs/rusty_esp_signal-esp/badge.svg)](https://docs.rs/rusty_esp_signal-esp) [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](https://github.com/Remade-With-Rust/rusty_esp_signal/blob/main/LICENSE-MIT)
 
-The chip backends for the radio package: Wi-Fi, Bluetooth provisioning, the peer-to-peer link and the radar's serial port, on both tracks.
+The chip backends for the radio package: Wi-Fi, the setup session over Bluetooth (trouble-host on Track B, Bluedroid on Track A, long writes and long reads on both), the peer-to-peer link (the HMAC on the S3's SHA unit) and the radar's serial port, on both tracks.
 
 | track | what it is |
 |---|---|

@@ -15,10 +15,10 @@ millimetre-wave radar. Pure Rust, no C, no FFI, `no_std` by default.
   ESP32 its network over Bluetooth, on a page with no app and no server,
   inside an encrypted session that a setup code unlocks (SPAKE2+, the device
   proving its `did:mata`): the passphrase never crosses the air in the clear
-  and never reaches a server, a log, or a command line. The earlier,
-  unencrypted version **joined in 7.5 seconds** on an ESP32-CAM, and the next
-  boot joined alone in 9.5 seconds with Bluetooth off; the session is timed on
-  the boards next.
+  and never reaches a server, a log, or a command line. **Verified from Chrome
+  on an ESP32-S3 and an ESP32-CAM**: a whole session costs the device **0.27 s
+  on the S3 and 0.82 s on the original ESP32**, and the board joins in about a
+  second.
 * **Presence from the Wi-Fi channel itself**, judged against a labelled public
   capture rather than our own recording: an empty room reads 17.4% occupancy
   and a walking person 86.1%, with a held-out pair at 60.8%.
@@ -33,6 +33,9 @@ millimetre-wave radar. Pure Rust, no C, no FFI, `no_std` by default.
 
 | what | measured |
 |---|---|
+| the setup session over Bluetooth, from Chrome (XIAO ESP32-S3, trouble-host) | the device's time **0.27 s** a session (Start 260 ms); joined in **995 ms**, restarted without Bluetooth, the camera page on its token |
+| the same on the ESP32-CAM (Bluedroid) | **0.82 s** a session (Start 695-790 ms, the portable P-256 path); a mistyped passphrase offers setup again; the page 200 on its token, 403 without |
+| refusals, from an independent central (`tools/setup_central.py`) | a wrong code, another device, a replayed session and a second writer refused; five wrong codes lock the window, and on the next power-on one more guess |
 | provisioning over Bluetooth (the unencrypted version, now retired) | **joined in 7.5 s**; the reboot joins alone in **9.5 s** with no Bluetooth |
 | the identity behind it | the same `did:mata` held across six reflashes |
 | the advertisement budget | 31 bytes, which is what forced the name and service layout |
@@ -79,7 +82,28 @@ if provisioner.boot(now).action == Action::Connect {
 | **A** | `std` on ESP-IDF — Wi-Fi, Bluetooth provisioning, the radar's serial port | `rusty_esp_signal-esp --features esp-idf` |
 | **B** | `no_std` on `esp-hal` — the protocols, the detector, the framing | `rusty_esp_signal-core`, default |
 
-## 0.2.0 is a breaking release
+## 0.3.0 is a breaking release
+
+The provisioning service carries the setup session (`setup` and `discover`);
+the plaintext `credentials` write and the public `scan` are gone, and
+`Provisioner` is the session's GATT router over the stores a platform lends it.
+
+```rust
+-  let mut p: Provisioner = Provisioner::new(StationPolicy::default());
+-  p.restore(credentials, now);
++  let env = Env { settings, identity, rng, signer };
++  let mut p = Provisioner::new(StationPolicy::default(), devpub, Reset::PowerOn, now, env)?;
++  p.boot(now);
+```
+
+A device takes a session once a setup code's verifier (`setup.v`) is in its
+settings, written at flash time (espino's `provision --setup-code-out`, or the
+portal). The page is `docs/provision.html`, its wasm `rusty_esp_signal-web`.
+0.3.0 also carries the CSI work (breathing and a heart band, the presence
+record at version 2, the CSI stream, a fall as a shape in the wander) and the
+link's HMAC on the S3's SHA unit (`sha-accel`).
+
+## 0.2.0 was a breaking release
 
 `EspNowLink` no longer takes a lifetime parameter. `esp-radio` 1.0.0-beta.1
 dropped it from `EspNowSender` and `EspNowReceiver`, and carrying one here
