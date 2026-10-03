@@ -98,6 +98,83 @@ pub fn join_stats() -> (u32, u32, &'static str) {
 /// at 6 Mbit/s, FoA's default for every frame, with more tries than before.
 pub const DATA_RATE: esp_wifi_hal::rates::OfdmRate = esp_wifi_hal::rates::OfdmRate::Mbits54;
 
+/// The 802.11g ladder the starting rate moves on, fastest first.
+const LADDER: [esp_wifi_hal::rates::OfdmRate; 8] = {
+    use esp_wifi_hal::rates::OfdmRate::*;
+    [Mbits54, Mbits48, Mbits36, Mbits24, Mbits18, Mbits12, Mbits9, Mbits6]
+};
+/// A second with fewer frames than this says nothing about the link.
+const RATE_MIN_FRAMES: u32 = 20;
+/// Below this share of first-attempt successes, a step down.
+const RATE_DOWN_BELOW_PERMILLE: u32 = 600;
+/// Above this share, for [`RATE_UP_AFTER`] seconds running, a step up.
+const RATE_UP_ABOVE_PERMILLE: u32 = 900;
+/// How many good seconds in a row before trying a faster rate.
+const RATE_UP_AFTER: u8 = 5;
+
+static RATE_STEPS: AtomicU32 = AtomicU32::new(0);
+static RATE_NOW: AtomicU8 = AtomicU8::new(0);
+
+/// The starting rate for data frames, adapted once a second from the
+/// driver's counters (E1): too many first attempts failing costs an ACK
+/// timeout each, so the rate steps down; a run of clean seconds steps it
+/// back up. Every frame still falls back down the ladder on its own
+/// failures (vendored foa_sta's retry chain); this only moves where the
+/// chain starts.
+struct RateControl {
+    index: usize,
+    good_run: u8,
+    last: esp_wifi_hal::tx_stats::TxStats,
+}
+
+impl RateControl {
+    fn new() -> Self {
+        let index = LADDER.iter().position(|r| *r == DATA_RATE).unwrap_or(0);
+        RATE_NOW.store(index as u8, Ordering::Relaxed);
+        Self { index, good_run: 0, last: esp_wifi_hal::tx_stats::snapshot() }
+    }
+
+    /// One second's counters: the rate to move to, if any.
+    fn tick(&mut self, now: esp_wifi_hal::tx_stats::TxStats) -> Option<esp_wifi_hal::rates::OfdmRate> {
+        let frames = now.frames.wrapping_sub(self.last.frames);
+        let first_ok = now.first_ok.wrapping_sub(self.last.first_ok);
+        self.last = now;
+        if frames < RATE_MIN_FRAMES {
+            return None;
+        }
+        let permille = first_ok * 1000 / frames;
+        let next = if permille < RATE_DOWN_BELOW_PERMILLE && self.index + 1 < LADDER.len() {
+            self.good_run = 0;
+            self.index + 1
+        } else if permille > RATE_UP_ABOVE_PERMILLE && self.index > 0 {
+            self.good_run += 1;
+            if self.good_run < RATE_UP_AFTER {
+                return None;
+            }
+            self.good_run = 0;
+            self.index - 1
+        } else {
+            if permille <= RATE_UP_ABOVE_PERMILLE {
+                self.good_run = 0;
+            }
+            return None;
+        };
+        self.index = next;
+        RATE_STEPS.fetch_add(1, Ordering::Relaxed);
+        RATE_NOW.store(next as u8, Ordering::Relaxed);
+        Some(LADDER[next])
+    }
+}
+
+/// The data rate the station starts frames at now, in Mbit/s, and how many
+/// times it has moved since boot.
+#[must_use]
+pub fn data_rate() -> (u8, u32) {
+    const MBITS: [u8; 8] = [54, 48, 36, 24, 18, 12, 9, 6];
+    let i = usize::from(RATE_NOW.load(Ordering::Relaxed)).min(MBITS.len() - 1);
+    (MBITS[i], RATE_STEPS.load(Ordering::Relaxed))
+}
+
 /// What [`stack`] builds: the station's control, the IP stack, and the
 /// three runners a firmware spawns ([`mac_task`], [`sta_task`],
 /// [`net_task`]) before anything awaits the stack.
@@ -213,8 +290,12 @@ pub async fn run_station(
             }
             Action::StartProvisioning => return Phase::Fallback,
             Action::None => {
+                let mut rate = RateControl::new();
                 while control.connected() {
                     Timer::after(LINK_POLL).await;
+                    if let Some(next) = rate.tick(esp_wifi_hal::tx_stats::snapshot()) {
+                        control.override_phy_rate(next.into());
+                    }
                 }
                 action = policy.on(Event::Disconnected, now());
             }
