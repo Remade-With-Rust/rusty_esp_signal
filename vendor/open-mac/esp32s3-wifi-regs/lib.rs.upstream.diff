@@ -1,0 +1,26 @@
+commit 37b54bd9ad62de17b17a8d7984a2ace5e73d63dd
+Author: Matt Davis <matteius@gmail.com>
+Date:   Thu Sep 10 13:37:40 2026 -0400
+
+    Add ESP32-S3 Wi-Fi MAC register mapping
+
+diff --git a/esp32s3/src/lib.rs b/esp32s3/src/lib.rs
+index 849a59ce..c010da0c 100644
+--- a/esp32s3/src/lib.rs
++++ b/esp32s3/src/lib.rs
+@@ -1078,6 +1078,15 @@ impl core::fmt::Debug for UART2 {
+ }
+ #[doc = "UART (Universal Asynchronous Receiver-Transmitter) Controller 2"]
+ pub use self::uart0 as uart2;
++#[doc = "MAC controller for Wi-Fi peripheral"]
++pub type WIFI = crate::Periph<wifi::RegisterBlock, 0x6003_3000>;
++impl core::fmt::Debug for WIFI {
++    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
++        f.debug_struct("WIFI").finish()
++    }
++}
++#[doc = "MAC controller for Wi-Fi peripheral"]
++pub mod wifi;
+ #[doc = "Universal Host Controller Interface 0"]
+ pub type UHCI0 = crate::Periph<uhci0::RegisterBlock, 0x6001_4000>;
+ impl core::fmt::Debug for UHCI0 {

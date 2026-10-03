@@ -1,0 +1,49 @@
+[package]
+name = "foa"
+version = "0.2.0"
+authors = ["Frostie314159 <frostie.neuenhausen@gmail.com>"]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+readme = "../README.md"
+description = "An experimental IEEE 802.11 (WLAN) stack for rust on the ESP32. "
+homepage = "https://esp32-open-mac.be/"
+repository = "https://github.com/esp32-open-mac/FoA"
+
+[dependencies]
+embassy-futures = { workspace = true }
+embassy-sync = { workspace = true }
+embassy-time = { workspace = true }
+
+esp-hal = { workspace = true }
+esp-config = { workspace = true }
+
+esp-wifi-hal = "0.3.1"
+static_cell = "2.1.1"
+critical-section = "1.2.0"
+portable-atomic = { workspace = true }
+
+ieee80211 = { workspace = true }
+log = { workspace = true, optional = true }
+defmt = { workspace = true, optional = true }
+defmt-or-log = { workspace = true }
+futures-util = { workspace = true }
+
+[build-dependencies]
+esp-config = { workspace = true, features = ["build"] }
+
+[features]
+arc_buffers = []
+multi_rate_retry = []
+# Opt-in metadata-only completion tracing; select `log` or `defmt` separately.
+tx-trace = []
+
+log = ["dep:log", "defmt-or-log/log", "esp-wifi-hal/log"]
+defmt = [
+    "dep:defmt",
+    "defmt-or-log/defmt",
+    "esp-wifi-hal/defmt",
+    "esp-hal/defmt",
+]
+
+esp32 = ["esp-hal/esp32", "esp-wifi-hal/esp32"]
+esp32s2 = ["esp-hal/esp32s2", "esp-wifi-hal/esp32s2"]

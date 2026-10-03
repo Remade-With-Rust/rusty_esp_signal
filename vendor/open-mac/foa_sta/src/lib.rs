@@ -1,0 +1,256 @@
+#![no_std]
+#![deny(missing_docs)]
+//! This crate implements a station (STA) interface for FoA.
+//!
+//! ## Usage
+//! To initialize a STA interface, call [new_sta_interface] with a [VirtualInterface] you got from
+//! calling [foa::init], a mutable reference to [StaResources] and optionally a [MACAddress].
+//! In return, you'll get a `(StaControl, StaRunner, StaNetDevice)`. For the stack to work, you
+//! have to call [StaRunner::run], either in a separate task or by joining the future with another
+//! one. Once you have done that, you can use the [StaControl] to control the interface, and pass
+//! the [StaNetDevice] to [embassy_net].
+//! ## Status
+//! Currently only very basic operations are supported and much of this is work in progress. More
+//! operations will follow in the future.
+//!
+//! ### Supported operations.
+//! 1. Passive scanning
+//! 2. Connecting to a network.
+//!     - Both Open and WPA2-PSK encrypted networks
+//! 3. Disconnecting from a network.
+//! 4. Setting the MAC address.
+//!
+//! ## A note about the WPA2 implementation
+//! `foa_sta` has an implementation of WPA2-PSK, which allows it to connect to networks using that
+//! cipher suite. It is however extremely basic and in very early stages of development. This means
+//! that it may crash at any point during the connection process and is not very secure. Most of
+//! this is down to the way it is written, which was intended to get it working and figure out how
+//! to do this at all. A new design using a state machine is already in the works, but it will take
+//! some time to be ready.
+//!
+//! (Frostie314159): The reason this will take a while is, because I worked on WPA2 for two months
+//! straight to get it working and sorta need to take my mind of it for a while.
+
+use core::cell::Cell;
+
+use connection_state::ConnectionStateTracker;
+use embassy_net_driver::HardwareAddress;
+use esp_config::esp_config_int;
+use ieee80211::{common::IEEE80211StatusCode, mac_parser::MACAddress};
+
+#[cfg(feature = "rsn")]
+use {core::cell::RefCell, embassy_sync::blocking_mutex::NoopMutex};
+
+use embassy_net_driver_channel::{self as ch};
+use foa::{
+    LMacError, LMacInterfaceControl, TxEndpoint, VirtualInterface, esp_wifi_hal::prelude::*,
+    util::rx_router::RxRouter,
+};
+
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
+#[macro_use]
+extern crate defmt_or_log;
+
+mod control;
+pub use control::*;
+
+mod bss;
+pub use bss::*;
+mod runner;
+pub use runner::StaRunner;
+use runner::{ConnectionRunner, RoutingRunner};
+mod operations;
+mod rx_router;
+use rx_router::StaRxRouter;
+mod connection_state;
+pub use connection_state::ConnectionConfig;
+#[cfg(feature = "rsn")]
+mod rsn;
+mod util;
+
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Errors than can occur, during STA operation.
+pub enum StaError {
+    /// An error occured in the lower MAC.
+    LMacError(LMacError),
+    /// The scan was unable to find the specified ESS.
+    UnableToFindEss,
+    /// No ACK was received in time.
+    AckTimeout,
+    /// No response from the BSS was received in time, although an ACK was received.
+    ResponseTimeout,
+    /// Deserializing a received frame failed.
+    FrameDeserializationFailed,
+    /// Authentication failed with the specified status code.
+    AuthenticationFailure(IEEE80211StatusCode),
+    /// Association failed with the specified status code.
+    AssociationFailure(IEEE80211StatusCode),
+    /// An operation couldn't be carried out, due to an active connection.
+    StillConnected,
+    /// The status of a connection couldn't be changed, because none was established.
+    NotConnected,
+    /// The network, too which a connection was requested, is the same as the current one.
+    SameNetwork,
+    /// The provided BSS was invalid.
+    InvalidBss,
+    /// Another internal operation is already in progress.
+    RouterOperationAlreadyInProgress,
+    /// No credentials were provided for a network, that requires them.
+    NoCredentialsForNetwork,
+    /// The 4-Way Handshake failed.
+    FourWayHandshakeFailure,
+    /// No hardware key slots were unavailable.
+    NoKeySlotsAvailable,
+    /// The provided PSK length didn't match what was expected.
+    InvalidPskLength,
+    /// The group key handshake failed.
+    GroupKeyHandshakeFailure,
+}
+
+/// The MTU used by the STA interface.
+pub const MTU: usize = 1514;
+
+/// TX and RX resources for the interface control and runner.
+pub(crate) struct StaTxRx<'foa, 'vif> {
+    pub(crate) interface_control: &'vif LMacInterfaceControl<'foa>,
+    pub(crate) connection_state: &'vif ConnectionStateTracker,
+    pub(crate) tx_endpoint: &'vif TxEndpoint<'foa>,
+    #[cfg(feature = "rsn")]
+    pub(crate) crypto_state: &'vif NoopMutex<RefCell<Option<crate::rsn::CryptoState<'foa>>>>,
+    phy_rate: &'vif Cell<TxPhyRate>,
+}
+impl StaTxRx<'_, '_> {
+    /// Reset the PHY rate.
+    pub fn reset_phy_rate(&self) {
+        self.phy_rate.set(OfdmRate::Mbits6.into());
+    }
+    /// Get the current PHY rate.
+    pub fn phy_rate(&self) -> TxPhyRate {
+        self.phy_rate.get()
+    }
+    /// Set the current PHY rate.
+    pub fn set_phy_rate(&self, phy_rate: TxPhyRate) {
+        self.phy_rate.set(phy_rate);
+    }
+    /// Check if we are currently performing an off channel operation.
+    pub fn in_off_channel_operation(&self) -> bool {
+        self.interface_control.off_channel_operation_interface()
+            == Some(self.interface_control.interface())
+    }
+    #[cfg(feature = "rsn")]
+    pub fn map_crypto_state<O, F: FnMut(&mut rsn::CryptoState<'_>) -> O>(&self, f: F) -> Option<O> {
+        self.crypto_state.lock(|cs| cs.borrow_mut().as_mut().map(f))
+    }
+    pub fn rsna_activated(&self) -> bool {
+        #[cfg(feature = "rsn")]
+        return self.map_crypto_state(|_| {}).is_some();
+        #[cfg(not(feature = "rsn"))]
+        return false;
+    }
+}
+
+pub(crate) const RX_QUEUE_DEPTH: usize = esp_config_int!(usize, "FOA_STA_CONFIG_RX_QUEUE_DEPTH");
+pub(crate) const NET_TX_BUFFERS: usize = esp_config_int!(usize, "FOA_STA_CONFIG_NET_TX_BUFFERS");
+pub(crate) const NET_RX_BUFFERS: usize = esp_config_int!(usize, "FOA_STA_CONFIG_NET_RX_BUFFERS");
+/// Shared resources for the STA interface.
+pub struct StaResources<'foa> {
+    // RX routing.
+    rx_router: StaRxRouter<'foa>,
+
+    // Networking.
+    channel_state: ch::State<MTU, NET_RX_BUFFERS, NET_TX_BUFFERS>,
+
+    // State tracking.
+    connection_state: ConnectionStateTracker,
+    phy_rate: Cell<TxPhyRate>,
+
+    // Misc.
+    sta_tx_rx: Option<StaTxRx<'static, 'static>>,
+    #[cfg(feature = "rsn")]
+    crypto_state: NoopMutex<RefCell<Option<crate::rsn::CryptoState<'foa>>>>,
+}
+impl StaResources<'_> {
+    /// Create new resources for the STA interface.
+    pub const fn new() -> Self {
+        Self {
+            rx_router: RxRouter::new(),
+            channel_state: ch::State::new(),
+            connection_state: ConnectionStateTracker::new(),
+            phy_rate: Cell::new(TxPhyRate::Ofdm(OfdmRate::Mbits6)),
+            sta_tx_rx: None,
+            #[cfg(feature = "rsn")]
+            crypto_state: NoopMutex::new(RefCell::new(None)),
+        }
+    }
+}
+impl Default for StaResources<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// embassy_net device for the STA interface.
+pub type StaNetDevice<'a> = embassy_net_driver_channel::Device<'a, MTU>;
+
+/// Initialize a new STA interface.
+pub fn new_sta_interface<'foa: 'vif, 'vif>(
+    virtual_interface: &'vif mut VirtualInterface<'foa>,
+    resources: &'vif mut StaResources<'foa>,
+) -> (
+    StaControl<'foa, 'vif>,
+    StaRunner<'foa, 'vif>,
+    StaNetDevice<'vif>,
+) {
+    let (interface_control, interface_rx_endpoint, tx_endpoint) = virtual_interface.split();
+    let mac_address = interface_control.get_factory_mac_for_interface();
+    // Initialize embassy_net.
+    let (net_runner, net_device) = ch::new(
+        &mut resources.channel_state,
+        HardwareAddress::Ethernet(mac_address),
+    );
+    // This is done to prevent all sorts of weirdness with self referential structs.
+    // SAFETY:
+    // Both 'foa and 'vif are shorter lifetimes, than static, and due to StaTxRx only refering to
+    // fields that are in StaResources, which has the lifetime 'vif, this is safe.
+    let sta_tx_rx = unsafe {
+        core::mem::transmute::<
+            &'vif mut Option<StaTxRx<'static, 'static>>,
+            &'vif mut Option<StaTxRx<'foa, 'vif>>,
+        >(&mut resources.sta_tx_rx)
+    }
+    .insert(StaTxRx {
+        interface_control,
+        connection_state: &resources.connection_state,
+        tx_endpoint,
+        #[cfg(feature = "rsn")]
+        crypto_state: &resources.crypto_state,
+        phy_rate: &resources.phy_rate,
+    });
+    let (state_runner, rx_runner, tx_runner) = net_runner.split();
+    let (rx_router_input, [foreground_endpoint, background_endpoint]) = resources.rx_router.split();
+    (
+        StaControl {
+            sta_tx_rx,
+            mac_address: MACAddress::new(mac_address),
+            rx_router_endpoint: foreground_endpoint,
+        },
+        StaRunner {
+            tx_runner,
+            connection_runner: ConnectionRunner {
+                sta_tx_rx,
+                rx_router_endpoint: background_endpoint,
+                state_runner,
+            },
+            routing_runner: RoutingRunner {
+                rx_router_input,
+                sta_tx_rx,
+                interface_rx_endpoint,
+                rx_runner,
+            },
+        },
+        net_device,
+    )
+}
