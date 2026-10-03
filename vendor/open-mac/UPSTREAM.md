@@ -51,6 +51,14 @@ esp-hal 1.1, esp-phy 0.2.0, esp-wifi-sys 0.2.0):
   upstream was written against 0.2, and on the bench XIAO the port heard
   nothing on any channel until this (upstream's own `wifi_smoke`, built at
   its pins, heard 43 frames; the port with the call, 48).
+- `foa/Cargo.toml`, `foa/src/tx_queue.rs`: `multi_rate_retry` named
+  `heapless` without depending on it (it never compiled upstream): the
+  dependency added; the chain holds 8 rates (upstream 3).
+- `foa_sta/Cargo.toml`, `foa_sta/src/runner.rs`: data frames retry down the
+  802.11g ladder from the station's rate (two attempts at it, one a step,
+  padded with 6 Mbit/s to eight), where upstream sent every data frame at
+  6 Mbit/s with seven retries; other rates keep upstream's behaviour.
+  `rusty_esp_signal-open` sets the station's rate to 54 Mbit/s on joining.
 - `esp32s3-wifi-regs/`: a crate of its own around the upstream files:
   `Cargo.toml`, `src/lib.rs` (the `WIFI` peripheral at `0x6003_3000`, as
   upstream's lib.rs lines, less their `Debug` impl), and svd2rust's

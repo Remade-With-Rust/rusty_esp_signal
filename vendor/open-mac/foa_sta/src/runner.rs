@@ -231,7 +231,7 @@ impl ConnectionRunner<'_, '_> {
                     override_seq_num: true,
                     ..Default::default()
                 },
-                RetryBehaviour::RetryUntil(7),
+                data_retry_behaviour(sta_tx_rx.phy_rate()),
             );
             trace!(
                 "Transmitted {} bytes to {}",
@@ -471,4 +471,40 @@ impl StaRunner<'_, '_> {
         )
         .map(|_| ())
     }
+}
+
+/// How a data MPDU is retried (E1, the family's change; upstream sent every
+/// data frame at OFDM 6 Mbit/s with seven retries at that rate). From an
+/// OFDM rate the frame steps down the 802.11g ladder, two attempts at the
+/// first rate and one at each rate below, padded with 6 Mbit/s to eight
+/// attempts: a good link sends at the station's rate, a poor one ends where
+/// upstream always was, with one more try. Other rates keep upstream's
+/// behaviour.
+fn data_retry_behaviour(rate: foa::esp_wifi_hal::rates::TxPhyRate) -> RetryBehaviour {
+    use foa::esp_wifi_hal::rates::{OfdmRate, TxPhyRate};
+    const LADDER: [OfdmRate; 8] = [
+        OfdmRate::Mbits54,
+        OfdmRate::Mbits48,
+        OfdmRate::Mbits36,
+        OfdmRate::Mbits24,
+        OfdmRate::Mbits18,
+        OfdmRate::Mbits12,
+        OfdmRate::Mbits9,
+        OfdmRate::Mbits6,
+    ];
+    let TxPhyRate::Ofdm(first) = rate else {
+        return RetryBehaviour::RetryUntil(7);
+    };
+    let start = LADDER.iter().position(|r| *r == first).unwrap_or(LADDER.len() - 1);
+    let mut chain = heapless::Vec::<TxPhyRate, 8>::new();
+    // two at the station's rate, then one a step
+    let _ = chain.push(TxPhyRate::Ofdm(first));
+    let _ = chain.push(TxPhyRate::Ofdm(first));
+    for r in &LADDER[start + 1..] {
+        if chain.push(TxPhyRate::Ofdm(*r)).is_err() {
+            break;
+        }
+    }
+    while chain.push(TxPhyRate::Ofdm(OfdmRate::Mbits6)).is_ok() {}
+    RetryBehaviour::MultiRateRetry(chain)
 }

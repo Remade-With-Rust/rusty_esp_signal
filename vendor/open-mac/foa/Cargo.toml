@@ -27,6 +27,7 @@ log = { version = "0.4.33", optional = true }
 defmt = { version = "1.1.1", optional = true }
 defmt-or-log = { version = "0.2.3", default-features = false }
 futures-util = { version = "0.3.34", default-features = false }
+heapless = { version = "0.9.3", optional = true }
 
 [build-dependencies]
 esp-config = { version = "0.8.0", features = ["build"] }
@@ -35,7 +36,8 @@ esp-config = { version = "0.8.0", features = ["build"] }
 # The S3 only (E1, H2; upstream: esp32, esp32s2)
 esp32s3 = ["esp-hal/esp32s3", "esp-wifi-hal/esp32s3"]
 arc_buffers = []
-multi_rate_retry = []
+# upstream named heapless here without depending on it (E1: the dependency added)
+multi_rate_retry = ["dep:heapless"]
 # Opt-in metadata-only completion tracing; select `log` or `defmt` separately.
 tx-trace = []
 

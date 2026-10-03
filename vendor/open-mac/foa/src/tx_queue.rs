@@ -33,7 +33,10 @@ pub enum RetryBehaviour {
     /// Retry with the specified rates.
     ///
     /// Rate control algorithms like this.
-    MultiRateRetry(heapless::Vec<esp_wifi_hal::rates::TxPhyRate, 3>),
+    // eight attempts (E1: the family's change; upstream allowed three): a
+    // data chain steps down a rate per failed attempt and still ends with
+    // more tries than the RetryUntil(7) it replaces
+    MultiRateRetry(heapless::Vec<esp_wifi_hal::rates::TxPhyRate, 8>),
 }
 impl RetryBehaviour {
     /// Convert this to a [TxErrorBehaviour].

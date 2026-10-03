@@ -84,6 +84,13 @@ pub fn join_stats() -> (u32, u32, &'static str) {
     (ATTEMPTS.load(Ordering::Relaxed), JOINS.load(Ordering::Relaxed), REASONS[last])
 }
 
+/// The rate data frames start at once joined: OFDM 54 Mbit/s, the top of
+/// 802.11g, which every 2.4 GHz access point takes (FoA associates without
+/// HT capabilities, so HT rates are not ours to use). Each failed attempt
+/// steps down a rate (vendored foa_sta's retry chain), so a poor link ends
+/// at 6 Mbit/s, FoA's default for every frame, with more tries than before.
+pub const DATA_RATE: esp_wifi_hal::rates::OfdmRate = esp_wifi_hal::rates::OfdmRate::Mbits54;
+
 /// What [`stack`] builds: the station's control, the IP stack, and the
 /// three runners a firmware spawns ([`mac_task`], [`sta_task`],
 /// [`net_task`]) before anything awaits the stack.
@@ -156,6 +163,8 @@ pub async fn join(control: &mut StaControl<'static, 'static>, ssid: &str, passph
     match with_timeout(JOIN_TIMEOUT, attempt).await {
         Ok(Ok(())) => {
             JOINS.fetch_add(1, Ordering::Relaxed);
+            // FoA resets its data rate to 6 Mbit/s on every join
+            control.override_phy_rate(DATA_RATE.into());
             true
         }
         Ok(Err(e)) => {

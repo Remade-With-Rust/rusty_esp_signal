@@ -1658,3 +1658,31 @@ with 33,507 B (`libphy.a` alone) on the open MAC.
 
 Raw: `F:/jt-w/e0/{c11s,c15}-results.json` and `-serial.txt` (tokens
 redacted), `F:/jt-w/e1/c15-kill.json`.
+
+### E1 follow-up: data frames at 54 Mbit/s with a fallback chain (2026-10-03)
+
+FoA sent every data frame at OFDM 6 Mbit/s (its default; it has no rate
+control). Data frames now start at the station's rate, which
+`rusty_esp_signal-open` sets to 54 Mbit/s on joining, and step down the
+802.11g ladder per failed attempt (54, 54, 48, 36, 24, 12, 6, 6: eight
+attempts where upstream made seven at 6). OFDM only: FoA associates
+without HT capabilities. FoA's `multi_rate_retry` had never compiled (it
+names `heapless` without depending on it): fixed. Measured on the XIAO over
+the owner's hotspot, the two C15 builds back to back with E0's runner:
+
+| | 6 Mbit/s (before) | 54 Mbit/s chain |
+|---|---:|---:|
+| down, board → laptop, at rest (Mbit/s, lost) | 3.55 (1.3 %) | **6.25 (1.15 %)** |
+| down under the stream | 3.01 (0.8 %) | **5.48 (0.55 %)** |
+| the board's send loop, 2,000 × 1,400 B | 6.19 s (3.1 ms a frame) | **3.52 s (1.76 ms a frame)** |
+| up, laptop → board, at rest / under the stream | 28.2 / 24.4 | 22.1 / 21.0 |
+| ping p50 / p99 at rest (ms) | 12 / 187 | 26 / 65 |
+
+Sending is 1.8× faster; esp-radio sent 8.7–13.6 Mbit/s in the same place
+(earlier run). The airtime the rate saves (about 1.6 ms a 1,400-byte frame)
+is nearly all the gain: about 1.5 ms a frame is left that does not depend
+on the rate, which points at the transmit path in software (one frame in
+flight, the completion and the wake per frame), not the radio. That is the
+next measurement (esp-wifi-hal's `timing-probe`). The two runs are one each
+over a phone hotspot; the receive and ping rows moved both ways between
+them and are not attributed to the change.
