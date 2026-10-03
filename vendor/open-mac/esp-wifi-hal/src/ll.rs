@@ -753,6 +753,16 @@ impl LowLevelDriver {
             .modify(|r, w| unsafe { w.bits(r.bits() | enable_mask) });
         // Initialize the PHY.
         self._phy_init_guard = Some(enable_phy());
+        // esp-phy 0.3 (the family's pin; upstream was on 0.2) brings a combo
+        // module's radio up OUT of the Wi-Fi RX state (`phy_init_param_set(1)`
+        // in `enable_phy`, as ESP-IDF does) and leaves turning RX on to the
+        // Wi-Fi driver: what its `enable_phy_with_wifi_rx` does, less the
+        // dropped guard this driver keeps. Without it the S3 heard nothing on
+        // any channel (E1, the bench XIAO, 2026-10-03).
+        #[cfg(feature = "esp32s3")]
+        unsafe {
+            crate::esp_wifi_sys::include::phy_wifi_enable_set(1);
+        }
         unsafe {
             self.reset_mac();
             self.set_mac_state(true);

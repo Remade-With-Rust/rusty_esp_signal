@@ -1,10 +1,14 @@
 //! The station: FoA over the open MAC, embassy-net over FoA's device, and
 //! the core's station policy over FoA's join.
 
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+
 use embassy_net::{Config, DhcpConfig, Runner, Stack, StackResources};
 use embassy_time::{Duration, Timer, with_timeout};
 use foa::{FoAResources, FoARunner, VirtualInterface};
-use foa_sta::{ConnectionConfig, Credentials, StaControl, StaNetDevice, StaResources, StaRunner};
+use foa_sta::{
+    ConnectionConfig, Credentials, StaControl, StaError, StaNetDevice, StaResources, StaRunner,
+};
 use rusty_esp_signal_core::esp_core::Micros;
 use rusty_esp_signal_core::wifi::{Action, Event, Phase, PolicyConfig, StationPolicy};
 use static_cell::StaticCell;
@@ -18,6 +22,67 @@ pub const FALLBACK_REST: Duration = Duration::from_secs(60);
 /// How often a joined station asks FoA whether it still is: FoA has no
 /// awaitable "link lost", only `connected()`.
 pub const LINK_POLL: Duration = Duration::from_secs(1);
+
+static ATTEMPTS: AtomicU32 = AtomicU32::new(0);
+static JOINS: AtomicU32 = AtomicU32::new(0);
+static LAST: AtomicU8 = AtomicU8::new(0);
+
+/// Why the last join failed, by name ("none" before any failed).
+const REASONS: [&str; 20] = [
+    "none",
+    "timeout",
+    "lmac",
+    "unable-to-find-ess",
+    "ack-timeout",
+    "response-timeout",
+    "frame-deserialization-failed",
+    "authentication-failure",
+    "association-failure",
+    "still-connected",
+    "not-connected",
+    "same-network",
+    "invalid-bss",
+    "router-operation-in-progress",
+    "no-credentials-for-network",
+    "four-way-handshake-failure",
+    "no-key-slots-available",
+    "invalid-psk-length",
+    "group-key-handshake-failure",
+    "other",
+];
+
+fn reason(e: &StaError) -> u8 {
+    match e {
+        StaError::LMacError(_) => 2,
+        StaError::UnableToFindEss => 3,
+        StaError::AckTimeout => 4,
+        StaError::ResponseTimeout => 5,
+        StaError::FrameDeserializationFailed => 6,
+        StaError::AuthenticationFailure(_) => 7,
+        StaError::AssociationFailure(_) => 8,
+        StaError::StillConnected => 9,
+        StaError::NotConnected => 10,
+        StaError::SameNetwork => 11,
+        StaError::InvalidBss => 12,
+        StaError::RouterOperationAlreadyInProgress => 13,
+        StaError::NoCredentialsForNetwork => 14,
+        StaError::FourWayHandshakeFailure => 15,
+        StaError::NoKeySlotsAvailable => 16,
+        StaError::InvalidPskLength => 17,
+        StaError::GroupKeyHandshakeFailure => 18,
+        #[allow(unreachable_patterns)]
+        _ => 19,
+    }
+}
+
+/// The joins tried, the joins that succeeded, and why the last one that
+/// failed did: what a cell prints while it waits for its link (FoA's
+/// station says nothing on its own; its logs can carry key material).
+#[must_use]
+pub fn join_stats() -> (u32, u32, &'static str) {
+    let last = usize::from(LAST.load(Ordering::Relaxed)).min(REASONS.len() - 1);
+    (ATTEMPTS.load(Ordering::Relaxed), JOINS.load(Ordering::Relaxed), REASONS[last])
+}
 
 /// What [`stack`] builds: the station's control, the IP stack, and the
 /// three runners a firmware spawns ([`mac_task`], [`sta_task`],
@@ -87,7 +152,21 @@ pub async fn join(control: &mut StaControl<'static, 'static>, ssid: &str, passph
         Some(ConnectionConfig { beacon_timeout: None, ..Default::default() }),
         Some(Credentials::Passphrase(passphrase)),
     );
-    matches!(with_timeout(JOIN_TIMEOUT, attempt).await, Ok(Ok(())))
+    ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+    match with_timeout(JOIN_TIMEOUT, attempt).await {
+        Ok(Ok(())) => {
+            JOINS.fetch_add(1, Ordering::Relaxed);
+            true
+        }
+        Ok(Err(e)) => {
+            LAST.store(reason(&e), Ordering::Relaxed);
+            false
+        }
+        Err(_) => {
+            LAST.store(1, Ordering::Relaxed);
+            false
+        }
+    }
 }
 
 /// The core's station policy driven over FoA, as `hal::station::run_station`

@@ -33,6 +33,9 @@ esp_bootloader_esp_idf::esp_app_desc!();
 const SSID: Option<&str> = option_env!("JANUS_WIFI_SSID");
 const PASS: Option<&str> = option_env!("JANUS_WIFI_PASS");
 const PINGS: u16 = 100;
+/// The one network name the parked probe reports by name (not a secret;
+/// every other network is a channel and a signal only).
+const LOOK: Option<&str> = option_env!("JANUS_SCAN_LOOK");
 
 macro_rules! mk_static {
     ($t:ty, $val:expr) => {{
@@ -97,6 +100,13 @@ async fn ping_gateway(stack: embassy_net::Stack<'_>) -> (u16, u64, u64, u64) {
     (got, sum / u64::from(got.max(1)), if got > 0 { min } else { 0 }, max)
 }
 
+/// "heard" with the looked-for network's channel and signal, without an
+/// allocator: one static string per channel is enough for a probe.
+fn alloc_free_fmt(channel: u8, rssi: i8) -> &'static str {
+    println!("open-sta: look heard channel={channel} rssi={rssi}");
+    "heard"
+}
+
 #[esp_rtos::main]
 async fn main(spawner: Spawner) {
     let peripherals =
@@ -120,9 +130,38 @@ async fn main(spawner: Spawner) {
     println!("open-sta: mac up init_ms={}", started.elapsed().as_millis());
 
     let (Some(ssid), Some(pass)) = (SSID, PASS) else {
-        println!("open-sta: no network built in (JANUS_WIFI_SSID / JANUS_WIFI_PASS); parked");
+        println!("open-sta: no network built in (JANUS_WIFI_SSID / JANUS_WIFI_PASS); scanning");
+        // receive only: what the open MAC hears, every 10 s (and a
+        // heartbeat, since the USB-Serial-JTAG holds a last line back)
+        let mut found: heapless::index_map::FnvIndexMap<[u8; 6], foa_sta::BSS, 32> =
+            heapless::index_map::FnvIndexMap::new();
         loop {
-            Timer::after_secs(60).await;
+            found.clear();
+            let ok = control.scan(None, &mut found).await.is_ok();
+            let mut channels = [0u8; 14];
+            let mut best = i8::MIN;
+            for bss in found.values() {
+                if let Some(c) = channels.get_mut(usize::from(bss.channel)) {
+                    *c = c.saturating_add(1);
+                }
+                best = best.max(bss.last_rssi);
+            }
+            let look = LOOK.and_then(|name| found.values().find(|b| b.ssid.as_str() == name));
+            println!(
+                "open-sta: scan ok={ok} heard={} best_rssi={best} by_channel={:?} look={}",
+                found.len(),
+                &channels[1..],
+                match look {
+                    Some(b) => alloc_free_fmt(b.channel, b.last_rssi),
+                    None => "not-heard",
+                }
+            );
+            println!(
+                "open-sta: parked up_s={} phy_prints={}",
+                started.elapsed().as_secs(),
+                esp_wifi_hal::phy_printf_calls()
+            );
+            Timer::after_secs(10).await;
         }
     };
 

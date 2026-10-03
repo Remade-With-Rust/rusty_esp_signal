@@ -13,6 +13,14 @@ test = false
 bench = false
 doctest = false
 
+# upstream's receive smoke loop on the family's pins (E1's port check)
+[[bin]]
+name = "smoke"
+path = "src/bin/smoke.rs"
+test = false
+bench = false
+doctest = false
+
 [dependencies]
 # The chip is selected HERE. No esp-radio: the MAC is the vendored
 # esp-wifi-hal, the station FoA's; esp-rtos is only embassy's time driver.
@@ -31,6 +39,9 @@ static_cell = "2"
 # FoA, vendored in rusty_esp_signal/vendor/open-mac
 rusty_esp_signal-open = { path = "../../crates/rusty_esp_signal-open", features = ["esp32s3"] }
 esp-wifi-hal = { path = "../../vendor/open-mac/esp-wifi-hal", features = ["esp32s3"] }
+# the scan's result types (the parked probe lists what it hears)
+foa_sta = { path = "../../vendor/open-mac/foa_sta", features = ["esp32s3"] }
+heapless = "0.9"
 
 [profile.release]
 opt-level = "s"

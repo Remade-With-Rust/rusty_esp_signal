@@ -2673,6 +2673,8 @@ dependencies = [
  "esp-println",
  "esp-rtos",
  "esp-wifi-hal",
+ "foa_sta",
+ "heapless 0.9.3",
  "rusty_esp_signal-open",
  "static_cell",
 ]

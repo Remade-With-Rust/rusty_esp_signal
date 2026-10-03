@@ -45,6 +45,12 @@ esp-hal 1.1, esp-phy 0.2.0, esp-wifi-sys 0.2.0):
   And a compile-time check that the two OS-adapter slots the S3 ROM and
   the reviewed C reference pin (`_slowclk_cal_get` at 0x148,
   `_coex_pti_get` at 0x1a8) have not moved: they have not in 0.3.
+- `esp-wifi-hal/src/ll.rs`: after `enable_phy()`, `phy_wifi_enable_set(1)`
+  on the S3. esp-phy 0.3 brings a combo module's radio up out of the Wi-Fi
+  RX state (as ESP-IDF does) and leaves turning RX on to the Wi-Fi driver;
+  upstream was written against 0.2, and on the bench XIAO the port heard
+  nothing on any channel until this (upstream's own `wifi_smoke`, built at
+  its pins, heard 43 frames; the port with the call, 48).
 - `esp32s3-wifi-regs/`: a crate of its own around the upstream files:
   `Cargo.toml`, `src/lib.rs` (the `WIFI` peripheral at `0x6003_3000`, as
   upstream's lib.rs lines, less their `Debug` impl), and svd2rust's
