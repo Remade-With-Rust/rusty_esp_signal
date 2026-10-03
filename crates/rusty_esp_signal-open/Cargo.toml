@@ -1,0 +1,48 @@
+[package]
+name = "rusty_esp_signal-open"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+# Not on crates.io: it depends on the vendored open MAC by path
+# (vendor/open-mac), which crates.io refuses. Cells take it by git URL.
+publish = false
+description = "Experiments plan E1: the Wi-Fi station on the open lower MAC (esp-wifi-hal + FoA, vendored) for the ESP32-S3, in the shape of rusty_esp_signal-esp's hal::netstack. libphy is the one radio blob. NOT Wi-Fi certified."
+
+[features]
+default = []
+# The ESP32-S3, the one chip the open MAC is ported for here. A firmware
+# turns this on; without it the crate is empty (the workspace's host build
+# and tests never compile the radio). It names the chip on the vendored
+# crates, which only build for the S3.
+esp32s3 = [
+    "dep:esp-hal",
+    "dep:embassy-net",
+    "dep:embassy-executor",
+    "dep:embassy-time",
+    "dep:static_cell",
+    "dep:esp-wifi-hal",
+    "dep:foa",
+    "dep:foa_sta",
+    "esp-hal/esp32s3",
+    "esp-wifi-hal/esp32s3",
+    "foa/esp32s3",
+    "foa_sta/esp32s3",
+]
+
+[dependencies]
+rusty_esp_signal-core = { workspace = true }
+esp-hal = { version = "=1.2.0", default-features = false, features = ["unstable"], optional = true }
+embassy-net = { version = "0.9", default-features = false, features = ["proto-ipv4", "dhcpv4", "udp", "tcp", "medium-ethernet", "auto-icmp-echo-reply"], optional = true }
+embassy-executor = { version = "0.10", optional = true }
+embassy-time = { version = "0.5", optional = true }
+static_cell = { version = "2", optional = true }
+esp-wifi-hal = { path = "../../vendor/open-mac/esp-wifi-hal", optional = true }
+foa = { path = "../../vendor/open-mac/foa", optional = true }
+foa_sta = { path = "../../vendor/open-mac/foa_sta", optional = true }
+
+[lints]
+workspace = true

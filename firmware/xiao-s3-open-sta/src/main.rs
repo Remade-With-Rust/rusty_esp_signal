@@ -19,14 +19,13 @@ use embassy_executor::Spawner;
 use embassy_net::icmp::{
     ChecksumCapabilities, IcmpEndpoint, IcmpSocket, Icmpv4Packet, Icmpv4Repr, PacketMetadata,
 };
-use embassy_net::{Runner as NetRunner, StackResources};
+use embassy_net::StackResources;
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use esp_backtrace as _;
 use esp_hal::rng::Rng;
 use esp_hal::timer::timg::TimerGroup;
 use esp_println::println;
-use foa::{FoAResources, FoARunner, VirtualInterface};
-use foa_sta::{ConnectionConfig, Credentials, StaNetDevice, StaResources, StaRunner};
+use rusty_esp_signal_open as open;
 use static_cell::StaticCell;
 
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -40,21 +39,6 @@ macro_rules! mk_static {
         static CELL: StaticCell<$t> = StaticCell::new();
         CELL.init_with(|| $val)
     }};
-}
-
-#[embassy_executor::task]
-async fn foa_task(mut runner: FoARunner<'static>) {
-    runner.run().await
-}
-
-#[embassy_executor::task]
-async fn sta_task(mut runner: StaRunner<'static, 'static>) {
-    runner.run().await
-}
-
-#[embassy_executor::task]
-async fn net_task(mut runner: NetRunner<'static, StaNetDevice<'static>>) -> ! {
-    runner.run().await
 }
 
 /// `PINGS` echoes to the gateway, one at a time: how many came back, and
@@ -123,9 +107,16 @@ async fn main(spawner: Spawner) {
     println!("open-sta: boot (E1 probe; the open MAC, NOT Wi-Fi certified)");
 
     let started = Instant::now();
-    let resources = mk_static!(FoAResources, FoAResources::new());
-    let ([vif, ..], runner) = foa::init(resources, peripherals.WIFI);
-    spawner.spawn(foa_task(runner).expect("foa task"));
+    let seed = u64::from(Rng::new().random()) << 32 | u64::from(Rng::new().random());
+    let station = open::stack(
+        peripherals.WIFI,
+        mk_static!(StackResources<4>, StackResources::new()),
+        seed,
+    );
+    let (mut control, stack) = (station.control, station.stack);
+    spawner.spawn(open::mac_task(station.mac).expect("mac task"));
+    spawner.spawn(open::sta_task(station.sta).expect("sta task"));
+    spawner.spawn(open::net_task(station.net).expect("net task"));
     println!("open-sta: mac up init_ms={}", started.elapsed().as_millis());
 
     let (Some(ssid), Some(pass)) = (SSID, PASS) else {
@@ -135,43 +126,13 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let (mut control, runner, device) = foa_sta::new_sta_interface(
-        mk_static!(VirtualInterface<'static>, vif),
-        mk_static!(StaResources<'static>, StaResources::default()),
-    );
-    spawner.spawn(sta_task(runner).expect("sta task"));
-    let _ = control.randomize_mac_address();
-    let (stack, runner) = embassy_net::new(
-        device,
-        embassy_net::Config::dhcpv4(Default::default()),
-        mk_static!(StackResources<4>, StackResources::new()),
-        u64::from(Rng::new().random()) << 32 | u64::from(Rng::new().random()),
-    );
-    spawner.spawn(net_task(runner).expect("net task"));
-
     let joining = Instant::now();
-    let joined = with_timeout(
-        Duration::from_secs(25),
-        control.connect_by_ssid(
-            ssid,
-            Some(ConnectionConfig { beacon_timeout: None, ..Default::default() }),
-            Some(Credentials::Passphrase(pass)),
-        ),
-    )
-    .await;
-    match joined {
-        Ok(Ok(_)) => println!("open-sta: joined join_ms={}", joining.elapsed().as_millis()),
-        Ok(Err(e)) => {
-            println!("open-sta: join failed: {e:?}");
-            loop {
-                Timer::after_secs(60).await;
-            }
-        }
-        Err(_) => {
-            println!("open-sta: join timed out");
-            loop {
-                Timer::after_secs(60).await;
-            }
+    if open::join(&mut control, ssid, pass).await {
+        println!("open-sta: joined join_ms={}", joining.elapsed().as_millis());
+    } else {
+        println!("open-sta: join failed or timed out");
+        loop {
+            Timer::after_secs(60).await;
         }
     }
     if with_timeout(Duration::from_secs(15), stack.wait_config_up()).await.is_err() {
@@ -190,6 +151,12 @@ async fn main(spawner: Spawner) {
     println!("open-sta: gateway pings {got}/{PINGS} min_us={min} mean_us={mean} max_us={max}");
     loop {
         Timer::after_secs(60).await;
-        println!("open-sta: up_s={} linked={}", started.elapsed().as_secs(), stack.is_link_up());
+        println!(
+            "open-sta: up_s={} linked={} joined={} phy_prints={}",
+            started.elapsed().as_secs(),
+            stack.is_link_up(),
+            control.connected(),
+            esp_wifi_hal::phy_printf_calls()
+        );
     }
 }

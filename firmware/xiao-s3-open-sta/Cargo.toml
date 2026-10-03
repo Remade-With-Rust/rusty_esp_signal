@@ -27,10 +27,10 @@ embassy-time = "0.5"
 embassy-net = { version = "0.9", default-features = false, features = ["proto-ipv4", "dhcpv4", "icmp", "udp", "tcp", "medium-ethernet", "auto-icmp-echo-reply"] }
 static_cell = "2"
 
-# the open MAC and the station (rusty_esp_signal/vendor/open-mac, E1)
+# the open MAC's station, in hal::netstack's shape (E1): esp-wifi-hal and
+# FoA, vendored in rusty_esp_signal/vendor/open-mac
+rusty_esp_signal-open = { path = "../../crates/rusty_esp_signal-open", features = ["esp32s3"] }
 esp-wifi-hal = { path = "../../vendor/open-mac/esp-wifi-hal", features = ["esp32s3"] }
-foa = { path = "../../vendor/open-mac/foa", features = ["esp32s3"] }
-foa_sta = { path = "../../vendor/open-mac/foa_sta", features = ["esp32s3"] }
 
 [profile.release]
 opt-level = "s"

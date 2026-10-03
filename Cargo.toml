@@ -4,7 +4,10 @@ members = ["crates/*"]
 # Per-chip firmware examples are their own cargo projects: each needs its own
 # target, linker script and (for Xtensa) toolchain. They are never workspace
 # members. See firmware/README.md.
-exclude = ["firmware/*"]
+# vendor/open-mac (E1): path dependencies of rusty_esp_signal-open, which
+# would otherwise join the workspace and be built for the host, where they
+# cannot compile (they are the S3's MAC).
+exclude = ["firmware/*", "vendor/open-mac"]
 
 [workspace.package]
 version = "0.3.0"
