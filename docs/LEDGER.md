@@ -1498,5 +1498,11 @@ The stream itself while the tests ran: 646 JPEGs in 206.6 s (3.13 fps, 0.06 Mbit
   20 MHz XCLK, QVGA JPEG, quality scale 12: 311 ms between pictures with
   the radio off, the same with it on; the stream delivered 3.13 fps (646
   JPEGs in 207 s, all whole). The cell's 15 fps cap is never reached. Not
-  a radio cost, and not E0's to fix; the cell's own row.
+  a radio cost, and not E0's to fix; the cell's own row. *Followed up the
+  same morning (espino's ledger, "C13's frame rate"):* the run was at
+  midnight, and the OV3660 stretches its frames in the dark (the reference
+  capture firmware, 27.3 fps in X5's light, made 16.0 at dawn); but C13
+  also lost most of what the sensor made, to a 32 KB DMA ring and a pacer
+  that only spaced frames. With a 64 KB ring and a burst allowance, C13
+  streams 14.7 fps where it streamed 6.1, in the same light.
 
