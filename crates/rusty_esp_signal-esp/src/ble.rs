@@ -407,7 +407,7 @@ where
     )?;
     let mut scan_data = [0u8; 31];
     let scan_len = AdStructure::encode_slice(
-        &[AdStructure::CompleteLocalName(name.as_bytes())],
+        &[AdStructure::CompleteLocalName(core_ble::advertised_name(name).as_bytes())],
         &mut scan_data[..],
     )?;
 

@@ -156,7 +156,9 @@ impl<E: SetupEnv + Send + 'static, const N: usize> BleProvisioning<E, N> {
         let this = Self {
             gap,
             gatts,
-            name: name.to_owned(),
+            // what a scan response carries: Bluedroid refuses a longer name
+            // and the service is never created
+            name: core_ble::advertised_name(name).to_owned(),
             state: Arc::new(Mutex::new(State {
                 gatt_if: None,
                 phase_byte: 0,
@@ -687,13 +689,23 @@ impl<E: SetupEnv + Send + 'static, const N: usize> BleProvisioning<E, N> {
         Ok(())
     }
 
-    /// One whole message to the session.
+    /// One whole message to the session, its time on the device logged as
+    /// the Track B backend's `serve_observed` reports it
+    /// (`setup msg=<kind> took_us=<n>`).
     fn session(&self, st: &mut State<E, N>, message: &[u8]) -> (GattStatus, Option<Outcome>) {
         let now = (self.now)();
-        match st
+        let result = st
             .provisioner
-            .on_write(core_ble::CHAR_SETUP, message, now)
-        {
+            .on_write(core_ble::CHAR_SETUP, message, now);
+        let took = (self.now)().0.saturating_sub(now.0);
+        let kind = match message.get(1) {
+            Some(0x01) => "Start",
+            Some(0x03) => "Confirm",
+            Some(0x05) => "Settings",
+            _ => "other",
+        };
+        log::info!("setup msg={kind} took_us={took}");
+        match result {
             Ok(outcome) => (GattStatus::Ok, Some(outcome)),
             // not an answer: the device could not take it at all
             Err(_) => (GattStatus::ErrUnlikely, None),

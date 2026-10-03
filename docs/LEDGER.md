@@ -1301,3 +1301,11 @@ environment variable, never printed), then the join watched on `status`;
 tool it replaces is in git history). The page lists the device's networks and
 says, for a typed name, that an SSID is case-sensitive and the ESP32 radios
 are 2.4 GHz only. Page check 9/9, `--check` reproduces it.
+
+**enc-ble M7 on the ESP32-CAM (2026-10-02, night).** The Bluedroid backend
+logs each setup message's time (`setup msg=<kind> took_us=<n>`, as
+`serve_observed` on Track B): Start 694-790 ms on the ESP32's portable P-256
+path. `ble::advertised_name`: the name cut to what a legacy scan response
+carries (29 bytes, at a character boundary), used by both backends; a 64-byte
+owner's name made Bluedroid refuse the service. The prepared-write assembly
+carried a 262-byte Settings on the radio. espino's ledger has the run.

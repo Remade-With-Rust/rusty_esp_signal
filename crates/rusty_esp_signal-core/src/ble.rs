@@ -433,6 +433,27 @@ pub const fn provisioning_adv_len(name_len: usize) -> usize {
 pub const LEGACY_ADV_NAME_BUDGET: usize =
     LEGACY_ADV_CAPACITY - adv_structure_len(1) - adv_structure_len(16) - 2;
 
+/// Bytes of a name a legacy scan response carries on its own: 31 less the
+/// structure's length and type bytes.
+pub const SCAN_RESPONSE_NAME_BUDGET: usize = LEGACY_ADV_CAPACITY - adv_structure_len(0);
+
+/// `name` as the scan response can carry it: whole when it fits, else cut to
+/// [`SCAN_RESPONSE_NAME_BUDGET`] bytes at a character boundary. The owner's
+/// name may be up to 64 bytes (the setup record's limit); advertised whole,
+/// Bluedroid refuses it (`ESP_ERR_INVALID_ARG`) and the provisioning service
+/// is never created (enc-ble M7, on the ESP32-CAM).
+#[must_use]
+pub fn advertised_name(name: &str) -> &str {
+    if name.len() <= SCAN_RESPONSE_NAME_BUDGET {
+        return name;
+    }
+    let mut end = SCAN_RESPONSE_NAME_BUDGET;
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    &name[..end]
+}
+
 /// The Janus GATT table.
 ///
 /// | service      | characteristic | props        | max | value |
@@ -617,6 +638,20 @@ mod tests {
             assert!(c.max_len <= ATT_MAX_VALUE_LEN, "{}", c.name);
             assert!(c.max_len > 0, "{}", c.name);
         }
+    }
+
+    #[test]
+    fn a_long_name_is_cut_to_what_a_scan_response_carries() {
+        assert_eq!(SCAN_RESPONSE_NAME_BUDGET, 29);
+        assert_eq!(advertised_name("janus-s3"), "janus-s3");
+        let long = "janus/c13 m6 bench: a long write of the setup session's Settings record";
+        assert_eq!(advertised_name(long).len(), 29);
+        assert!(long.starts_with(advertised_name(long)));
+        // never inside a character: 28 ASCII bytes then a 2-byte one
+        let wide = "abcdefghijklmnopqrstuvwxyz01\u{e9}z";
+        assert_eq!(advertised_name(wide), "abcdefghijklmnopqrstuvwxyz01");
+        // the budget is what fits beside nothing else
+        assert_eq!(adv_structure_len(SCAN_RESPONSE_NAME_BUDGET), LEGACY_ADV_CAPACITY);
     }
 
     #[test]
