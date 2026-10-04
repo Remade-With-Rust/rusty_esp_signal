@@ -13,6 +13,7 @@ pub mod elements;
 pub mod frames;
 pub mod handshake;
 pub mod hold;
+pub mod qos;
 pub mod request;
 pub mod rsn;
 pub mod stations;

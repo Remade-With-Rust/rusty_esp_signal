@@ -21,6 +21,10 @@ pub struct Bss<'a> {
     pub beacon_interval_tu: u16,
     /// WPA2-PSK (the RSN element and the Privacy bit) or open.
     pub protected: bool,
+    /// WMM and HT offered (E3's P7): the WMM parameter element, HT
+    /// Capabilities and HT Operation in the beacon, probe response and
+    /// association response.
+    pub ht: bool,
 }
 
 /// Rates, in 500 kbit/s units, the high bit marking a basic rate: 1, 2,
@@ -55,6 +59,16 @@ impl Writer<'_> {
         let len = u8::try_from(body.len()).ok()?;
         self.bytes(&[id, len])?;
         self.bytes(body)
+    }
+    /// HT Capabilities, HT Operation and the WMM parameter element, when
+    /// the network offers them (the vendor element last, as 802.11 orders).
+    fn ht(&mut self, bss: &Bss<'_>) -> Option<()> {
+        if bss.ht {
+            self.bytes(&crate::qos::HT_CAPABILITIES_ELEMENT)?;
+            self.bytes(&crate::qos::ht_operation_element(bss.channel))?;
+            self.bytes(&crate::qos::WMM_PARAMETER_ELEMENT)?;
+        }
+        Some(())
     }
     /// The 24-byte management header: frame control, duration, the
     /// receiver, the transmitter (the access point), the BSSID, sequence.
@@ -155,6 +169,7 @@ pub fn beacon(out: &mut [u8], bss: &Bss<'_>, tim: &Tim) -> Option<Beacon> {
     if bss.protected {
         w.bytes(&RSN_ELEMENT)?;
     }
+    w.ht(bss)?;
     Some(Beacon {
         len: w.at,
         timestamp_at,
@@ -178,6 +193,7 @@ pub fn probe_response(out: &mut [u8], bss: &Bss<'_>, to: Address) -> Option<usiz
     if bss.protected {
         w.bytes(&RSN_ELEMENT)?;
     }
+    w.ht(bss)?;
     Some(w.at)
 }
 
@@ -216,6 +232,7 @@ pub fn association_response(
     })?;
     w.element(id::SUPPORTED_RATES, &SUPPORTED_RATES)?;
     w.element(id::EXTENDED_RATES, &EXTENDED_RATES)?;
+    w.ht(bss)?;
     Some(w.at)
 }
 

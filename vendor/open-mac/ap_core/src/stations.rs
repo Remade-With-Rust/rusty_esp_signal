@@ -45,6 +45,10 @@ pub struct Station {
     pub power_save: bool,
     /// Frames the access point holds for it while it dozes.
     pub queued: u16,
+    /// It takes QoS data frames (its association carried a WMM element).
+    pub qos: bool,
+    /// Its HT Capabilities, if its association carried them.
+    pub ht: Option<crate::qos::HtCapabilities>,
     rsne: [u8; MAX_RSN_ELEMENT],
     rsne_len: usize,
 }
@@ -107,6 +111,8 @@ impl Stations {
             last_heard_us: 0,
             power_save: false,
             queued: 0,
+            qos: false,
+            ht: None,
             rsne: [0; MAX_RSN_ELEMENT],
             rsne_len: 0,
         };
@@ -170,6 +176,20 @@ impl Stations {
         station.rsne[..element.len()].copy_from_slice(element);
         station.rsne_len = element.len();
         Ok(aid)
+    }
+
+    /// What the association request said of QoS and HT (E3's P7); kept
+    /// with the station for the frames sent to it.
+    pub fn set_capabilities(
+        &mut self,
+        address: &Address,
+        qos: bool,
+        ht: Option<crate::qos::HtCapabilities>,
+    ) {
+        if let Some(station) = self.get_mut(address) {
+            station.qos = qos;
+            station.ht = ht;
+        }
     }
 
     /// The 4-way handshake finished: data may flow.

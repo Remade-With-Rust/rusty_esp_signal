@@ -389,6 +389,7 @@ async fn main(spawner: Spawner) {
             channel: CHANNEL,
             beacon_interval_tu: BEACON_INTERVAL_TU,
             protected: false,
+            ht: false,
         },
         stations: Stations::new(),
     };

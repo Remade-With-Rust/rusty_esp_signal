@@ -36,6 +36,7 @@ fn bss(protected: bool) -> Bss<'static> {
         channel: 6,
         beacon_interval_tu: 100,
         protected,
+        ht: false,
     }
 }
 
@@ -190,7 +191,9 @@ fn requests_are_read_and_others_ignored() {
             from: STA,
             ssid: Some(SSID),
             rsn_element: Some(&rsn[..]),
-            reassociation: false
+            reassociation: false,
+            qos: false,
+            ht: None,
         })
     );
     // a protected management frame: not ours to read (no PMF)

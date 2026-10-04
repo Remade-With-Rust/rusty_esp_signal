@@ -180,6 +180,17 @@ esp-hal 1.1, esp-phy 0.2.0, esp-wifi-sys 0.2.0):
   more wait, all of them when the station sends with the bit clear, and the
   group frames after each DTIM beacon.
 
+- `ap_core/src/qos.rs` (ours, E3 P7): beyond 802.11g. The WMM parameter
+  element (WMM 1.2's defaults for the four access categories), the HT
+  Capabilities element (one spatial stream, 20 MHz, MCS 0-7, the short
+  guard interval, no aggregation -- the MAC has no block-ack) and the HT
+  Operation element, laid out by hand and read back by `ieee80211`'s
+  parsers in `host-tests/air/tests/qos_ht.rs`; a station's WMM element and
+  HT Capabilities read out of its association request and kept in the
+  station table (`Stations::set_capabilities`); user priority to access
+  category, the QoS Control field. `Bss.ht` turns it on in the beacon,
+  probe response and association response.
+
 ## Host tests
 
 `host-tests/air/` (ours, E2): the receive path on the host, std, against

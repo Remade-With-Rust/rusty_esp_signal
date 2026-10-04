@@ -37,6 +37,10 @@ pub enum Request<'a> {
         rsn_element: Option<&'a [u8]>,
         /// A re-association request.
         reassociation: bool,
+        /// It carried a WMM element: it takes QoS data frames.
+        qos: bool,
+        /// Its HT Capabilities, if it carried them.
+        ht: Option<crate::qos::HtCapabilities>,
     },
     /// A deauthentication.
     Deauthentication {
@@ -116,6 +120,8 @@ pub fn parse<'a>(mpdu: &'a [u8], bssid: &Address) -> Option<Request<'a>> {
                 ssid: elements.first(id::SSID),
                 rsn_element: elements.first_whole(id::RSN),
                 reassociation: subtype == 2,
+                qos: crate::qos::station_is_qos(elements),
+                ht: crate::qos::station_ht(elements),
             })
         }
         12 => Some(Request::Deauthentication {

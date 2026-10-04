@@ -130,6 +130,7 @@ async fn main(spawner: Spawner) {
         channel: CHANNEL,
         beacon_interval_tu: BEACON_INTERVAL_TU,
         protected: false,
+        ht: false,
     };
     let interval_us = u64::from(BEACON_INTERVAL_TU) * 1024;
     // how early, in TSF microseconds, the wait ends: the frame's build, about
