@@ -9,7 +9,6 @@
 // are kept whole as the record of what was found.
 #![allow(unsafe_code, dead_code)]
 
-
 pub const BASE: usize = 0x6003_5000;
 pub const CTRL: usize = 0x6003_500c;
 pub const LOAD_LOW: usize = 0x6003_5010;

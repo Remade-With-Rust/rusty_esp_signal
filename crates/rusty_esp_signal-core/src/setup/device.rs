@@ -7,23 +7,23 @@
 //! device's key signs through mID's [`DeviceSigner`]; the session never
 //! holds it.
 
+use rusty_esp_core::Micros;
 use rusty_esp_core::error::{Error, Result};
 use rusty_esp_core::hal::{Kv, Rng};
-use rusty_esp_core::Micros;
-use rusty_esp_mid_core::adoption::{Adoption, OwnerPin, KV_ADOPTION, KV_OWNER_PIN};
+use rusty_esp_mid_core::adoption::{Adoption, KV_ADOPTION, KV_OWNER_PIN, OwnerPin};
 use rusty_esp_mid_core::did::{Did, MAX_DID_LEN};
 use rusty_esp_mid_core::setup as mid_setup;
 use rusty_esp_mid_core::signer::DeviceSigner;
 use zeroize::Zeroize;
 
 use super::message::{
-    header, kind, split, write_error, Discover, ResultCode, MAX_MESSAGE, SUITE_CODE,
-    WINDOW_UNTIL_PROVISIONED,
+    Discover, MAX_MESSAGE, ResultCode, SUITE_CODE, WINDOW_UNTIL_PROVISIONED, header, kind, split,
+    write_error,
 };
 use super::record::Record;
 use super::seal::{Opener, Sealer};
-use super::spake::{reply_prehash, respond, Response, SHARE_LEN};
-use super::{Context, Verifier, DEVPUB_LEN, SALT_LEN};
+use super::spake::{Response, SHARE_LEN, reply_prehash, respond};
+use super::{Context, DEVPUB_LEN, SALT_LEN, Verifier};
 use crate::provision::SCAN_MAX_LEN;
 use crate::wifi::Credentials;
 

@@ -34,18 +34,18 @@ mod spake;
 mod verifier;
 
 pub use browser::{Browser, Failure, Outcome, Ready};
-pub use code::{Code, ALPHABET, CODE_SYMBOLS, DISPLAY_LEN};
+pub use code::{ALPHABET, CODE_SYMBOLS, Code, DISPLAY_LEN};
 pub use device::{Answer, Applied, Device, Reset, Status, Window};
-pub use message::{Discover, ResultCode, MAX_MESSAGE};
+pub use message::{Discover, MAX_MESSAGE, ResultCode};
 pub use record::{Record, RecordWriter};
 pub use seal::{Opener, Sealer, TAG_LEN};
 #[doc(hidden)]
 pub use spake::respond_with_scalar;
 pub use spake::{
-    reply_prehash, respond, verify_reply, Established, Prover, Response, CONFIRM_LEN, SHARE_LEN,
-    SIG_LEN,
+    CONFIRM_LEN, Established, Prover, Response, SHARE_LEN, SIG_LEN, reply_prehash, respond,
+    verify_reply,
 };
-pub use verifier::{Secrets, Verifier, MAX_ITERATIONS, MIN_ITERATIONS, SALT_LEN, SETUP_V_LEN};
+pub use verifier::{MAX_ITERATIONS, MIN_ITERATIONS, SALT_LEN, SETUP_V_LEN, Secrets, Verifier};
 
 use rusty_esp_core::error::{Error, Result};
 

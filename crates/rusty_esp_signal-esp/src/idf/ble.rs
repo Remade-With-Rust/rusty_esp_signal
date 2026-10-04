@@ -227,9 +227,8 @@ impl<E: SetupEnv + Send + 'static, const N: usize> BleProvisioning<E, N> {
         let (want, have) = {
             let mut st = self.lock();
             st.provisioner.tick(now);
-            let want = st.service.is_some()
-                && st.connection.is_none()
-                && st.provisioner.advertising(now);
+            let want =
+                st.service.is_some() && st.connection.is_none() && st.provisioner.advertising(now);
             (want, st.advertising)
         };
         match (want, have) {
@@ -694,9 +693,7 @@ impl<E: SetupEnv + Send + 'static, const N: usize> BleProvisioning<E, N> {
     /// (`setup msg=<kind> took_us=<n>`).
     fn session(&self, st: &mut State<E, N>, message: &[u8]) -> (GattStatus, Option<Outcome>) {
         let now = (self.now)();
-        let result = st
-            .provisioner
-            .on_write(core_ble::CHAR_SETUP, message, now);
+        let result = st.provisioner.on_write(core_ble::CHAR_SETUP, message, now);
         let took = (self.now)().0.saturating_sub(now.0);
         let kind = match message.get(1) {
             Some(0x01) => "Start",

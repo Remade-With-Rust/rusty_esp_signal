@@ -110,7 +110,11 @@ pub fn null_frames() -> u32 {
 #[must_use]
 pub fn join_stats() -> (u32, u32, &'static str) {
     let last = usize::from(LAST.load(Ordering::Relaxed)).min(REASONS.len() - 1);
-    (ATTEMPTS.load(Ordering::Relaxed), JOINS.load(Ordering::Relaxed), REASONS[last])
+    (
+        ATTEMPTS.load(Ordering::Relaxed),
+        JOINS.load(Ordering::Relaxed),
+        REASONS[last],
+    )
 }
 
 /// The rate data frames start at once joined: OFDM 54 Mbit/s, the top of
@@ -123,7 +127,9 @@ pub const DATA_RATE: esp_wifi_hal::rates::OfdmRate = esp_wifi_hal::rates::OfdmRa
 /// The 802.11g ladder the starting rate moves on, fastest first.
 const LADDER: [esp_wifi_hal::rates::OfdmRate; 8] = {
     use esp_wifi_hal::rates::OfdmRate::*;
-    [Mbits54, Mbits48, Mbits36, Mbits24, Mbits18, Mbits12, Mbits9, Mbits6]
+    [
+        Mbits54, Mbits48, Mbits36, Mbits24, Mbits18, Mbits12, Mbits9, Mbits6,
+    ]
 };
 /// A second with fewer frames than this says nothing about the link.
 const RATE_MIN_FRAMES: u32 = 20;
@@ -154,11 +160,18 @@ impl RateControl {
     fn new() -> Self {
         let index = LADDER.iter().position(|r| *r == DATA_RATE).unwrap_or(0);
         RATE_NOW.store(index as u8, Ordering::Relaxed);
-        Self { index, good_run: 0, last: esp_wifi_hal::tx_stats::snapshot() }
+        Self {
+            index,
+            good_run: 0,
+            last: esp_wifi_hal::tx_stats::snapshot(),
+        }
     }
 
     /// One second's counters: the rate to move to, if any.
-    fn tick(&mut self, now: esp_wifi_hal::tx_stats::TxStats) -> Option<esp_wifi_hal::rates::OfdmRate> {
+    fn tick(
+        &mut self,
+        now: esp_wifi_hal::tx_stats::TxStats,
+    ) -> Option<esp_wifi_hal::rates::OfdmRate> {
         let frames = now.frames.wrapping_sub(self.last.frames);
         let first_ok = now.first_ok.wrapping_sub(self.last.first_ok);
         self.last = now;
@@ -246,7 +259,10 @@ impl SampledRate {
     }
 
     /// One second's counters: the rate to move to, if any.
-    fn tick(&mut self, now: esp_wifi_hal::tx_stats::TxStats) -> Option<esp_wifi_hal::rates::OfdmRate> {
+    fn tick(
+        &mut self,
+        now: esp_wifi_hal::tx_stats::TxStats,
+    ) -> Option<esp_wifi_hal::rates::OfdmRate> {
         let frames = now.frames.wrapping_sub(self.last.frames);
         let first_ok = now.first_ok.wrapping_sub(self.last.first_ok);
         let bytes = now.bytes.wrapping_sub(self.last.bytes);
@@ -278,7 +294,8 @@ impl SampledRate {
         if !measured {
             return None;
         }
-        if first_ok * 1000 / frames < RATE_COLLAPSE_BELOW_PERMILLE && self.index + 1 < LADDER.len() {
+        if first_ok * 1000 / frames < RATE_COLLAPSE_BELOW_PERMILLE && self.index + 1 < LADDER.len()
+        {
             return self.settle(self.index + 1);
         }
         self.since_probe += 1;
@@ -288,7 +305,11 @@ impl SampledRate {
         self.since_probe = 0;
         let up = (self.index > 0).then(|| self.index - 1);
         let down = (self.index + 1 < LADDER.len()).then(|| self.index + 1);
-        let probe = if self.probe_up { up.or(down) } else { down.or(up) }?;
+        let probe = if self.probe_up {
+            up.or(down)
+        } else {
+            down.or(up)
+        }?;
         self.probe_up = !self.probe_up;
         self.probing = Some(probe);
         RATE_PROBES.fetch_add(1, Ordering::Relaxed);
@@ -372,7 +393,11 @@ impl ExpectedRate {
             pending.1 += rates[i].1.wrapping_sub(self.last_rates[i].1);
             if pending.0 >= PROB_MIN_ATTEMPTS {
                 let p = (pending.1 * 1000 / pending.0).min(1000);
-                self.prob[i] = if self.prob[i] == PROB_UNKNOWN { p } else { (self.prob[i] * 3 + p) / 4 };
+                self.prob[i] = if self.prob[i] == PROB_UNKNOWN {
+                    p
+                } else {
+                    (self.prob[i] * 3 + p) / 4
+                };
                 *pending = (0, 0);
                 PROB_PERMILLE[i].store(self.prob[i], Ordering::Relaxed);
             }
@@ -392,7 +417,9 @@ impl ExpectedRate {
         for i in 0..LADDER.len() {
             GOODPUT_KBPS[i].store(self.throughput(i), Ordering::Relaxed);
         }
-        let best = (0..LADDER.len()).max_by_key(|&i| self.throughput(i)).unwrap_or(self.index);
+        let best = (0..LADDER.len())
+            .max_by_key(|&i| self.throughput(i))
+            .unwrap_or(self.index);
         let moved = best != self.index
             && u64::from(self.throughput(best)) * 1000
                 > u64::from(self.throughput(self.index)) * EXPECT_WIN_PERMILLE;
@@ -489,8 +516,19 @@ pub fn stack<const SOCK: usize>(
     address.copy_from_slice(base.as_bytes());
     // the interface is not up yet, so this cannot be refused
     let _ = control.set_mac_address(address);
-    let (stack, net) = embassy_net::new(device, Config::dhcpv4(DhcpConfig::default()), resources, seed);
-    OpenStation { control, stack, mac, sta, net }
+    let (stack, net) = embassy_net::new(
+        device,
+        Config::dhcpv4(DhcpConfig::default()),
+        resources,
+        seed,
+    );
+    OpenStation {
+        control,
+        stack,
+        mac,
+        sta,
+        net,
+    }
 }
 
 /// FoA's lower-MAC runner, for the life of the firmware.
@@ -513,10 +551,17 @@ pub async fn net_task(mut runner: Runner<'static, StaNetDevice<'static>>) -> ! {
 
 /// One join, bounded by [`JOIN_TIMEOUT`]: true when FoA reports the station
 /// associated and keyed.
-pub async fn join(control: &mut StaControl<'static, 'static>, ssid: &str, passphrase: &str) -> bool {
+pub async fn join(
+    control: &mut StaControl<'static, 'static>,
+    ssid: &str,
+    passphrase: &str,
+) -> bool {
     let attempt = control.connect_by_ssid(
         ssid,
-        Some(ConnectionConfig { beacon_timeout: None, ..Default::default() }),
+        Some(ConnectionConfig {
+            beacon_timeout: None,
+            ..Default::default()
+        }),
         Some(Credentials::Passphrase(passphrase)),
     );
     ATTEMPTS.fetch_add(1, Ordering::Relaxed);

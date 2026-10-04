@@ -10,10 +10,10 @@ use rusty_esp_core::error::Error;
 use rusty_esp_core::hal::Rng;
 use zeroize::Zeroize;
 
-use super::message::{header, kind, split, Discover, ResultCode, MAX_MESSAGE, SUITE_CODE};
+use super::message::{Discover, MAX_MESSAGE, ResultCode, SUITE_CODE, header, kind, split};
 use super::seal::{Opener, Sealer};
-use super::spake::{reply_prehash, verify_reply, Prover, CONFIRM_LEN, SHARE_LEN, SIG_LEN};
-use super::{Code as SetupCode, Context, Secrets, DEVPUB_LEN};
+use super::spake::{CONFIRM_LEN, Prover, SHARE_LEN, SIG_LEN, reply_prehash, verify_reply};
+use super::{Code as SetupCode, Context, DEVPUB_LEN, Secrets};
 
 /// Why a browser step failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

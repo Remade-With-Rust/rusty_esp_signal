@@ -189,7 +189,8 @@ impl<'stack, 'server> Session<'stack, 'server> {
         provisioner: &mut Provisioner<E, N>,
         now: impl FnMut() -> Micros,
     ) -> core::result::Result<Served, Error> {
-        self.serve_observed(server, provisioner, now, |_, _| {}).await
+        self.serve_observed(server, provisioner, now, |_, _| {})
+            .await
     }
 
     /// [`Session::serve`], and `observe(kind, took)` for every `setup`
@@ -217,7 +218,8 @@ impl<'stack, 'server> Session<'stack, 'server> {
                             if read.handle() == server.provisioning.discover.handle =>
                         {
                             let mut d = [0u8; DISCOVER_LEN];
-                            if let Ok(n) = provisioner.read(core_ble::CHAR_DISCOVER, now(), &mut d) {
+                            if let Ok(n) = provisioner.read(core_ble::CHAR_DISCOVER, now(), &mut d)
+                            {
                                 let value = Vec::from_slice(&d[..n]).unwrap_or_default();
                                 server.set(&server.provisioning.discover, &value)?;
                             }
@@ -253,7 +255,9 @@ impl<'stack, 'server> Session<'stack, 'server> {
                     let reply = event.accept()?;
                     reply.send().await;
                     if let Some(outcome) = answered {
-                        if let Some(served) = self.answer(server, provisioner, outcome, now()).await? {
+                        if let Some(served) =
+                            self.answer(server, provisioner, outcome, now()).await?
+                        {
                             return Ok(served);
                         }
                     }
@@ -407,7 +411,9 @@ where
     )?;
     let mut scan_data = [0u8; 31];
     let scan_len = AdStructure::encode_slice(
-        &[AdStructure::CompleteLocalName(core_ble::advertised_name(name).as_bytes())],
+        &[AdStructure::CompleteLocalName(
+            core_ble::advertised_name(name).as_bytes(),
+        )],
         &mut scan_data[..],
     )?;
 

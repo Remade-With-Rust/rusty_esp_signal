@@ -746,7 +746,11 @@ mod tests {
         let r = b.on_ready(&ready, &mut seen).unwrap();
         assert_eq!(r.phase, Phase::Unprovisioned.as_u8());
         let list: ScanList<8> = ScanList::decode(&seen[..r.scan_len]).unwrap();
-        assert_eq!(list.entries()[0].ssid(), b"home", "the scan list went out sealed");
+        assert_eq!(
+            list.entries()[0].ssid(),
+            b"home",
+            "the scan list went out sealed"
+        );
 
         let mut rec = [0u8; 256];
         let mut w = RecordWriter::new(&mut rec);
@@ -758,7 +762,10 @@ mod tests {
         assert_eq!(out.status, Some(Phase::Connecting.as_u8()));
         assert_eq!(b.on_result(&result).unwrap().0, ResultCode::Applied);
         let c = p.credentials().unwrap();
-        assert_eq!((c.ssid(), c.psk()), (&b"home"[..], &b"a-home-passphrase"[..]));
+        assert_eq!(
+            (c.ssid(), c.psk()),
+            (&b"home"[..], &b"a-home-passphrase"[..])
+        );
         let joined = p.on_event(Event::Connected, now);
         assert_eq!(joined.status, Some(Phase::Connected.as_u8()));
 
@@ -775,7 +782,10 @@ mod tests {
         assert_eq!(p.on_write(CHAR_DISCOVER, &[0; 59], now), Err(Error::Denied));
         // the retired characteristics are no one's now
         let retired = crate::ble::janus_uuid(0x0101);
-        assert_eq!(p.on_write(retired, &[1, 1, b'x'], now), Err(Error::Unsupported));
+        assert_eq!(
+            p.on_write(retired, &[1, 1, b'x'], now),
+            Err(Error::Unsupported)
+        );
         let mut v = [0u8; 300];
         assert_eq!(
             p.read(crate::ble::janus_uuid(0x0103), now, &mut v),
@@ -799,14 +809,21 @@ mod tests {
         let now = Micros::from_secs(2);
         let (mut b, reply) = start(&mut p, &devpub, "AAAAA-AAAAA", now);
         let mut buf = [0u8; MAX_MESSAGE];
-        assert!(b.on_reply(&reply, &mut buf).is_err(), "the browser refuses at Reply");
+        assert!(
+            b.on_reply(&reply, &mut buf).is_err(),
+            "the browser refuses at Reply"
+        );
         // the session is still in flight until the carrier closes: Busy
         let (_, busy) = start(&mut p, &devpub, CODE, now);
         assert_eq!(busy[1], crate::setup::message::kind::ERROR);
         assert_eq!(ResultCode::from_u8(busy[2]), Some(ResultCode::Busy));
         p.carrier_closed();
         let mut v = [0u8; MAX_MESSAGE];
-        assert_eq!(p.read(CHAR_SETUP, now, &mut v), Ok(0), "the answer is wiped");
+        assert_eq!(
+            p.read(CHAR_SETUP, now, &mut v),
+            Ok(0),
+            "the answer is wiped"
+        );
         // after the backoff a new connection gets a session
         let later = now.add_micros(2_000_000);
         let (mut b, reply) = start(&mut p, &devpub, CODE, later);
@@ -826,7 +843,10 @@ mod tests {
         let mut v = [0u8; 64];
         assert_eq!(p.env().settings.get(key::SSID, &mut v), Ok(None));
         assert_eq!(p.env().settings.get(key::PSK, &mut v), Ok(None));
-        assert!(p.advertising(Micros::from_secs(5_000)), "unprovisioned again");
+        assert!(
+            p.advertising(Micros::from_secs(5_000)),
+            "unprovisioned again"
+        );
     }
 
     #[test]
@@ -854,7 +874,10 @@ mod tests {
         assert_eq!(p.phase(), Phase::Fallback);
         assert!(p.advertising(later), "falling back opens the window");
         assert!(p.advertising(later.add_micros(599_000_000)));
-        assert!(!p.advertising(later.add_micros(601_000_000)), "for the button's 600 s");
+        assert!(
+            !p.advertising(later.add_micros(601_000_000)),
+            "for the button's 600 s"
+        );
     }
 
     #[test]
@@ -980,8 +1003,11 @@ mod tests {
         list.push(ScanEntry::new(b"cafe", -60, false).unwrap());
         list.push(ScanEntry::new(b"home", -45, true).unwrap()); // the mesh's nearer node
         list.push(ScanEntry::new(b"home", -80, true).unwrap()); // a farther one
-        let seen: std::vec::Vec<(&[u8], i8)> =
-            list.entries().iter().map(|e| (e.ssid(), e.rssi_dbm)).collect();
+        let seen: std::vec::Vec<(&[u8], i8)> = list
+            .entries()
+            .iter()
+            .map(|e| (e.ssid(), e.rssi_dbm))
+            .collect();
         assert_eq!(seen, [(&b"home"[..], -45), (&b"cafe"[..], -60)]);
     }
 

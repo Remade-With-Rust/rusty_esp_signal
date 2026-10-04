@@ -72,6 +72,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "ap_core"
+version = "0.1.0"
+dependencies = [
+ "ieee80211",
+ "llc-rs",
+ "sta_handshake",
+]
+
+[[package]]
 name = "as-slice"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1765,6 +1774,7 @@ dependencies = [
  "esp-hal",
  "esp-wifi-hal",
  "futures-util",
+ "heapless 0.9.3",
  "ieee80211",
  "portable-atomic",
  "static_cell",
@@ -1789,6 +1799,7 @@ dependencies = [
  "ieee80211",
  "llc-rs",
  "portable-atomic",
+ "sta_handshake",
 ]
 
 [[package]]
@@ -2096,8 +2107,6 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 [[package]]
 name = "ieee80211"
 version = "0.5.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7418f9be3522922d6e87647eacd5275641f6c225cf4a444a64c31e366ac37559"
 dependencies = [
  "aes-kw",
  "bitfield-struct 0.11.0",
@@ -2951,14 +2960,23 @@ dependencies = [
 name = "rusty_esp_signal-open"
 version = "0.3.0"
 dependencies = [
+ "ap_core",
+ "edge-dhcp",
+ "edge-nal",
+ "edge-nal-embassy",
  "embassy-executor",
+ "embassy-futures",
  "embassy-net",
+ "embassy-net-driver",
+ "embassy-net-driver-channel",
  "embassy-time",
  "esp-hal",
  "esp-wifi-hal",
  "foa",
  "foa_sta",
+ "ieee80211",
  "rusty_esp_signal-core",
+ "sta_handshake",
  "static_cell",
 ]
 
@@ -3224,6 +3242,14 @@ checksum = "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d"
 dependencies = [
  "base64ct",
  "der",
+]
+
+[[package]]
+name = "sta_handshake"
+version = "0.1.0"
+dependencies = [
+ "ieee80211",
+ "llc-rs",
 ]
 
 [[package]]

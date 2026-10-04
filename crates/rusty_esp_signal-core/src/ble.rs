@@ -623,10 +623,7 @@ mod tests {
         expect(CHAR_PRESENCE, "presence", Props::READ | Props::NOTIFY, 2);
         // `setup` carries the session's largest message, `discover` its
         // Discover; the retired UUIDs are gone from the table.
-        assert_eq!(
-            usize::from(SETUP_VALUE_LEN),
-            crate::setup::MAX_MESSAGE
-        );
+        assert_eq!(usize::from(SETUP_VALUE_LEN), crate::setup::MAX_MESSAGE);
         assert_eq!(
             usize::from(DISCOVER_VALUE_LEN),
             crate::setup::message::DISCOVER_LEN
@@ -651,7 +648,10 @@ mod tests {
         let wide = "abcdefghijklmnopqrstuvwxyz01\u{e9}z";
         assert_eq!(advertised_name(wide), "abcdefghijklmnopqrstuvwxyz01");
         // the budget is what fits beside nothing else
-        assert_eq!(adv_structure_len(SCAN_RESPONSE_NAME_BUDGET), LEGACY_ADV_CAPACITY);
+        assert_eq!(
+            adv_structure_len(SCAN_RESPONSE_NAME_BUDGET),
+            LEGACY_ADV_CAPACITY
+        );
     }
 
     #[test]

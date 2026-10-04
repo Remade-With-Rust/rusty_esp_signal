@@ -31,7 +31,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      - run: cargo fmt --all --check
+      # the workspace's members only: `--all` follows path dependencies into
+      # vendor/open-mac, which keeps upstream's formatting (its own crates of
+      # ours are checked in the `air` job)
+      - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 

@@ -9,8 +9,8 @@ use rusty_esp_core::error::Error;
 use rusty_esp_signal_core::mid::key::DeviceKey;
 use rusty_esp_signal_core::mid::signer::DeviceSigner;
 use rusty_esp_signal_core::setup::{
-    reply_prehash, respond_with_scalar, verify_reply, Code, Context, Prover, Secrets, Verifier,
-    DEVPUB_LEN, SALT_LEN, TAG_LEN, VERSION,
+    Code, Context, DEVPUB_LEN, Prover, SALT_LEN, Secrets, TAG_LEN, VERSION, Verifier,
+    reply_prehash, respond_with_scalar, verify_reply,
 };
 
 const FIXTURE: &str = include_str!("fixtures/setup/session-v1.txt");

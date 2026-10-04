@@ -93,7 +93,11 @@ impl SetupSession {
         let code = Code::parse(code).map_err(|_| {
             JsError::new("a setup code is ten letters and digits, like 7KXQ3-M9PRT")
         })?;
-        let expect = match expect_did.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let expect = match expect_did
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             Some(did) => Some(
                 *Did::parse(did)
                     .map_err(|_| JsError::new("the expected device is not a did:mata"))?
@@ -133,12 +137,15 @@ impl SetupSession {
     /// here.
     pub fn on_reply(&mut self, reply: &[u8]) -> Result<Vec<u8>, JsError> {
         let mut out = [0u8; MAX_MESSAGE];
-        let n = self.browser.on_reply(reply, &mut out).map_err(|f| match f {
-            Failure::Local(Error::Crypto) => JsError::new(
-                "the code is wrong, or the device could not prove it is the one it claims",
-            ),
-            f => failure("Reply", f),
-        })?;
+        let n = self
+            .browser
+            .on_reply(reply, &mut out)
+            .map_err(|f| match f {
+                Failure::Local(Error::Crypto) => JsError::new(
+                    "the code is wrong, or the device could not prove it is the one it claims",
+                ),
+                f => failure("Reply", f),
+            })?;
         Ok(out[..n].to_vec())
     }
 

@@ -224,8 +224,8 @@ const SHA256_IV: [u32; 8] = [
 // generic-array 0.14 is deprecated, but it is what sha2 0.10's compress256 takes
 #[allow(deprecated)]
 fn pbkdf2_hmac_sha256(password: &[u8], salt: &[u8], iterations: u32, out: &mut [u8]) {
-    use sha2::digest::generic_array::GenericArray;
     use sha2::Digest;
+    use sha2::digest::generic_array::GenericArray;
 
     let prf = Hmac::<Sha256>::new_from_slice(password).expect("HMAC takes any key length");
     // the pads' states: a key longer than a block is hashed first (RFC 2104)
@@ -267,12 +267,18 @@ fn pbkdf2_hmac_sha256(password: &[u8], salt: &[u8], iterations: u32, out: &mut [
                 b.copy_from_slice(&w.to_be_bytes());
             }
             let mut s = inner;
-            sha2::compress256(&mut s, core::slice::from_ref(GenericArray::from_slice(&block)));
+            sha2::compress256(
+                &mut s,
+                core::slice::from_ref(GenericArray::from_slice(&block)),
+            );
             for (b, w) in block[..32].chunks_exact_mut(4).zip(s.iter()) {
                 b.copy_from_slice(&w.to_be_bytes());
             }
             u = outer;
-            sha2::compress256(&mut u, core::slice::from_ref(GenericArray::from_slice(&block)));
+            sha2::compress256(
+                &mut u,
+                core::slice::from_ref(GenericArray::from_slice(&block)),
+            );
             for (a, b) in t.iter_mut().zip(u.iter()) {
                 *a ^= b;
             }
@@ -320,7 +326,14 @@ mod tests {
     #[test]
     fn pbkdf2_is_the_generic_loop_byte_for_byte() {
         let long = [0xA5u8; 100];
-        for password in [&b""[..], b"passwd", &[7u8; 63], &[7u8; 64], &[7u8; 65], &long] {
+        for password in [
+            &b""[..],
+            b"passwd",
+            &[7u8; 63],
+            &[7u8; 64],
+            &[7u8; 65],
+            &long,
+        ] {
             for iterations in [1, 2, 3, 17, 1_000] {
                 for len in [1, 32, 33, 80] {
                     let mut fast = [0u8; 80];

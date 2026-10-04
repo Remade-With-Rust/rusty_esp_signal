@@ -5,17 +5,17 @@
 //! message no longer than `MAX_MESSAGE`, and nothing reaches the settings
 //! store unless a whole, sealed, valid record does.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use rusty_esp_core::hal::host::{InsecureTestRng, MemoryKv};
-use rusty_esp_core::hal::Kv;
 use rusty_esp_core::Micros;
+use rusty_esp_core::hal::Kv;
+use rusty_esp_core::hal::host::{InsecureTestRng, MemoryKv};
 use rusty_esp_signal_core::mid::key::DeviceKey;
 use rusty_esp_signal_core::setup::device::key;
 use rusty_esp_signal_core::setup::message::split;
 use rusty_esp_signal_core::setup::{
-    label, Browser, Code, Device, Discover, Record, RecordWriter, Reset, Secrets, Status, Verifier,
-    MAX_MESSAGE,
+    Browser, Code, Device, Discover, MAX_MESSAGE, Record, RecordWriter, Reset, Secrets, Status,
+    Verifier, label,
 };
 
 struct Lcg(u64);

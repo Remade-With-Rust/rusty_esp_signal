@@ -32,18 +32,18 @@ use ap_core::stations::{MAX_STATIONS, State, Stations};
 use ap_core::{Address, reason, status};
 use embassy_futures::select::{Either3, select3};
 use embassy_net::{Ipv4Cidr, Runner, Stack, StackResources, StaticConfigV4};
-use foa::RxEndpoint;
 use embassy_net_driver::{HardwareAddress, LinkState};
 use embassy_net_driver_channel as ch;
 use embassy_time::{Duration, Instant, Timer};
 use esp_hal::rng::Rng;
+use foa::LMacInterfaceControl;
+use foa::RxEndpoint;
 use foa::esp_wifi_hal::ll::EdcaAccessCategory;
 use foa::esp_wifi_hal::prelude::{
-    AesCipherParameters, CipherParameters, ControlFrameFilterConfig, KeyType, MultiLengthKey, RxFilterBank,
-    TxMacParameters, TxPlcpParameters,
+    AesCipherParameters, CipherParameters, ControlFrameFilterConfig, KeyType, MultiLengthKey,
+    RxFilterBank, TxMacParameters, TxPlcpParameters,
 };
 use foa::esp_wifi_hal::rates::{HrDsssRate, HtRate, OfdmRate, TxPhyRate};
-use foa::LMacInterfaceControl;
 use foa::{FoAResources, FoARunner, KeySlot, RetryBehaviour, TxEndpoint, VirtualInterface};
 
 /// The library says nothing; the counters say it.
@@ -149,7 +149,10 @@ pub async fn dhcp_server_task(stack: Stack<'static>, address: Ipv4Cidr) -> ! {
     loop {
         let udp = Udp::new(stack, &buffers);
         if let Ok(mut socket) = udp
-            .bind(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, DEFAULT_SERVER_PORT)))
+            .bind(SocketAddr::V4(SocketAddrV4::new(
+                Ipv4Addr::UNSPECIFIED,
+                DEFAULT_SERVER_PORT,
+            )))
             .await
         {
             let _ = io::server::run(&mut server, &options, &mut socket, &mut packet).await;
@@ -186,11 +189,22 @@ fn ccmp(key: &[u8; 16], key_type: KeyType) -> CipherParameters<'_> {
 /// byte with Ext IV, PN2 to PN5.
 fn ccmp_header(packet_number: u64, key_id: u8) -> [u8; 8] {
     let pn = packet_number.to_le_bytes();
-    [pn[0], pn[1], 0, 0x20 | (key_id << 6), pn[2], pn[3], pn[4], pn[5]]
+    [
+        pn[0],
+        pn[1],
+        0,
+        0x20 | (key_id << 6),
+        pn[2],
+        pn[3],
+        pn[4],
+        pn[5],
+    ]
 }
 
 fn ccmp_packet_number(header: &[u8]) -> u64 {
-    u64::from_le_bytes([header[0], header[1], header[4], header[5], header[6], header[7], 0, 0])
+    u64::from_le_bytes([
+        header[0], header[1], header[4], header[5], header[6], header[7], 0, 0,
+    ])
 }
 
 /// A station's place on the rate ladder: 6, 12, 24, 36, 54 Mbit/s, then
@@ -310,7 +324,10 @@ struct AccessPoint {
 
 impl AccessPoint {
     fn peer(&mut self, address: &Address) -> Option<&mut Peer> {
-        self.peers.iter_mut().flatten().find(|p| p.address == *address)
+        self.peers
+            .iter_mut()
+            .flatten()
+            .find(|p| p.address == *address)
     }
 
     fn forget(&mut self, address: &Address) {
@@ -396,7 +413,9 @@ impl AccessPoint {
     /// Every held frame to a station that woke (the Power Management bit
     /// clear).
     async fn release_all(&mut self, station: Address) {
-        while self.held.count(&station) > 0 || self.peer(&station).is_some_and(|p| p.group_key_wanted) {
+        while self.held.count(&station) > 0
+            || self.peer(&station).is_some_and(|p| p.group_key_wanted)
+        {
             self.release_one(station).await;
         }
     }
@@ -453,7 +472,12 @@ impl AccessPoint {
         let Some(gtk) = self.pending_gtk else {
             return;
         };
-        if self.peers.iter().flatten().any(|p| p.stage == Stage::SentGroupMessage1) {
+        if self
+            .peers
+            .iter()
+            .flatten()
+            .any(|p| p.stage == Stage::SentGroupMessage1)
+        {
             return;
         }
         self.pending_gtk = None;
@@ -569,7 +593,11 @@ impl AccessPoint {
                 }
                 Err(_why) => {
                     HANDSHAKE_REFUSED.fetch_add(1, Ordering::Relaxed);
-                    note!("open-ap: group message 2 from {:02x?} refused: {:?}", station, why);
+                    note!(
+                        "open-ap: group message 2 from {:02x?} refused: {:?}",
+                        station,
+                        why
+                    );
                     false
                 }
             }
@@ -630,8 +658,10 @@ impl AccessPoint {
         let anonce = peer.authenticator.anonce;
         peer.stage = Stage::SentMessage1;
         peer.sent_at_us = Instant::now().as_micros();
-        self.reply(|out, scratch| handshake::write_message_1(out, scratch, bssid, station, &anonce, replay).ok())
-            .await;
+        self.reply(|out, scratch| {
+            handshake::write_message_1(out, scratch, bssid, station, &anonce, replay).ok()
+        })
+        .await;
     }
 
     async fn send_message_3(&mut self, station: Address) {
@@ -647,7 +677,8 @@ impl AccessPoint {
         peer.stage = Stage::SentMessage3;
         peer.sent_at_us = Instant::now().as_micros();
         self.reply(|out, scratch| {
-            handshake::write_message_3(out, scratch, bssid, station, &keys, &anonce, replay, &gtk).ok()
+            handshake::write_message_3(out, scratch, bssid, station, &keys, &anonce, replay, &gtk)
+                .ok()
         })
         .await;
     }
@@ -656,7 +687,11 @@ impl AccessPoint {
     async fn begin_handshake(&mut self, station: Address) {
         let mut anonce = [0u8; 32];
         Rng::new().read(&mut anonce);
-        if let Some(free) = self.peers.iter_mut().find(|p| p.as_ref().is_none_or(|p| p.address == station)) {
+        if let Some(free) = self
+            .peers
+            .iter_mut()
+            .find(|p| p.as_ref().is_none_or(|p| p.address == station))
+        {
             *free = Some(Peer {
                 address: station,
                 authenticator: Authenticator::new(anonce),
@@ -688,7 +723,15 @@ impl AccessPoint {
             Stage::SentMessage1 => {
                 let replay = peer.authenticator.replay_counter;
                 let anonce = peer.authenticator.anonce;
-                match handshake::read_message_2(frame, &pmk, &bssid, &station, &anonce, replay, rsn.as_slice()) {
+                match handshake::read_message_2(
+                    frame,
+                    &pmk,
+                    &bssid,
+                    &station,
+                    &anonce,
+                    replay,
+                    rsn.as_slice(),
+                ) {
                     Ok(keys) => {
                         peer.authenticator.keys = Some(keys);
                         peer.resends = 0;
@@ -696,7 +739,11 @@ impl AccessPoint {
                     }
                     Err(_why) => {
                         HANDSHAKE_REFUSED.fetch_add(1, Ordering::Relaxed);
-                        note!("open-ap: message 2 from {:02x?} refused: {:?}", station, why);
+                        note!(
+                            "open-ap: message 2 from {:02x?} refused: {:?}",
+                            station,
+                            why
+                        );
                     }
                 }
             }
@@ -707,7 +754,11 @@ impl AccessPoint {
                 };
                 if let Err(_why) = handshake::read_message_4(frame, &keys, replay) {
                     HANDSHAKE_REFUSED.fetch_add(1, Ordering::Relaxed);
-                    note!("open-ap: message 4 from {:02x?} refused: {:?}", station, why);
+                    note!(
+                        "open-ap: message 4 from {:02x?} refused: {:?}",
+                        station,
+                        why
+                    );
                     return;
                 }
                 // the pairwise key into a key slot of the station's own
@@ -715,7 +766,10 @@ impl AccessPoint {
                     note!("open-ap: no key slot for {:02x?}", station);
                     return;
                 };
-                if slot.set_key(0, station, ccmp(keys.tk(), KeyType::Pairwise)).is_err() {
+                if slot
+                    .set_key(0, station, ccmp(keys.tk(), KeyType::Pairwise))
+                    .is_err()
+                {
                     note!("open-ap: the key slot refused the PTK");
                     return;
                 }
@@ -748,7 +802,11 @@ impl AccessPoint {
             } else {
                 HANDSHAKE_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
             }
-            note!("open-ap: {:02x?} {} handshake timed out", station, if group { "group-key" } else { "4-way" });
+            note!(
+                "open-ap: {:02x?} {} handshake timed out",
+                station,
+                if group { "group-key" } else { "4-way" }
+            );
             self.forget(&station);
             let b = self.bss.bssid;
             let why = if group {
@@ -756,7 +814,8 @@ impl AccessPoint {
             } else {
                 reason::FOURWAY_HANDSHAKE_TIMEOUT
             };
-            self.reply(|out, _| frames::deauthentication(out, b, station, why)).await;
+            self.reply(|out, _| frames::deauthentication(out, b, station, why))
+                .await;
             self.finish_rekey_if_done();
             return;
         }
@@ -812,7 +871,12 @@ impl AccessPoint {
             return;
         };
         let subtype = if qos_station { 0x88 } else { 0x08 };
-        frame[..4].copy_from_slice(&[subtype, 0x02 | 0x40 | if more_data { 0x20 } else { 0 }, 0, 0]);
+        frame[..4].copy_from_slice(&[
+            subtype,
+            0x02 | 0x40 | if more_data { 0x20 } else { 0 },
+            0,
+            0,
+        ]);
         frame[4..10].copy_from_slice(&to);
         frame[10..16].copy_from_slice(&self.bss.bssid);
         frame[16..22].copy_from_slice(from);
@@ -898,30 +962,52 @@ impl AccessPoint {
                 })
                 .await;
             }
-            Some(Request::Authentication { from, algorithm, sequence }) => {
+            Some(Request::Authentication {
+                from,
+                algorithm,
+                sequence,
+            }) => {
                 // a station starting again: its keys go
                 self.forget(&from);
                 let status = self.stations.authenticate(from, algorithm, sequence);
                 self.stations.heard(&from, now, false);
                 note!("open-ap: authentication from {:02x?} status={status}", from);
-                self.reply(|out, _| frames::authentication(out, bss.bssid, from, status)).await;
+                self.reply(|out, _| frames::authentication(out, bss.bssid, from, status))
+                    .await;
             }
-            Some(Request::Association { from, ssid, rsn_element, reassociation, qos, ht }) => {
-                let (status, aid) = match self.stations.associate(from, ssid == Some(bss.ssid), rsn_element, true) {
-                    Ok(aid) => (status::SUCCESS, aid),
-                    Err(status) => (status, 0),
-                };
+            Some(Request::Association {
+                from,
+                ssid,
+                rsn_element,
+                reassociation,
+                qos,
+                ht,
+            }) => {
+                let (status, aid) =
+                    match self
+                        .stations
+                        .associate(from, ssid == Some(bss.ssid), rsn_element, true)
+                    {
+                        Ok(aid) => (status::SUCCESS, aid),
+                        Err(status) => (status, 0),
+                    };
                 if status == status::SUCCESS {
                     self.stations.set_capabilities(&from, qos, ht);
                 }
                 self.stations.heard(&from, now, false);
                 note!(
                     "open-ap: {} from {:02x?} status={status} aid={aid}",
-                    if reassociation { "re-association" } else { "association" },
+                    if reassociation {
+                        "re-association"
+                    } else {
+                        "association"
+                    },
                     from
                 );
-                self.reply(|out, _| frames::association_response(out, &bss, from, status, aid, reassociation))
-                    .await;
+                self.reply(|out, _| {
+                    frames::association_response(out, &bss, from, status, aid, reassociation)
+                })
+                .await;
                 if status == status::SUCCESS {
                     note!(
                         "open-ap: {:02x?} qos={qos} ht={}",
@@ -948,7 +1034,14 @@ impl AccessPoint {
         }
     }
 
-    async fn data(&mut self, f: &mut [u8], fc0: u8, fc1: u8, now: u64, up: &mut ch::RxRunner<'static, MTU>) {
+    async fn data(
+        &mut self,
+        f: &mut [u8],
+        fc0: u8,
+        fc1: u8,
+        now: u64,
+        up: &mut ch::RxRunner<'static, MTU>,
+    ) {
         if fc1 & 0b11 != 0b01 || f.len() < 24 {
             return;
         }
@@ -972,8 +1065,10 @@ impl AccessPoint {
         {
             STRANGERS.fetch_add(1, Ordering::Relaxed);
             let b = self.bss.bssid;
-            self.reply(|out, _| frames::deauthentication(out, b, station, reason::CLASS3_FROM_NONASSOC))
-                .await;
+            self.reply(|out, _| {
+                frames::deauthentication(out, b, station, reason::CLASS3_FROM_NONASSOC)
+            })
+            .await;
             return;
         }
         if was_dozing && !power_save {
@@ -1161,7 +1256,10 @@ pub fn hosted_stack<const SOCK: usize>(
     resources: &'static mut StackResources<SOCK>,
     seed: u64,
 ) -> OpenAccessPoint {
-    assert!((8..=63).contains(&config.passphrase.len()), "WPA2-PSK's passphrase is 8 to 63 bytes");
+    assert!(
+        (8..=63).contains(&config.passphrase.len()),
+        "WPA2-PSK's passphrase is 8 to 63 bytes"
+    );
     assert!(config.ssid.len() <= 32, "an SSID is up to 32 bytes");
     tsf::start_access_point_clock_at(config.tsf_seed_us);
 
@@ -1202,8 +1300,12 @@ pub fn hosted_stack<const SOCK: usize>(
         replay_counter: 0,
     };
     let mut gtk_slots = [
-        control.acquire_key_slot().expect("a key slot for the group key"),
-        control.acquire_key_slot().expect("a key slot for the next group key"),
+        control
+            .acquire_key_slot()
+            .expect("a key slot for the group key"),
+        control
+            .acquire_key_slot()
+            .expect("a key slot for the next group key"),
     ];
     gtk_slots[0]
         .set_key(GTK_KEY_ID, bssid, ccmp(&gtk.key, KeyType::Group))
@@ -1256,12 +1358,7 @@ pub fn hosted_stack<const SOCK: usize>(
         stack,
         bssid,
         mac,
-        ap: ApRunner {
-            ap,
-            rx,
-            up,
-            down,
-        },
+        ap: ApRunner { ap, rx, up, down },
         net,
     }
 }
@@ -1306,7 +1403,13 @@ pub async fn ap_task(runner: ApRunner) -> ! {
         let now = tsf::access_point();
         let next_tbtt = (now / interval_us + 1) * interval_us;
         let wait = next_tbtt.saturating_sub(now).saturating_sub(LEAD_US);
-        match select3(Timer::after(Duration::from_micros(wait)), rx.receive(), down.tx_buf()).await {
+        match select3(
+            Timer::after(Duration::from_micros(wait)),
+            rx.receive(),
+            down.tx_buf(),
+        )
+        .await
+        {
             Either3::First(()) => {
                 let dtim_count = (beacon_index % u32::from(DTIM_PERIOD)) as u8;
                 beacon_index = beacon_index.wrapping_add(1);
@@ -1378,10 +1481,14 @@ pub async fn ap_task(runner: ApRunner) -> ! {
                 ap.forget(&gone);
                 DROPPED_INACTIVE.fetch_add(1, Ordering::Relaxed);
                 let b = ap.bss.bssid;
-                ap.reply(|out, _| frames::deauthentication(out, b, gone, reason::INACTIVITY)).await;
+                ap.reply(|out, _| frames::deauthentication(out, b, gone, reason::INACTIVITY))
+                    .await;
             }
             STATIONS_NOW.store(ap.stations.iter().count() as u32, Ordering::Relaxed);
-            DOZING_NOW.store(ap.stations.iter().filter(|s| s.power_save).count() as u32, Ordering::Relaxed);
+            DOZING_NOW.store(
+                ap.stations.iter().filter(|s| s.power_save).count() as u32,
+                Ordering::Relaxed,
+            );
         }
     }
 }

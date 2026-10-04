@@ -7,7 +7,7 @@ use rusty_esp_mid_core::adoption::Adoption;
 use rusty_esp_mid_core::did::Did;
 
 use super::message::ResultCode;
-use super::{Verifier, SETUP_V_LEN};
+use super::{SETUP_V_LEN, Verifier};
 use crate::wifi::{Credentials, TAG_PSK, TAG_SSID};
 
 /// The record's tags.

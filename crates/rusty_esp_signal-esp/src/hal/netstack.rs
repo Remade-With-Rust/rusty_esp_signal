@@ -37,8 +37,8 @@ use embassy_time::{Duration, Timer};
 use esp_radio::wifi::ap::AccessPointConfig;
 use esp_radio::wifi::sta::StationConfig;
 use esp_radio::wifi::{AuthenticationMethodConfig, Interface, WifiController};
-use rusty_esp_signal_core::esp_core::error::{Error, Result};
 use rusty_esp_signal_core::esp_core::Micros;
+use rusty_esp_signal_core::esp_core::error::{Error, Result};
 use rusty_esp_signal_core::wifi::{Phase, PolicyConfig, StationPolicy};
 
 use super::station::run_station;

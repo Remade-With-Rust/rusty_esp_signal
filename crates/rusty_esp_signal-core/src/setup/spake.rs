@@ -20,7 +20,7 @@ use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
 
 use super::seal::{Opener, Sealer};
-use super::{Context, Secrets, Verifier, DEVPUB_LEN};
+use super::{Context, DEVPUB_LEN, Secrets, Verifier};
 
 /// Bytes of a share: an uncompressed P-256 point.
 pub const SHARE_LEN: usize = 65;

@@ -3,19 +3,19 @@
 //! happy path, every refusal, the window, the backoff and the lockout, a
 //! replay, the idle timeout, the record's checks and its atomicity.
 
-use rusty_esp_core::error::Error;
-use rusty_esp_core::hal::host::{InsecureTestRng, MemoryKv};
-use rusty_esp_core::hal::Kv;
 use rusty_esp_core::Micros;
+use rusty_esp_core::error::Error;
+use rusty_esp_core::hal::Kv;
+use rusty_esp_core::hal::host::{InsecureTestRng, MemoryKv};
 use rusty_esp_signal_core::mid::adoption::{AdoptionFields, CapList, KV_ADOPTION, KV_OWNER_PIN};
 use rusty_esp_signal_core::mid::key::DeviceKey;
 use rusty_esp_signal_core::setup::device::{
-    key, IDLE_TIMEOUT_US, MAX_FAILURES, WINDOW_AFTER_RESET_US,
+    IDLE_TIMEOUT_US, MAX_FAILURES, WINDOW_AFTER_RESET_US, key,
 };
-use rusty_esp_signal_core::setup::message::{kind, WINDOW_UNTIL_PROVISIONED};
+use rusty_esp_signal_core::setup::message::{WINDOW_UNTIL_PROVISIONED, kind};
 use rusty_esp_signal_core::setup::{
-    label, Browser, Code, Device, Discover, Failure, RecordWriter, Reset, ResultCode, Secrets,
-    Status, Verifier, MAX_MESSAGE,
+    Browser, Code, Device, Discover, Failure, MAX_MESSAGE, RecordWriter, Reset, ResultCode,
+    Secrets, Status, Verifier, label,
 };
 
 const CODE: &str = "7KXQ3-M9PRT";
