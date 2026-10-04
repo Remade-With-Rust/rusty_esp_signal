@@ -303,6 +303,13 @@ pub fn serialize_eapol_data_frame<
 /// Decrypt, verify and deserialize an EAPOL data frame.
 ///
 /// The temp buffer needs to be as long as the key data minus eight.
+///
+/// Janus E2 (the family's change): every byte of `buffer` is the sender's
+/// to choose, and during a handshake anyone in range can send one, so
+/// nothing here indexes, unwraps or subtracts on the frame's word: a frame
+/// too short for a field, key data longer than the frame or not whole
+/// AES key-wrap blocks, or encrypted key data without a MIC to cover it,
+/// is an `Err`, never a panic.
 pub fn deserialize_eapol_data_frame<'a>(
     kck: Option<&[u8; 16]>,
     kek: Option<&[u8; 16]>,
@@ -312,9 +319,11 @@ pub fn deserialize_eapol_data_frame<'a>(
     with_fcs: bool,
 ) -> Result<EapolKeyFrame<'a>, EapolSerdeError> {
     if with_fcs {
-        buffer = buffer
-            .get_mut(..buffer.len() - 4)
+        let without_fcs = buffer
+            .len()
+            .checked_sub(4)
             .ok_or(EapolSerdeError::BufferTooShort)?;
+        buffer = &mut buffer[..without_fcs];
     }
     let data_frame_header = buffer
         .pread::<DataFrameHeader>(0)
@@ -334,13 +343,21 @@ pub fn deserialize_eapol_data_frame<'a>(
     let eapol_key_frame_offset = payload_offset + 8;
     let eapol_key_information_offset = eapol_key_frame_offset + 5;
     let eapol_key_information = KeyInformation::from_bits(
-        buffer[eapol_key_information_offset..]
+        buffer
+            .get(eapol_key_information_offset..)
+            .ok_or(EapolSerdeError::BufferTooShort)?
             .pread_with(0, Endian::Big)
             .map_err(|_| EapolSerdeError::BufferTooShort)?,
     );
     let mic_len = akm_suite
         .key_mic_len()
         .ok_or(EapolSerdeError::UnknownAkmSuite)?;
+    // Encrypted key data is only defined under a MIC (802.11-2020 12.7.2):
+    // without one, the frame's own bit would skip the MIC check and hand
+    // unauthenticated bytes to the key unwrap.
+    if eapol_key_information.encrypted_key_data() && !eapol_key_information.key_mic() {
+        return Err(EapolSerdeError::KeyFrameDeserializationFailure);
+    }
     if eapol_key_information.key_mic() {
         let mut h_sha_1 =
             <HSha1 as Mac>::new_from_slice(kck.ok_or(EapolSerdeError::MissingKey)?).unwrap();
@@ -371,33 +388,45 @@ pub fn deserialize_eapol_data_frame<'a>(
             .pread_with(key_data_length_offset, Endian::Big)
             .map_err(|_| EapolSerdeError::BufferTooShort)?;
 
-        let key_data = buffer[key_data_length_offset + 2..]
-            .get_mut(..key_data_length as usize)
-            .ok_or(EapolSerdeError::BufferTooShort)
-            .unwrap();
+        // AES key wrap (RFC 3394): whole 8-byte blocks, the integrity block
+        // and at least one of data
+        if key_data_length < 16 || key_data_length % 8 != 0 {
+            return Err(EapolSerdeError::KeyFrameDeserializationFailure);
+        }
+        let unwrapped_length = key_data_length - 8;
+        let key_data = buffer
+            .get_mut(key_data_length_offset + 2..)
+            .and_then(|rest| rest.get_mut(..key_data_length as usize))
+            .ok_or(EapolSerdeError::BufferTooShort)?;
+        let unwrapped = temp_buffer
+            .get_mut(..unwrapped_length as usize)
+            .ok_or(EapolSerdeError::TemporaryBufferToShort)?;
         let kw = KekAes128::new(kek.ok_or(EapolSerdeError::MissingKey)?.into());
-        kw.unwrap(key_data, &mut temp_buffer[..key_data_length as usize - 8])
+        kw.unwrap(key_data, unwrapped)
             .map_err(|_| EapolSerdeError::TemporaryBufferToShort)?;
 
         buffer
-            .pwrite_with(key_data_length - 8, key_data_length_offset, Endian::Big)
-            .unwrap();
+            .pwrite_with(unwrapped_length, key_data_length_offset, Endian::Big)
+            .map_err(|_| EapolSerdeError::BufferTooShort)?;
         buffer
-            .pwrite(
-                &temp_buffer[..key_data_length as usize - 8],
-                key_data_length_offset + 2,
-            )
-            .unwrap();
+            .pwrite(&*unwrapped, key_data_length_offset + 2)
+            .map_err(|_| EapolSerdeError::BufferTooShort)?;
 
-        let new_buffer_len = buffer.len() - 8;
+        let new_buffer_len = buffer
+            .len()
+            .checked_sub(8)
+            .ok_or(EapolSerdeError::BufferTooShort)?;
         buffer = &mut buffer[..new_buffer_len];
+        let eapol_body_length = new_buffer_len
+            .checked_sub(eapol_key_frame_offset + 4)
+            .ok_or(EapolSerdeError::BufferTooShort)?;
         buffer
             .pwrite_with(
-                (new_buffer_len - eapol_key_frame_offset - 4) as u16,
+                eapol_body_length as u16,
                 eapol_key_frame_offset + 2,
                 Endian::Big,
             )
-            .unwrap();
+            .map_err(|_| EapolSerdeError::BufferTooShort)?;
     }
     buffer
         .pread_with::<EapolKeyFrame>(eapol_key_frame_offset, akm_suite)

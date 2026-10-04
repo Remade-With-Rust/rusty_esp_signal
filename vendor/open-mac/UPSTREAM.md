@@ -21,6 +21,7 @@ register mapping.
 | `esp-wifi-hal/` | https://github.com/opensensor/esp-wifi-hal (`esp-wifi-hal/`) | `f159fcf` (2026-09-11) | the last commit before the fork began replacing `libphy` with Rust (`65bc9a2`). The S3 port was proposed upstream as https://github.com/esp32-open-mac/esp-wifi-hal/pull/23 (closed unmerged 2026-09-10; head `909be70`, an ancestor of this commit) |
 | `esp32s3-wifi-regs/src/wifi.rs`, `src/wifi/` | https://github.com/opensensor/esp-pacs (`esp32s3/src/`) | `37b54bd` (2026-09-10) | svd2rust output for the Wi-Fi MAC; proposed upstream as https://github.com/esp-rs/esp-pacs/pull/511. `lib.rs.upstream.diff` is the 9 lines the commit added to the PAC's root; `svd/wifi.yaml` the patch they were generated from |
 | `foa/`, `foa_sta/` | https://github.com/opensensor/FoA (fork of https://github.com/esp32-open-mac/FoA) | `39f4476` | what `f159fcf`'s station example pinned |
+| `ieee80211/` | https://crates.io/crates/ieee80211 0.5.9 (https://github.com/Frostie314159/ieee80211-rs `6a26b0a`) | the published crate | the frame parsers and EAPOL code under FoA; vendored for E2 (the umbrella's `docs/plans/e2-air-interface.md`), byte-identical to the published files in `d1dfafe` |
 
 Taken as they were at those commits (H1); every change since is in git
 history here and listed below.
@@ -75,7 +76,26 @@ esp-hal 1.1, esp-phy 0.2.0, esp-wifi-sys 0.2.0):
   esp-hal and esp-config moved to the family's 1.2.0 / 0.8.0), `esp-wifi-hal`
   by path, an `esp32s3` feature in place of `esp32` / `esp32s2`.
 
+## Changes for E2 (the air interface under our rules)
+
+- `foa/Cargo.toml`, `foa_sta/Cargo.toml`: `ieee80211` by path, the
+  vendored copy.
+- `ieee80211/src/crypto/key_mgmt.rs`, `deserialize_eapol_data_frame`
+  (E2's F5): it panicked on frames anyone in range can send during a
+  handshake, before any key is in play: an EAPOL frame ending before its key
+  information (a slice past the end), key data longer than the frame (an
+  `ok_or(..).unwrap()`), key data under 8 bytes (an underflow into a slice
+  end). Now every read is checked, wrapped key data must be whole AES
+  key-wrap blocks of at least 16 bytes, and encrypted key data without a
+  MIC is refused before it is unwrapped (802.11-2020 12.7.2). The crate's
+  own 49 tests pass; `host-tests/air/tests/eapol_deserialise.rs` is the
+  regression.
+
 ## Host tests
+
+`host-tests/air/` (ours, E2): the receive path on the host, std, against
+the vendored crates; `cargo test --release` in that directory.
+
 
 `host-tests/esp32s3/` is upstream's `docs/esp32s3/tests/` and
 `docs/esp32s3/src/hal_mac.c` at `f159fcf`, unchanged; `host-tests/win/`

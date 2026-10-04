@@ -1,0 +1,12 @@
+[package]
+name = "open-mac-air-tests"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "E2: the open MAC's receive path on the host (no-panic corpus, the simulated access point). Not Wi-Fi certified."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+ieee80211 = { version = "=0.5.9", path = "../../ieee80211", default-features = false, features = ["crypto"] }
+
+[workspace]
