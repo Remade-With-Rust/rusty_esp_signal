@@ -472,13 +472,13 @@ name = "rusty_esp_mid-esp"
 version = "0.1.2"
 
 [[patch.unused]]
+name = "rusty_esp_dsp"
+version = "0.1.1"
+
+[[patch.unused]]
 name = "rusty_esp_alloc"
 version = "0.1.2"
 
 [[patch.unused]]
 name = "rusty_esp_core"
 version = "0.1.2"
-
-[[patch.unused]]
-name = "rusty_esp_dsp"
-version = "0.1.1"

@@ -33,7 +33,8 @@ impl CryptoHeader {
     }
     /// Check if the packet number and key ID are in range.
     const fn pn_and_key_id_valid(packet_number: u64, key_id: u8) -> bool {
-        packet_number <= Self::MAX_PN || key_id <= Self::MAX_KEY_ID
+        // Janus E2 (F14): both in range; `||` let either through
+        packet_number <= Self::MAX_PN && key_id <= Self::MAX_KEY_ID
     }
     /// Get the packet number as a [u64].
     ///
@@ -67,7 +68,9 @@ impl<'a> TryFromCtx<'a> for CryptoHeader {
                 msg: "Ext IV bit not set.",
             });
         }
-        let key_id = header[3] << 6;
+        // Janus E2 (F14): the key ID is the top two bits; `<< 6` read the
+        // low two bits into the top and dropped the rest
+        let key_id = header[3] >> 6;
 
         Ok((
             Self {

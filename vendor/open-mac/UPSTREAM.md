@@ -106,6 +106,19 @@ esp-hal 1.1, esp-phy 0.2.0, esp-wifi-sys 0.2.0):
   Not changed, noted (E2's F10): the subframe length is read little-endian
   where 802.11 (as 802.3) is big-endian; FoA's station does not negotiate
   HT, so an access point sends it no A-MSDU.
+- `ieee80211/src/crypto/eapol.rs` (E2's F13): the Key RSC was read and
+  written big-endian; 802.11 carries it as the group packet number's
+  little-endian octets. Found while reading OpenSensor's FoA for E3 (their
+  `GTK-REKEY.md`: "a cipher-specific 48-bit, little-endian Key RSC"). It
+  mattered because F11 seeds the group replay window from it: an access
+  point reporting RSC 5 read as 0x0500000000000000, after which every group
+  frame was a replay. B1 passed on a hotspot that reports 0; the simulated
+  access point agreed with the station because both read the field the same
+  wrong way. `host-tests/air/tests/fields.rs` reads hand-laid bytes.
+- `ieee80211/src/crypto/crypto_header.rs` (E2's F14): the CCMP key ID was
+  decoded `header[3] << 6` (`>> 6` is the field), and the range check
+  `CryptoHeader::new` made used `||` where both must hold. FoA's station
+  reads neither today; the tests are in `fields.rs`.
 - `sta_handshake/` (ours, E2): the station's half of WPA2-PSK's 4-way and
   group-key handshakes as pure functions (no hardware, no clock, no
   randomness), so FoA's station and the host tests run one code. What it

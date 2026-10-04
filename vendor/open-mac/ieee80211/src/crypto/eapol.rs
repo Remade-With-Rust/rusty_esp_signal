@@ -124,7 +124,10 @@ impl<'a> TryFromCtx<'a, IEEE80211AkmType> for EapolKeyFrame<'a> {
         let key_replay_counter = packet_body.gread_with(&mut offset, Endian::Big)?;
         let key_nonce = packet_body.gread_with(&mut offset, Endian::Big)?;
         let key_iv = packet_body.gread_with(&mut offset, Endian::Big)?;
-        let key_rsc = packet_body.gread_with(&mut offset, Endian::Big)?;
+        // Janus E2 (the family's change, F13): the Key RSC is the group
+        // key's packet number in its little-endian octet order (802.11-2020
+        // 12.7.2), as the CCMP header carries it; it was read big-endian
+        let key_rsc = packet_body.gread_with(&mut offset, Endian::Little)?;
         offset += 8;
         let key_mic_len = akm_suite.key_mic_len().ok_or(scroll::Error::BadInput {
             size: offset,
@@ -188,7 +191,7 @@ impl<'a, KeyMic: AsRef<[u8]>, ElementContainer: TryIntoCtx<(), Error = scroll::E
         buf.gwrite_with(self.key_replay_counter, &mut offset, Endian::Big)?;
         buf.gwrite_with(self.key_nonce, &mut offset, Endian::Big)?;
         buf.gwrite_with(self.key_iv, &mut offset, Endian::Big)?;
-        buf.gwrite_with(self.key_rsc, &mut offset, Endian::Big)?;
+        buf.gwrite_with(self.key_rsc, &mut offset, Endian::Little)?;
         buf.gwrite_with(0u64, &mut offset, Endian::Big)?;
         buf.gwrite(self.key_mic.as_ref(), &mut offset)?;
 
