@@ -23,6 +23,7 @@
 //! fragmentation is needed. Handshake messages (84 / 100 / 18 bytes) fit with
 //! room to spare.
 
+#[cfg(feature = "esp-radio")]
 use esp_radio::esp_now::{BROADCAST_ADDRESS, EspNowReceiver, EspNowSender};
 use rusty_esp_signal_core::esp_core::error::Result;
 use rusty_esp_signal_core::esp_core::{Error, Micros, Rng};
@@ -32,12 +33,14 @@ use rusty_esp_signal_core::link::{
 use rusty_esp_signal_core::mid::did::Did;
 use rusty_esp_signal_core::mid::key::DeviceKey;
 
+#[cfg(feature = "esp-radio")]
 /// The ESP-NOW broadcast address, for discovery before a peer MAC is known.
 #[must_use]
 pub const fn broadcast() -> [u8; 6] {
     BROADCAST_ADDRESS
 }
 
+#[cfg(feature = "esp-radio")]
 /// An authenticated ESP-NOW link to one peer.
 ///
 /// Owns the ESP-NOW sender and receiver halves and the peer's MAC address.
@@ -52,6 +55,7 @@ pub struct EspNowLink {
     rx_buf: FrameBuf,
 }
 
+#[cfg(feature = "esp-radio")]
 impl EspNowLink {
     /// Build a link over the ESP-NOW halves, addressed to `peer`. The peer
     /// must already be added to the ESP-NOW peer table (unicast) or be the
@@ -189,7 +193,7 @@ impl EspNowLink {
 /// bridge's address and DID, and the bridge answers the DIDs on its roster.
 ///
 /// [`UdpRadio`]: https://docs.rs/rusty_esp_iroh-bridge
-#[cfg(feature = "embassy-net")]
+#[cfg(feature = "udp-link")]
 pub struct UdpLink<'a> {
     socket: embassy_net::udp::UdpSocket<'a>,
     peer: embassy_net::IpEndpoint,
@@ -199,7 +203,7 @@ pub struct UdpLink<'a> {
     sha: Option<crate::hal::sha::EspSha<'a>>,
 }
 
-#[cfg(feature = "embassy-net")]
+#[cfg(feature = "udp-link")]
 impl<'a> UdpLink<'a> {
     /// Over `socket` (bound by the caller) to the bridge at `peer`.
     #[must_use]

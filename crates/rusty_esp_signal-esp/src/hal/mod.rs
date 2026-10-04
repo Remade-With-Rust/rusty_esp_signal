@@ -13,7 +13,7 @@ pub mod sha;
 // These need esp-radio (the Wi-Fi/ESP-NOW driver).
 #[cfg(feature = "esp-radio")]
 pub mod csi;
-#[cfg(feature = "esp-radio")]
+#[cfg(any(feature = "esp-radio", feature = "udp-link"))]
 pub mod link;
 #[cfg(feature = "esp-radio")]
 pub mod station;

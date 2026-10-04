@@ -35,7 +35,10 @@ esp-radio = ["esp-hal", "dep:esp-radio", "dep:embassy-futures"]
 # station interface, DHCP, UDP and TCP sockets -- what `wifi-sta` means on a
 # bare-metal chip (killing-C plan, X2). Its own feature because it brings
 # smoltcp, which an ESP-NOW-only or CSI-only node never needs.
-embassy-net = ["esp-radio", "dep:embassy-net", "dep:embassy-executor"]
+# The mID link over UDP on any embassy-net stack (esp-radio's or the open
+# MAC's, E3): `hal::link::UdpLink` without the ESP-NOW half or esp-radio.
+udp-link = ["esp-hal", "dep:embassy-net"]
+embassy-net = ["esp-radio", "udp-link", "dep:embassy-executor"]
 # The board hosting its own network (`hal::netstack`'s access point half):
 # the DHCP server embassy-net does not have, from edge-dhcp over edge-nal's
 # UDP binding to embassy-net. What `access_point = true` means on a bare-metal
