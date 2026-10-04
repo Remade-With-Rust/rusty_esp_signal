@@ -86,6 +86,8 @@ static DOZING_NOW: AtomicU32 = AtomicU32::new(0);
 static JOINS: AtomicU32 = AtomicU32::new(0);
 static LEAVES: AtomicU32 = AtomicU32::new(0);
 static DROPPED_INACTIVE: AtomicU32 = AtomicU32::new(0);
+/// Frames for the stack dropped because its receive channel was full.
+static UP_DROPPED: AtomicU32 = AtomicU32::new(0);
 static REKEYS: AtomicU32 = AtomicU32::new(0);
 static REKEY_MESSAGES: AtomicU32 = AtomicU32::new(0);
 static REKEY_UNACKED: AtomicU32 = AtomicU32::new(0);
@@ -1041,7 +1043,11 @@ impl AccessPoint {
         let for_us = destination == self.bss.bssid;
         let group = is_group(&destination);
         if for_us || group {
-            if let Some(buf) = up.try_rx_buf() {
+            let Some(buf) = up.try_rx_buf() else {
+                UP_DROPPED.fetch_add(1, Ordering::Relaxed);
+                return;
+            };
+            {
                 let payload = &f[payload_at..];
                 let n = 14 + payload.len();
                 if let Some(eth) = buf.get_mut(..n) {
@@ -1400,6 +1406,8 @@ pub struct Stats {
     pub leaves: u32,
     /// Stations dropped for silence (reason 4).
     pub dropped_inactive: u32,
+    /// Frames for the stack dropped because its receive channel was full.
+    pub up_dropped: u32,
     /// EAPOL frames sent again, refused, and handshakes timed out.
     pub handshake_resent: u32,
     /// EAPOL frames sent again, refused, and handshakes timed out.
@@ -1491,6 +1499,7 @@ pub fn stats() -> Stats {
         joins: r(&JOINS),
         leaves: r(&LEAVES),
         dropped_inactive: r(&DROPPED_INACTIVE),
+        up_dropped: r(&UP_DROPPED),
         handshake_resent: r(&HANDSHAKE_RESENT),
         handshake_refused: r(&HANDSHAKE_REFUSED),
         handshake_timeouts: r(&HANDSHAKE_TIMEOUTS),
