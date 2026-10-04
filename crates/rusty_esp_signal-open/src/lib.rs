@@ -25,6 +25,11 @@ mod station;
 #[cfg(feature = "esp32s3")]
 pub mod access_point;
 
+/// The mID link on raw ESP-NOW frames (E4): `RawLink` in the shape of
+/// `hal::link::UdpLink`, no association and no IP under it.
+#[cfg(feature = "esp32s3")]
+pub mod raw_link;
+
 #[cfg(feature = "esp32s3")]
 pub use station::*;
 

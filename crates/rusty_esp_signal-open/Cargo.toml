@@ -10,7 +10,7 @@ rust-version.workspace = true
 # Not on crates.io: it depends on the vendored open MAC by path
 # (vendor/open-mac), which crates.io refuses. Cells take it by git URL.
 publish = false
-description = "Experiments plan E1 and E3: the Wi-Fi station and access point on the open lower MAC (esp-wifi-hal + FoA, vendored) for the ESP32-S3, in the shape of rusty_esp_signal-esp's hal::netstack. libphy is the one radio blob. NOT Wi-Fi certified."
+description = "Experiments plan E1, E3 and E4: the Wi-Fi station, the access point and the mID link on raw ESP-NOW frames, on the open lower MAC (esp-wifi-hal + FoA, vendored) for the ESP32-S3, in the shape of rusty_esp_signal-esp's hal. libphy is the one radio blob. NOT Wi-Fi certified."
 
 [features]
 default = []
@@ -36,6 +36,8 @@ esp32s3 = [
     "dep:edge-dhcp",
     "dep:edge-nal",
     "dep:edge-nal-embassy",
+    "dep:espnow_frame",
+    "dep:embassy-sync",
     "esp-hal/esp32s3",
     "esp-wifi-hal/esp32s3",
     "foa/esp32s3",
@@ -64,6 +66,10 @@ embassy-net-driver-channel = { version = "0.4", optional = true }
 edge-dhcp = { version = "0.8", default-features = false, features = ["io"], optional = true }
 edge-nal = { version = "0.7", optional = true }
 edge-nal-embassy = { version = "0.9", default-features = false, features = ["proto-ipv4", "udp", "medium-ethernet"], optional = true }
+# the link on raw frames (E4): ESP-NOW's frame laid out by hand, and the
+# queue between the radio's task and the link's
+espnow_frame = { path = "../../vendor/open-mac/espnow_frame", optional = true }
+embassy-sync = { version = "0.8", optional = true }
 
 [lints]
 workspace = true

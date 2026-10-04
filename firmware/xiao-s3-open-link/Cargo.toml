@@ -1,0 +1,53 @@
+[package]
+name = "xiao-s3-open-link"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "E4's probe: S1's kill test (the mID link, 1,000 frames each way, a third identity refused) from an ESP32-S3 on the open lower MAC, over raw ESP-NOW frames laid out by hand; its peer is c6-s1-link on the blob. NOT Wi-Fi certified."
+
+[[bin]]
+name = "xiao-s3-open-link"
+path = "src/main.rs"
+test = false
+bench = false
+doctest = false
+
+[features]
+default = ["role-initiator"]
+# One source, two images, as c6-s1-link: the initiator drives, the responder
+# echoes.
+role-initiator = []
+role-responder = []
+
+[dependencies]
+# No esp-radio: the MAC is the vendored esp-wifi-hal and FoA's lower MAC
+# (rusty_esp_signal-open); esp-rtos is embassy's time.
+esp-hal = { version = "=1.2.0", features = ["esp32s3", "unstable", "rt"] }
+esp-rtos = { version = "=0.4.0", features = ["esp32s3", "embassy"] }
+esp-alloc = { version = "=0.11.0", features = ["esp32s3"] }
+esp-bootloader-esp-idf = { version = "=0.6.0", features = ["esp32s3"] }
+esp-println = { version = "=0.18.0", features = ["esp32s3"] }
+esp-backtrace = { version = "=0.20.0", features = ["esp32s3", "panic-handler", "println"] }
+embassy-executor = "0.10"
+embassy-time = "0.5"
+
+rusty_esp_signal-open = { path = "../../crates/rusty_esp_signal-open", features = ["esp32s3"] }
+rusty_esp_signal-core = { path = "../../crates/rusty_esp_signal-core", default-features = false, features = ["alloc"] }
+# the chip's TRNG as the core's Rng, and nothing of the radio
+rusty_esp_signal-esp = { path = "../../crates/rusty_esp_signal-esp", default-features = false, features = ["alloc", "esp-hal"] }
+rusty_esp_mid-core = { git = "https://github.com/Remade-With-Rust/rusty_esp_mid", version = "0.1", default-features = false, features = ["alloc"] }
+rusty_esp_core = { git = "https://github.com/Remade-With-Rust/rusty_esp_core", version = "0.1", default-features = false, features = ["alloc"] }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = "z"
+panic = "abort"
+
+# its own build (firmware is outside the library workspace)
+[workspace]
