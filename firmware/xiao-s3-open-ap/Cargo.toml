@@ -1,0 +1,44 @@
+[package]
+name = "xiao-s3-open-ap"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "E3's P3 probe: an access point's beacons from the open MAC on the ESP32-S3, the TSF found, probe responses. NOT Wi-Fi certified."
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "xiao-s3-open-ap"
+path = "src/main.rs"
+test = false
+bench = false
+doctest = false
+
+[dependencies]
+# No esp-radio: the MAC is the vendored esp-wifi-hal and FoA's lower MAC;
+# the access point's logic is ap_core (E3 P2); esp-rtos is embassy's time.
+esp-hal = { version = "=1.2.0", features = ["esp32s3", "unstable", "rt"] }
+esp-rtos = { version = "=0.4.0", features = ["esp32s3", "embassy"] }
+esp-alloc = { version = "=0.11.0", features = ["esp32s3"] }
+esp-bootloader-esp-idf = { version = "=0.6.0", features = ["esp32s3"] }
+esp-println = { version = "=0.18.0", features = ["esp32s3"] }
+esp-backtrace = { version = "=0.20.0", features = ["esp32s3", "panic-handler", "println"] }
+embassy-executor = "0.10"
+embassy-time = "0.5"
+embassy-futures = "0.1"
+static_cell = "2"
+
+foa = { path = "../../vendor/open-mac/foa", features = ["esp32s3"] }
+esp-wifi-hal = { path = "../../vendor/open-mac/esp-wifi-hal", features = ["esp32s3"] }
+ap_core = { path = "../../vendor/open-mac/ap_core" }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = "z"
+
+# its own build (firmware is outside the library workspace)
+[workspace]
