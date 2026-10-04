@@ -73,7 +73,20 @@ const BEACON_INTERVAL_TU: u16 = 100;
 const DTIM_PERIOD: u8 = 2;
 const MTU: usize = 1514;
 const ADDRESS: Ipv4Addr = Ipv4Addr::new(192, 168, 4, 1);
-const INACTIVITY_US: u64 = 300_000_000;
+/// A station heard nothing from for this long is dropped (reason 4);
+/// `JANUS_INACTIVITY_S` at build time shortens it for the bench.
+fn inactivity_us() -> u64 {
+    let secs: u64 = option_env!("JANUS_INACTIVITY_S").and_then(|s| s.parse().ok()).unwrap_or(300);
+    secs.max(5) * 1_000_000
+}
+/// For the bench only: the access point resets itself once this long after
+/// boot (`JANUS_REBOOT_S`; 0, the default, never), so a station sees its
+/// access point vanish and come back with a continuous TSF (R1) and no
+/// keys for it.
+fn reboot_after_us() -> Option<u64> {
+    let secs: u64 = option_env!("JANUS_REBOOT_S").and_then(|s| s.parse().ok()).unwrap_or(0);
+    (secs > 0).then_some(secs * 1_000_000)
+}
 /// An EAPOL-Key frame not answered within this is sent again (802.11's
 /// dot11RSNAConfigPairwiseUpdateTimeOut is 100 ms; a laptop's supplicant
 /// may take longer, so 1 s), at most this many times, then the station is
@@ -1125,7 +1138,13 @@ async fn main(spawner: Spawner) {
         rekey_due: false,
         held: HELD_FRAMES.take(),
     };
-    println!("open-ap: group key rotates every {} s", rekey_interval_us() / 1_000_000);
+    println!(
+        "open-ap: group key rotates every {} s; inactivity {} s; reboot after {:?} s",
+        rekey_interval_us() / 1_000_000,
+        inactivity_us() / 1_000_000,
+        reboot_after_us().map(|us| us / 1_000_000)
+    );
+    let reboot_at = reboot_after_us().map(|us| started + Duration::from_micros(us));
     println!(
         "open-ap: hosting ssid=janus-e3-wpa2 (WPA2-PSK, CCMP) channel={CHANNEL} bssid={:02x?} address={ADDRESS} init_ms={}",
         bssid,
@@ -1207,10 +1226,17 @@ async fn main(spawner: Spawner) {
                 }
             }
         }
+        if let Some(at) = reboot_at {
+            if Instant::now() >= at {
+                println!("open-ap: resetting myself (the bench's JANUS_REBOOT_S)");
+                Timer::after(Duration::from_millis(20)).await;
+                esp_hal::system::software_reset();
+            }
+        }
         if report.elapsed().as_secs() >= 10 {
             report = Instant::now();
             let now_us = Instant::now().as_micros();
-            while let Some(gone) = ap.stations.inactive(now_us, INACTIVITY_US) {
+            while let Some(gone) = ap.stations.inactive(now_us, inactivity_us()) {
                 ap.forget(&gone);
                 let b = ap.bss.bssid;
                 ap.reply(|out, _| frames::deauthentication(out, b, gone, reason::INACTIVITY)).await;
