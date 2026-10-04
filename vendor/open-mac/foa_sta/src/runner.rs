@@ -316,14 +316,16 @@ impl RoutingRunner<'_, '_> {
                 return self
                     .sta_tx_rx
                     .map_crypto_state(|crypto_state| {
-                        let security_associations = &crypto_state.security_associations;
                         let packet_number = crypto_wrapper.crypto_header.packet_number();
+                        // a group frame is checked against the key its CCMP
+                        // header names (E2's F15)
                         let packet_number_valid = if is_group {
-                            security_associations
-                                .gtksa
-                                .update_and_validate_replay_counter(packet_number)
+                            crypto_state
+                                .group_keys
+                                .admit(crypto_wrapper.crypto_header.key_id(), packet_number)
                         } else {
-                            security_associations
+                            crypto_state
+                                .security_associations
                                 .ptksa
                                 .update_and_validate_replay_counter(packet_number)
                         };
@@ -399,12 +401,18 @@ impl RoutingRunner<'_, '_> {
             };
             let floor = crypto_state.security_associations.eapol_replay_counter;
             match sta_handshake::read_group_message_1(&mut plain[..length], &keys, &mut scratch, floor) {
-                Ok(gtk) => {
-                    crypto_state.update_gtksa(&gtk, bssid);
-                    GROUP_REKEYS.fetch_add(1, Ordering::Relaxed);
-                    debug!("Group key handshake: GTK key ID {} installed.", gtk.key_id);
-                    Some(gtk.replay_counter)
-                }
+                Ok(gtk) => match crypto_state.update_gtksa(&gtk, bssid) {
+                    Ok(()) => {
+                        GROUP_REKEYS.fetch_add(1, Ordering::Relaxed);
+                        debug!("Group key handshake: GTK key ID {} installed.", gtk.key_id);
+                        Some(gtk.replay_counter)
+                    }
+                    Err(refusal) => {
+                        GROUP_REFUSED.fetch_add(1, Ordering::Relaxed);
+                        debug!("Group key refused: {:?}", defmt_or_log::Debug2Format(&refusal));
+                        None
+                    }
+                },
                 Err(refusal) => {
                     GROUP_REFUSED.fetch_add(1, Ordering::Relaxed);
                     debug!("Group key message refused: {:?}", defmt_or_log::Debug2Format(&refusal));

@@ -119,6 +119,16 @@ esp-hal 1.1, esp-phy 0.2.0, esp-wifi-sys 0.2.0):
   decoded `header[3] << 6` (`>> 6` is the field), and the range check
   `CryptoHeader::new` made used `||` where both must hold. FoA's station
   reads neither today; the tests are in `fields.rs`.
+- `foa_sta/src/rsn.rs`, `runner.rs`, `operations/connect.rs` on
+  `sta_handshake::GroupKeys` (E2's F15): the station holds two group keys by
+  key ID (two hardware key slots, three a connection with the PTK's), so
+  group frames under the old key ID still decrypt while the access point
+  switches to the new one; FoA kept one and overwrote it at a rekey. A group
+  frame is checked against the key its CCMP header names (F14's decode),
+  each key with its own replay window from its RSC; a retried rekey programs
+  nothing and keeps its window; a key offered under a second ID is refused.
+  `host-tests/air/tests/group_keys.rs`. OpenSensor's FoA, past our pin,
+  holds four (one per key ID) and validated rekeys on hardware.
 - `sta_handshake/` (ours, E2): the station's half of WPA2-PSK's 4-way and
   group-key handshakes as pure functions (no hardware, no clock, no
   randomness), so FoA's station and the host tests run one code. What it

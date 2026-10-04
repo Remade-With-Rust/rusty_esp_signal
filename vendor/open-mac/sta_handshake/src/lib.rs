@@ -67,6 +67,116 @@ pub enum Refusal {
     GtkLength(usize),
     /// An output or scratch buffer was too small (ours, not the sender's).
     Buffer,
+    /// A group key already held under another key ID (E2's F15: a key does
+    /// not move between IDs).
+    KeyMoved,
+}
+
+/// How many group keys the station holds at once: the current one and the
+/// one a rekey brings, so frames under either decrypt through the access
+/// point's switch-over (E2's F15).
+pub const GROUP_KEY_SLOTS: usize = 2;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GroupEntry {
+    key_id: u8,
+    key: [u8; GTK_LENGTH],
+    /// The highest packet number taken under this key.
+    floor: u64,
+    /// When it was installed, in installs: the lower is the older.
+    installed: u32,
+}
+
+/// The station's group keys by key ID (E2's F15). FoA kept one and
+/// overwrote it at a rekey, so group frames still under the old key ID were
+/// lost until the access point switched over; here the old and the new are
+/// both held, each with its own replay window, and a frame is checked
+/// against the key its CCMP header names. Index `i` of an install's answer
+/// is the hardware key slot the caller keeps for entry `i`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GroupKeys {
+    entries: [Option<GroupEntry>; GROUP_KEY_SLOTS],
+    installs: u32,
+}
+
+/// What [`GroupKeys::install`] asks of the caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Install {
+    /// Program the key into the hardware slot kept for this entry.
+    Program(usize),
+    /// The same key under the same ID is held already: a retried message;
+    /// nothing to program, and its replay window is kept.
+    AlreadyInstalled,
+}
+
+impl GroupKeys {
+    /// No group key yet.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            entries: [None; GROUP_KEY_SLOTS],
+            installs: 0,
+        }
+    }
+
+    /// Take a group key from message 3 or a group message 1: where it goes,
+    /// or why not. Its replay window starts at the key's RSC.
+    pub fn install(&mut self, gtk: &GroupKey) -> Result<Install, Refusal> {
+        for entry in self.entries.iter().flatten() {
+            if entry.key == gtk.key {
+                return if entry.key_id == gtk.key_id {
+                    Ok(Install::AlreadyInstalled)
+                } else {
+                    Err(Refusal::KeyMoved)
+                };
+            }
+        }
+        // the entry under the same ID (a new key for an ID reused, as access
+        // points alternate between two), else a free one, else the older
+        let index = self
+            .entries
+            .iter()
+            .position(|e| e.is_some_and(|e| e.key_id == gtk.key_id))
+            .or_else(|| self.entries.iter().position(Option::is_none))
+            .unwrap_or_else(|| {
+                // both held: the one installed first
+                self.entries
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, e)| e.map_or(0, |e| e.installed))
+                    .map_or(0, |(i, _)| i)
+            });
+        self.installs = self.installs.wrapping_add(1);
+        self.entries[index] = Some(GroupEntry {
+            key_id: gtk.key_id,
+            key: gtk.key,
+            floor: gtk.rsc,
+            installed: self.installs,
+        });
+        Ok(Install::Program(index))
+    }
+
+    /// A group frame under `key_id` with this CCMP packet number: taken
+    /// (its key is held and the number is above that key's floor, which
+    /// moves up to it) or refused.
+    pub fn admit(&mut self, key_id: u8, packet_number: u64) -> bool {
+        for entry in self.entries.iter_mut().flatten() {
+            if entry.key_id == key_id {
+                if packet_number > entry.floor {
+                    entry.floor = packet_number;
+                    return true;
+                }
+                return false;
+            }
+        }
+        false
+    }
+
+    /// The key IDs held, by entry.
+    #[must_use]
+    pub fn key_ids(&self) -> [Option<u8>; GROUP_KEY_SLOTS] {
+        core::array::from_fn(|i| self.entries[i].map(|e| e.key_id))
+    }
 }
 
 impl From<EapolSerdeError> for Refusal {

@@ -197,13 +197,11 @@ mod private {
             .await?;
             debug!("Sent 4WHS message 4.");
 
-            let gtksa = TransientKeySecurityAssociation::new(gtk.key, gtk.key_id);
-            // E2's F11: the group replay window starts where the access
-            // point said its group counter is
-            gtksa.set_replay_counter(gtk.rsc);
+            // the group key goes to CryptoState's group keys, its replay
+            // window from its RSC (E2's F11, F15)
             Ok(SecurityAssociations {
                 ptksa: TransientKeySecurityAssociation::new(keys.ptk, 0),
-                gtksa,
+                initial_gtk: gtk,
                 akm_suite: WPA2_PSK_AKM,
                 cipher_suite: IEEE80211CipherSuiteSelector::Ccmp128,
                 eapol_replay_counter: gtk.replay_counter,
@@ -444,7 +442,9 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
         let pmk_and_key_slots = if bss.security_config != SecurityConfig::Open
             && let Some(credentials) = self.connection_parameters.credentials
         {
-            let [gtk_key_slot, ptk_key_slot] = core::array::from_fn(|_| {
+            // two group key slots (the current key and a rekey's: E2's F15)
+            // and the pairwise one
+            let [gtk_key_slot_0, gtk_key_slot_1, ptk_key_slot] = core::array::from_fn(|_| {
                 self.sta_tx_rx
                     .interface_control
                     .acquire_key_slot()
@@ -455,7 +455,7 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
                 debug!("Invalid PSK length.");
                 return Err(StaError::InvalidPskLength);
             }
-            Some((pmk, gtk_key_slot?, ptk_key_slot?))
+            Some((pmk, [gtk_key_slot_0?, gtk_key_slot_1?], ptk_key_slot?))
         } else {
             None
         };
@@ -471,11 +471,11 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
         let aid = self.do_assoc(&mut router_operation, bss).await?;
 
         #[cfg(feature = "rsn")]
-        if let Some((pmk, gtk_key_slot, ptk_key_slot)) = pmk_and_key_slots {
+        if let Some((pmk, gtk_key_slots, ptk_key_slot)) = pmk_and_key_slots {
             let crypto_keys = self.do_4whs(pmk, &mut router_operation, bss).await?;
             self.sta_tx_rx.crypto_state.lock(|rc| {
                 let _ = rc.borrow_mut().insert(crate::rsn::CryptoState::new(
-                    gtk_key_slot,
+                    gtk_key_slots,
                     ptk_key_slot,
                     *bss.bssid,
                     crypto_keys,

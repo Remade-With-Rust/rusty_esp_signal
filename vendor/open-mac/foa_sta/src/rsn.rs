@@ -19,7 +19,6 @@ pub const WPA2_PSK_AKM: IEEE80211AkmType = IEEE80211AkmType::Psk;
 pub const PTK_LENGTH: usize = WPA2_PSK_AKM.kck_len().unwrap()
     + WPA2_PSK_AKM.kek_len().unwrap()
     + IEEE80211CipherSuiteSelector::Ccmp128.tk_len().unwrap();
-pub const GTK_LENGTH: usize = IEEE80211CipherSuiteSelector::Ccmp128.tk_len().unwrap();
 
 #[derive(Debug)]
 /// A transient key security association.
@@ -59,12 +58,6 @@ impl<const N: usize, const IS_PAIRWISE: bool> TransientKeySecurityAssociation<N,
             self.key.as_slice()
         }
     }
-    /// Start the replay window at `packet_number`: frames at or below it
-    /// are replays (E2's F11: a group key's starting RSC from the
-    /// handshake, where FoA started every window at 0).
-    pub fn set_replay_counter(&self, packet_number: u64) {
-        self.replay_counter.store(packet_number, Ordering::Relaxed);
-    }
     /// Get the next TX packet number for this TKSA.
     pub fn next_packet_number(&self) -> u64 {
         self.packet_number.fetch_add(1, Ordering::Relaxed)
@@ -91,8 +84,9 @@ impl<const N: usize, const IS_PAIRWISE: bool> TransientKeySecurityAssociation<N,
 pub(crate) struct SecurityAssociations {
     /// The pairwise transient key.
     pub ptksa: TransientKeySecurityAssociation<PTK_LENGTH, true>,
-    /// The group transient key.
-    pub gtksa: TransientKeySecurityAssociation<GTK_LENGTH, false>,
+    /// The group key message 3 brought; from then on the group keys are
+    /// [`CryptoState::group_keys`]'s (E2's F15).
+    pub initial_gtk: sta_handshake::GroupKey,
     /// The Authentication and Key Management Suite.
     pub akm_suite: IEEE80211AkmType,
     /// The cipher suite.
@@ -104,9 +98,6 @@ pub(crate) struct SecurityAssociations {
 impl SecurityAssociations {
     pub fn pairwise_temporal_key(&self) -> &[u8] {
         self.ptksa.tk(self.akm_suite, self.cipher_suite)
-    }
-    pub fn group_temporal_key(&self) -> &[u8] {
-        self.gtksa.tk(self.akm_suite, self.cipher_suite)
     }
     /*
     pub fn kck(&self) -> &[u8] {
@@ -123,8 +114,11 @@ impl SecurityAssociations {
 }
 /// State of cryptographic management.
 pub(crate) struct CryptoState<'foa> {
-    /// Key slot used for the GTK.
-    pub gtk_key_slot: KeySlot<'foa>,
+    /// Key slots for the group keys, one per [`sta_handshake::GroupKeys`]
+    /// entry: the current group key and the one a rekey brings (E2's F15).
+    pub gtk_key_slots: [KeySlot<'foa>; sta_handshake::GROUP_KEY_SLOTS],
+    /// The group keys held, by key ID, with their replay windows.
+    pub group_keys: sta_handshake::GroupKeys,
     /// Key slot used for the PTK.
     pub ptk_key_slot: KeySlot<'foa>,
     /// All security associations.
@@ -132,51 +126,52 @@ pub(crate) struct CryptoState<'foa> {
 }
 impl<'foa> CryptoState<'foa> {
     pub fn new(
-        gtk_key_slot: KeySlot<'foa>,
+        gtk_key_slots: [KeySlot<'foa>; sta_handshake::GROUP_KEY_SLOTS],
         ptk_key_slot: KeySlot<'foa>,
         bssid: [u8; 6],
         security_associations: SecurityAssociations,
     ) -> Self {
+        let initial_gtk = security_associations.initial_gtk;
         let mut temp = Self {
-            gtk_key_slot,
+            gtk_key_slots,
+            group_keys: sta_handshake::GroupKeys::new(),
             ptk_key_slot,
             security_associations,
         };
-        temp.update_key_slot(false, bssid);
-        temp.update_key_slot(true, bssid);
+        let ptk_key_id = temp.security_associations.ptksa.key_id;
+        let tk: [u8; 16] = temp
+            .security_associations
+            .pairwise_temporal_key()
+            .try_into()
+            .unwrap();
+        Self::program(&mut temp.ptk_key_slot, ptk_key_id, &tk, KeyType::Pairwise, bssid);
+        // the first group key: an empty set takes any key, so this cannot fail
+        let _ = temp.update_gtksa(&initial_gtk, bssid);
         temp
     }
-    /// Install a new group key from a group-key handshake (E2's F2: FoA
-    /// had this commented out, and no handshake to call it).
-    pub fn update_gtksa(&mut self, gtk: &sta_handshake::GroupKey, bssid: [u8; 6]) {
-        self.security_associations.gtksa.key.copy_from_slice(&gtk.key);
-        self.security_associations.gtksa.key_id = gtk.key_id;
-        self.security_associations.gtksa.set_replay_counter(gtk.rsc);
+    /// Take a group key (message 3's, or a group-key handshake's: E2's F2):
+    /// held by its key ID beside the one before it, so frames under either
+    /// decrypt through the access point's switch-over (F15), its replay
+    /// window from its RSC (F11). A retry of a key held already programs
+    /// nothing; a key offered under a second ID is refused.
+    pub fn update_gtksa(
+        &mut self,
+        gtk: &sta_handshake::GroupKey,
+        bssid: [u8; 6],
+    ) -> Result<(), sta_handshake::Refusal> {
+        if let sta_handshake::Install::Program(entry) = self.group_keys.install(gtk)? {
+            Self::program(&mut self.gtk_key_slots[entry], gtk.key_id, &gtk.key, KeyType::Group, bssid);
+        }
         self.security_associations.eapol_replay_counter = gtk.replay_counter;
-        self.update_key_slot(true, bssid);
+        Ok(())
     }
-    fn update_key_slot(&mut self, group: bool, bssid: [u8; 6]) {
-        let (key_slot, tk, key_id, key_type) = if group {
-            (
-                &mut self.gtk_key_slot,
-                self.security_associations.group_temporal_key(),
-                self.security_associations.gtksa.key_id,
-                KeyType::Group,
-            )
-        } else {
-            (
-                &mut self.ptk_key_slot,
-                self.security_associations.pairwise_temporal_key(),
-                self.security_associations.ptksa.key_id,
-                KeyType::Pairwise,
-            )
-        };
+    fn program(key_slot: &mut KeySlot<'_>, key_id: u8, key: &[u8; 16], key_type: KeyType, bssid: [u8; 6]) {
         key_slot
             .set_key(
                 key_id,
                 bssid,
                 CipherParameters::Ccmp(AesCipherParameters {
-                    key: MultiLengthKey::Short(tk.try_into().unwrap()),
+                    key: MultiLengthKey::Short(key),
                     key_type,
                     mfp_enabled: false,
                     spp_enabled: false,
