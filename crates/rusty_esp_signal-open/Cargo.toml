@@ -10,7 +10,7 @@ rust-version.workspace = true
 # Not on crates.io: it depends on the vendored open MAC by path
 # (vendor/open-mac), which crates.io refuses. Cells take it by git URL.
 publish = false
-description = "Experiments plan E1: the Wi-Fi station on the open lower MAC (esp-wifi-hal + FoA, vendored) for the ESP32-S3, in the shape of rusty_esp_signal-esp's hal::netstack. libphy is the one radio blob. NOT Wi-Fi certified."
+description = "Experiments plan E1 and E3: the Wi-Fi station and access point on the open lower MAC (esp-wifi-hal + FoA, vendored) for the ESP32-S3, in the shape of rusty_esp_signal-esp's hal::netstack. libphy is the one radio blob. NOT Wi-Fi certified."
 
 [features]
 default = []
@@ -27,6 +27,15 @@ esp32s3 = [
     "dep:esp-wifi-hal",
     "dep:foa",
     "dep:foa_sta",
+    "dep:ap_core",
+    "dep:sta_handshake",
+    "dep:ieee80211",
+    "dep:embassy-futures",
+    "dep:embassy-net-driver",
+    "dep:embassy-net-driver-channel",
+    "dep:edge-dhcp",
+    "dep:edge-nal",
+    "dep:edge-nal-embassy",
     "esp-hal/esp32s3",
     "esp-wifi-hal/esp32s3",
     "foa/esp32s3",
@@ -43,6 +52,18 @@ static_cell = { version = "2", optional = true }
 esp-wifi-hal = { path = "../../vendor/open-mac/esp-wifi-hal", optional = true }
 foa = { path = "../../vendor/open-mac/foa", optional = true }
 foa_sta = { path = "../../vendor/open-mac/foa_sta", optional = true }
+# the access point (E3): its decisions in ap_core, the station-side key
+# types it shares, the PMK from ieee80211's PBKDF2, the Ethernet device
+# between the air and embassy-net, and the DHCP server a laptop expects
+ap_core = { path = "../../vendor/open-mac/ap_core", optional = true }
+sta_handshake = { path = "../../vendor/open-mac/sta_handshake", optional = true }
+ieee80211 = { version = "0.5.9", path = "../../vendor/open-mac/ieee80211", default-features = false, features = ["crypto"], optional = true }
+embassy-futures = { version = "0.1", optional = true }
+embassy-net-driver = { version = "0.2", optional = true }
+embassy-net-driver-channel = { version = "0.4", optional = true }
+edge-dhcp = { version = "0.8", default-features = false, features = ["io"], optional = true }
+edge-nal = { version = "0.7", optional = true }
+edge-nal-embassy = { version = "0.9", default-features = false, features = ["proto-ipv4", "udp", "medium-ethernet"], optional = true }
 
 [lints]
 workspace = true
