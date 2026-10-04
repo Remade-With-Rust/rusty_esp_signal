@@ -21,7 +21,7 @@ register mapping.
 | `esp-wifi-hal/` | https://github.com/opensensor/esp-wifi-hal (`esp-wifi-hal/`) | `f159fcf` (2026-09-11) | the last commit before the fork began replacing `libphy` with Rust (`65bc9a2`). The S3 port was proposed upstream as https://github.com/esp32-open-mac/esp-wifi-hal/pull/23 (closed unmerged 2026-09-10; head `909be70`, an ancestor of this commit) |
 | `esp32s3-wifi-regs/src/wifi.rs`, `src/wifi/` | https://github.com/opensensor/esp-pacs (`esp32s3/src/`) | `37b54bd` (2026-09-10) | svd2rust output for the Wi-Fi MAC; proposed upstream as https://github.com/esp-rs/esp-pacs/pull/511. `lib.rs.upstream.diff` is the 9 lines the commit added to the PAC's root; `svd/wifi.yaml` the patch they were generated from |
 | `foa/`, `foa_sta/` | https://github.com/opensensor/FoA (fork of https://github.com/esp32-open-mac/FoA) | `39f4476` | what `f159fcf`'s station example pinned |
-| `ieee80211/` | https://crates.io/crates/ieee80211 0.5.9 (https://github.com/Frostie314159/ieee80211-rs `6a26b0a`) | the published crate | the frame parsers and EAPOL code under FoA; vendored for E2 (the umbrella's `docs/plans/e2-air-interface.md`), byte-identical to the published files in `d1dfafe` |
+| `ieee80211/` | https://crates.io/crates/ieee80211 0.5.9 (https://github.com/Frostie314159/ieee80211-rs `6a26b0a`) | the published crate | the frame parsers and EAPOL code under FoA; vendored for E2 (the umbrella's `docs/plans/e2-air-interface.md`), byte-identical to the published files in `4cf7d60` |
 
 Taken as they were at those commits (H1); every change since is in git
 history here and listed below.
