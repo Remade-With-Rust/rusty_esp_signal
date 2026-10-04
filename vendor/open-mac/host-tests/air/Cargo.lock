@@ -140,6 +140,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "espnow_frame"
+version = "0.1.0"
+
+[[package]]
 name = "ether-type"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -327,6 +331,7 @@ name = "open-mac-air-tests"
 version = "0.0.0"
 dependencies = [
  "ap_core",
+ "espnow_frame",
  "ieee80211",
  "llc-rs",
  "sta_handshake",
@@ -474,16 +479,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[patch.unused]]
+name = "rusty_esp_dsp"
+version = "0.1.1"
+
+[[patch.unused]]
 name = "rusty_esp_alloc"
 version = "0.1.2"
 
 [[patch.unused]]
 name = "rusty_esp_core"
 version = "0.1.2"
-
-[[patch.unused]]
-name = "rusty_esp_dsp"
-version = "0.1.1"
 
 [[patch.unused]]
 name = "rusty_esp_mid-core"

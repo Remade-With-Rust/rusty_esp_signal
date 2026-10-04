@@ -197,6 +197,17 @@ esp-hal 1.1, esp-phy 0.2.0, esp-wifi-sys 0.2.0):
   C16's config set the queue to 32 (a bridge's window of 16 chunks does not
   fit a queue of two).
 
+## Added for E4 (the link on raw frames)
+
+- `espnow_frame/` (ours, E4 P1): ESP-NOW's vendor action frame laid out and
+  parsed by hand from Espressif's published layout (the Action header,
+  category 127, the OUI, four random octets, one vendor element of type 4;
+  version 1 written, version 2 read), no Espressif code; a body of up to 250
+  bytes, which is the link's `MAX_FRAME`. `host-tests/air/tests/espnow.rs`:
+  the layout octet for octet, `ieee80211`'s vendor action frame parser
+  reading it back, the refusals, every prefix and 200,000 noisy frames
+  without a panic. The blob's own frames are the check on the air.
+
 ## Host tests
 
 `host-tests/air/` (ours, E2): the receive path on the host, std, against

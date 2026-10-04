@@ -1,0 +1,9 @@
+[package]
+name = "espnow_frame"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "ESP-NOW's vendor action frame, laid out and parsed by hand from Espressif's published layout, for the mID link on the open MAC's raw frames (Janus E4). No Espressif code. Not Wi-Fi certified."
+license = "MIT OR Apache-2.0"
+
+[dependencies]

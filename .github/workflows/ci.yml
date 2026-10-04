@@ -65,6 +65,11 @@ jobs:
         run: cargo fmt --check
       - working-directory: vendor/open-mac/ap_core
         run: cargo clippy --release -- -D warnings
+      # E4: ESP-NOW's frame laid out by hand (the link on raw frames)
+      - working-directory: vendor/open-mac/espnow_frame
+        run: cargo fmt --check
+      - working-directory: vendor/open-mac/espnow_frame
+        run: cargo clippy --release -- -D warnings
       # E3: interop.rs checks the access point's handshakes against a second
       # implementation in Python (interop/wpa2.py), which needs `cryptography`
       - uses: actions/setup-python@v5
