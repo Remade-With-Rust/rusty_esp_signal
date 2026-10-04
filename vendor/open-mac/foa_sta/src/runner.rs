@@ -297,6 +297,10 @@ pub(crate) struct RoutingRunner<'foa, 'vif> {
 
     // Upper layer control.
     pub(crate) rx_runner: RxRunner<'vif, MTU>,
+
+    /// A group-key handshake's message 1 taken, its message 2 still to send
+    /// (its replay counter): sent from `run`, which may await (E2's F2).
+    pub(crate) group_reply: Option<u64>,
 }
 impl RoutingRunner<'_, '_> {
     #[allow(unused)]
@@ -364,8 +368,120 @@ impl RoutingRunner<'_, '_> {
         self.rx_runner.rx_done(written);
         Some(())
     }
+    /// A group-key handshake's message 1 (E2's F2): verified, its GTK
+    /// installed, and the reply queued for `run`. `mpdu` is the frame as
+    /// received; a protected one has passed the PTK's replay check already.
+    #[cfg(feature = "rsn")]
+    fn handle_group_key_frame(&mut self, mpdu: &[u8]) {
+        let mut plain = [0u8; 512];
+        let mut scratch = [0u8; 512];
+        let length = match sta_handshake::unprotect(mpdu, &mut plain) {
+            Some(length) => length,
+            None => match plain.get_mut(..mpdu.len()) {
+                Some(copy) => {
+                    copy.copy_from_slice(mpdu);
+                    mpdu.len()
+                }
+                None => return,
+            },
+        };
+        let Some(bssid) = self
+            .sta_tx_rx
+            .connection_state
+            .connection_info()
+            .map(|connection_info| *connection_info.bss.bssid)
+        else {
+            return;
+        };
+        let taken = self.sta_tx_rx.map_crypto_state(|crypto_state| {
+            let keys = sta_handshake::PairwiseKeys {
+                ptk: crypto_state.security_associations.ptksa.key,
+            };
+            let floor = crypto_state.security_associations.eapol_replay_counter;
+            match sta_handshake::read_group_message_1(&mut plain[..length], &keys, &mut scratch, floor) {
+                Ok(gtk) => {
+                    crypto_state.update_gtksa(&gtk, bssid);
+                    debug!("Group key handshake: GTK key ID {} installed.", gtk.key_id);
+                    Some(gtk.replay_counter)
+                }
+                Err(refusal) => {
+                    debug!("Group key message refused: {:?}", defmt_or_log::Debug2Format(&refusal));
+                    None
+                }
+            }
+        });
+        if let Some(Some(replay_counter)) = taken {
+            self.group_reply = Some(replay_counter);
+        }
+    }
+    /// Send a group-key handshake's message 2, protected under the PTK.
+    #[cfg(feature = "rsn")]
+    async fn send_group_reply(&mut self, replay_counter: u64) {
+        let Some(connection_info) = self.sta_tx_rx.connection_state.connection_info() else {
+            return;
+        };
+        let Some((keys, packet_number, key_id, key_slot)) =
+            self.sta_tx_rx.map_crypto_state(|crypto_state| {
+                let ptksa = &crypto_state.security_associations.ptksa;
+                (
+                    sta_handshake::PairwiseKeys { ptk: ptksa.key },
+                    ptksa.next_packet_number(),
+                    ptksa.key_id,
+                    crypto_state.ptk_key_slot.key_slot(),
+                )
+            })
+        else {
+            return;
+        };
+        let mut tx_buf = self.sta_tx_rx.tx_endpoint.alloc_tx_buf().await;
+        let mut scratch = [0u8; 512];
+        let Ok(written) = sta_handshake::write_group_message_2(
+            tx_buf.as_mut_slice(),
+            &mut scratch,
+            connection_info.bss.bssid,
+            connection_info.own_address,
+            &keys,
+            replay_counter,
+            packet_number,
+            key_id,
+        ) else {
+            return;
+        };
+        let _ = self
+            .sta_tx_rx
+            .tx_endpoint
+            .transmit_edca(
+                EdcaAccessCategory::default(),
+                tx_buf,
+                written,
+                TxPlcpParameters {
+                    rate: self.sta_tx_rx.phy_rate(),
+                    ..Default::default()
+                },
+                TxMacParameters {
+                    key_slot_index: Some(key_slot as u8),
+                    wait_for_ack: true,
+                    override_seq_num: true,
+                    ..Default::default()
+                },
+                RetryBehaviour::RetryUntil(7),
+            )
+            .wait_for_completion()
+            .await;
+        debug!("Group key handshake: message 2 sent.");
+    }
     /// Forward a received data frame to higher layers.
-    fn handle_data_rx(&mut self, data_frame: DataFrame<'_, &[u8]>) -> Option<()> {
+    fn handle_data_rx(&mut self, data_frame: DataFrame<'_, &[u8]>, mpdu: &[u8]) -> Option<()> {
+        // E2's F6: once the station holds keys, an unprotected data frame is
+        // anyone's; FoA passed them up to the network stack
+        #[cfg(feature = "rsn")]
+        if !sta_handshake::data_frame_admitted(
+            self.sta_tx_rx.rsna_activated(),
+            data_frame.header.fcf_flags.protected(),
+        ) {
+            trace!("Dropping an unprotected data frame.");
+            return None;
+        }
         let destination_address = data_frame.header.destination_address()?;
         let source_address = data_frame.header.source_address()?;
         let Some(payload) = self.process_potentially_wrapped_payload(
@@ -375,6 +491,18 @@ impl RoutingRunner<'_, '_> {
             info!("Dropping MSDU.");
             return None;
         };
+        // E2's F2: a protected EAPOL-Key frame (the group-key handshake
+        // after the join) reaches here, its PN checked above; it is the
+        // station's, not the network stack's
+        #[cfg(feature = "rsn")]
+        if let DataFrameReadPayload::Single(single) = &payload
+            && single
+                .pread::<SnapLlcFrame>(0)
+                .is_ok_and(|llc| llc.ether_type == llc_rs::EtherType::Eapol)
+        {
+            self.handle_group_key_frame(mpdu);
+            return Some(());
+        }
         match payload {
             DataFrameReadPayload::Single(payload) => {
                 self.handle_downlink_msdu(payload, *source_address, *destination_address)
@@ -437,10 +565,20 @@ impl RoutingRunner<'_, '_> {
             // To reduce latency, we process all data frames here directly, if we are connected.
             if self.sta_tx_rx.connection_state.connected() {
                 if generic_frame.is_eapol_key_frame() {
-                    // This distinction is here, since GTK rekeys will happen, and those frames
-                    // should go to the background task.
+                    // An unprotected EAPOL-Key frame after the join: a
+                    // group-key handshake from an access point that sends it
+                    // in the clear; its MIC still authenticates it (E2's F2)
                     if !self.sta_tx_rx.rsna_activated() {
                         debug!("Discarding EAPOL Key Frame, since RSNA isn't activated.");
+                    } else {
+                        #[cfg(feature = "rsn")]
+                        {
+                            self.handle_group_key_frame(borrowed_buffer.mpdu_buffer());
+                            if let Some(replay_counter) = self.group_reply.take() {
+                                self.send_group_reply(replay_counter).await;
+                            }
+                            continue;
+                        }
                     }
                 } else if let FrameType::Data(_) = generic_frame.frame_control_field().frame_type()
                 {
@@ -452,7 +590,11 @@ impl RoutingRunner<'_, '_> {
                     if self.sta_tx_rx.in_off_channel_operation() {
                         continue;
                     }
-                    self.handle_data_rx(data_frame);
+                    self.handle_data_rx(data_frame, borrowed_buffer.mpdu_buffer());
+                    #[cfg(feature = "rsn")]
+                    if let Some(replay_counter) = self.group_reply.take() {
+                        self.send_group_reply(replay_counter).await;
+                    }
                     continue;
                 }
             }

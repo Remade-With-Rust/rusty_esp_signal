@@ -249,6 +249,7 @@ pub fn new_sta_interface<'foa: 'vif, 'vif>(
                 sta_tx_rx,
                 interface_rx_endpoint,
                 rx_runner,
+                group_reply: None,
             },
         },
         net_device,

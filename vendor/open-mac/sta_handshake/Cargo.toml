@@ -1,0 +1,11 @@
+[package]
+name = "sta_handshake"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "The station's half of WPA2-PSK's 4-way and group-key handshakes as pure functions, for FoA's station and its host tests (Janus E2). Not Wi-Fi certified."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+ieee80211 = { version = "0.5.9", path = "../ieee80211", default-features = false, features = ["crypto"] }
+llc-rs = "0.1.3"

@@ -314,15 +314,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "open-mac-air-tests"
-version = "0.0.0"
-dependencies = [
- "ieee80211",
- "llc-rs",
- "sta_handshake",
-]
-
-[[package]]
 name = "pbkdf2"
 version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -28,6 +28,7 @@ embassy-net-driver = "0.2.0"
 
 portable-atomic = { version = "1.15.0", default-features = false }
 ieee80211 = { version = "0.5.9", path = "../ieee80211" }
+sta_handshake = { path = "../sta_handshake", optional = true }
 log = { version = "0.4.33", optional = true }
 defmt = { version = "1.1.1", optional = true }
 defmt-or-log = { version = "0.2.3", default-features = false }
@@ -40,7 +41,8 @@ esp-config = { version = "0.8.0", features = ["build"] }
 # The S3 only (E1, H2; upstream: esp32, esp32s2)
 esp32s3 = ["foa/esp32s3", "esp-hal/esp32s3"]
 default = ["alloc", "wpa2"]
-rsn = ["ieee80211/crypto"]
+# E2: the handshakes' decisions in a crate the host tests build too
+rsn = ["ieee80211/crypto", "dep:sta_handshake"]
 wpa2 = ["rsn"]
 
 alloc = []

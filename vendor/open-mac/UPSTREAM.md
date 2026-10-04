@@ -106,6 +106,22 @@ esp-hal 1.1, esp-phy 0.2.0, esp-wifi-sys 0.2.0):
   Not changed, noted (E2's F10): the subframe length is read little-endian
   where 802.11 (as 802.3) is big-endian; FoA's station does not negotiate
   HT, so an access point sends it no A-MSDU.
+- `sta_handshake/` (ours, E2): the station's half of WPA2-PSK's 4-way and
+  group-key handshakes as pure functions (no hardware, no clock, no
+  randomness), so FoA's station and the host tests run one code. What it
+  requires of each message is in its crate docs.
+- `foa_sta/` on `sta_handshake` (E2's F1, F2, F3, F4, F6, F11):
+  `operations/connect.rs`'s 4-way handshake reads and writes its frames
+  through it (a GTK of any length but 16 bytes refused, where it panicked);
+  `runner.rs` takes a group-key handshake after the join (it had none: the
+  station did not answer a rekey), installs the new GTK
+  (`rsn.rs`'s `update_gtksa`, commented out upstream) with its starting RSC,
+  answers with message 2 protected under the PTK, refuses replayed group
+  messages, and drops unprotected data frames once keys are installed (it
+  passed them up to the network stack); no key material in any log line
+  (the handshake printed the PMK, KCK, KEK, TK and GTK at `debug`).
+  `host-tests/air/tests/handshake.rs` runs it against a simulated access
+  point.
 - `host-tests/air/tests/corpus.rs` (E2's A3): seeded mutations of synthetic
   frames and the crate's own published fixtures through the chain FoA's
   station runs; found F8 and F9 (58 and 2 panics in its first runs), clean

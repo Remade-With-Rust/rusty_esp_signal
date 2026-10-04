@@ -60,6 +60,12 @@ impl<const N: usize, const IS_PAIRWISE: bool> TransientKeySecurityAssociation<N,
             self.key.as_slice()
         }
     }
+    /// Start the replay window at `packet_number`: frames at or below it
+    /// are replays (E2's F11: a group key's starting RSC from the
+    /// handshake, where FoA started every window at 0).
+    pub fn set_replay_counter(&self, packet_number: u64) {
+        self.replay_counter.store(packet_number, Ordering::Relaxed);
+    }
     /// Get the next TX packet number for this TKSA.
     pub fn next_packet_number(&self) -> u64 {
         self.packet_number.fetch_add(1, Ordering::Relaxed)
@@ -92,6 +98,9 @@ pub(crate) struct SecurityAssociations {
     pub akm_suite: IEEE80211AkmType,
     /// The cipher suite.
     pub cipher_suite: IEEE80211CipherSuiteSelector,
+    /// The replay counter of the last MIC-verified EAPOL-Key frame (message
+    /// 3's, then each group message's): the next must be above it (E2's F3).
+    pub eapol_replay_counter: u64,
 }
 impl SecurityAssociations {
     pub fn pairwise_temporal_key(&self) -> &[u8] {
@@ -138,13 +147,15 @@ impl<'foa> CryptoState<'foa> {
         temp.update_key_slot(true, bssid);
         temp
     }
-    /*
-    pub fn update_gtksa(&mut self, gtk: &[u8; 16], gtk_key_id: u8, bssid: [u8; 6]) {
-        self.security_associations.gtksa.key.copy_from_slice(gtk);
-        self.security_associations.gtksa.key_id = gtk_key_id;
+    /// Install a new group key from a group-key handshake (E2's F2: FoA
+    /// had this commented out, and no handshake to call it).
+    pub fn update_gtksa(&mut self, gtk: &sta_handshake::GroupKey, bssid: [u8; 6]) {
+        self.security_associations.gtksa.key.copy_from_slice(&gtk.key);
+        self.security_associations.gtksa.key_id = gtk.key_id;
+        self.security_associations.gtksa.set_replay_counter(gtk.rsc);
+        self.security_associations.eapol_replay_counter = gtk.replay_counter;
         self.update_key_slot(true, bssid);
     }
-    */
     fn update_key_slot(&mut self, group: bool, bssid: [u8; 6]) {
         let (key_slot, tk, key_id, key_type) = if group {
             (
@@ -161,7 +172,6 @@ impl<'foa> CryptoState<'foa> {
                 KeyType::Pairwise,
             )
         };
-        debug!("TK: {}", HexWrapper(tk));
         key_slot
             .set_key(
                 key_id,
