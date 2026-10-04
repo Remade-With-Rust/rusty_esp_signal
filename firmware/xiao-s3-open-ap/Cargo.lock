@@ -2431,6 +2431,8 @@ dependencies = [
  "esp-rtos",
  "esp-wifi-hal",
  "foa",
+ "ieee80211",
+ "sta_handshake",
  "static_cell",
 ]
 
@@ -2466,6 +2468,14 @@ dependencies = [
 ]
 
 [[patch.unused]]
+name = "rusty_esp_mid-core"
+version = "0.1.2"
+
+[[patch.unused]]
+name = "rusty_esp_mid-esp"
+version = "0.1.2"
+
+[[patch.unused]]
 name = "rusty_esp_alloc"
 version = "0.1.2"
 
@@ -2476,11 +2486,3 @@ version = "0.1.2"
 [[patch.unused]]
 name = "rusty_esp_dsp"
 version = "0.1.1"
-
-[[patch.unused]]
-name = "rusty_esp_mid-core"
-version = "0.1.2"
-
-[[patch.unused]]
-name = "rusty_esp_mid-esp"
-version = "0.1.2"

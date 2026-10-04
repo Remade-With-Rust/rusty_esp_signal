@@ -14,6 +14,13 @@ bench = false
 doctest = false
 
 [[bin]]
+name = "wpa2-ap"
+path = "src/bin/wpa2_ap.rs"
+test = false
+bench = false
+doctest = false
+
+[[bin]]
 name = "open-ap"
 path = "src/bin/open_ap.rs"
 test = false
@@ -44,6 +51,9 @@ edge-nal-embassy = { version = "0.9", default-features = false, features = ["pro
 foa = { path = "../../vendor/open-mac/foa", features = ["esp32s3"] }
 esp-wifi-hal = { path = "../../vendor/open-mac/esp-wifi-hal", features = ["esp32s3"] }
 ap_core = { path = "../../vendor/open-mac/ap_core" }
+# P4b: the PMK from the passphrase, the station-side key types
+ieee80211 = { version = "0.5.9", path = "../../vendor/open-mac/ieee80211", default-features = false, features = ["crypto"] }
+sta_handshake = { path = "../../vendor/open-mac/sta_handshake" }
 
 [profile.release]
 opt-level = "s"
