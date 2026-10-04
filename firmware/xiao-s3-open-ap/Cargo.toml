@@ -13,6 +13,13 @@ test = false
 bench = false
 doctest = false
 
+[[bin]]
+name = "open-ap"
+path = "src/bin/open_ap.rs"
+test = false
+bench = false
+doctest = false
+
 [dependencies]
 # No esp-radio: the MAC is the vendored esp-wifi-hal and FoA's lower MAC;
 # the access point's logic is ap_core (E3 P2); esp-rtos is embassy's time.
@@ -26,6 +33,13 @@ embassy-executor = "0.10"
 embassy-time = "0.5"
 embassy-futures = "0.1"
 static_cell = "2"
+# P4: the access point's own IP stack and the DHCP server its stations ask
+embassy-net = { version = "0.9", default-features = false, features = ["proto-ipv4", "udp", "tcp", "icmp", "medium-ethernet", "auto-icmp-echo-reply"] }
+embassy-net-driver = "0.2"
+embassy-net-driver-channel = "0.4"
+edge-dhcp = { version = "0.8", default-features = false, features = ["io"] }
+edge-nal = "0.7"
+edge-nal-embassy = { version = "0.9", default-features = false, features = ["proto-ipv4", "udp", "medium-ethernet"] }
 
 foa = { path = "../../vendor/open-mac/foa", features = ["esp32s3"] }
 esp-wifi-hal = { path = "../../vendor/open-mac/esp-wifi-hal", features = ["esp32s3"] }
