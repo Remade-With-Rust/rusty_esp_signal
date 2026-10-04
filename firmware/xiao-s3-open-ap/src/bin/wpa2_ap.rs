@@ -14,7 +14,14 @@
 //! holding something to hold, the access point pings its station itself,
 //! twice a second, once it has seen the station's address: the only
 //! downlink traffic a quiet station gets, and its round trip measures what
-//! dozing costs. **Not Wi-Fi certified.**
+//! dozing costs. The group key rotates (E3's P6, the mirror of
+//! E2's F15): on a schedule (`JANUS_REKEY_S` at build time, an hour by
+//! default) and whenever a station that held it leaves; the new key goes
+//! into the spare of two key slots, every connected station gets it by a
+//! group-key handshake protected under its pairwise key, and group frames
+//! switch to it once all have answered (a station that never answers is
+//! deauthenticated, reason 16). A station joining mid-rotation is handed the
+//! key about to be used. **Not Wi-Fi certified.**
 //!
 //! The passphrase is `JANUS_AP_PASS` at build time and nowhere else:
 //! `tools/e3-p4b.py` makes a fresh one for each run, in memory, for this
@@ -74,6 +81,12 @@ const INACTIVITY_US: u64 = 300_000_000;
 const HANDSHAKE_RESEND_US: u64 = 1_000_000;
 const HANDSHAKE_RESENDS: u8 = 3;
 const GTK_KEY_ID: u8 = 1;
+/// How often the group key rotates, from the build's environment (seconds;
+/// the bench runs set it short), an hour otherwise.
+fn rekey_interval_us() -> u64 {
+    let secs: u64 = option_env!("JANUS_REKEY_S").and_then(|s| s.parse().ok()).unwrap_or(3600);
+    secs.max(10) * 1_000_000
+}
 const SNAP: [u8; 6] = [0xaa, 0xaa, 0x03, 0, 0, 0];
 const EAPOL: [u8; 2] = [0x88, 0x8e];
 
@@ -93,6 +106,14 @@ static WAKES: AtomicU32 = AtomicU32::new(0);
 /// The station's IPv4 address, from the first IPv4 frame it sent (0: none
 /// yet); the access point's own pings go there.
 static PING_TARGET: AtomicU32 = AtomicU32::new(0);
+static REKEYS: AtomicU32 = AtomicU32::new(0);
+static REKEY_MESSAGES: AtomicU32 = AtomicU32::new(0);
+static REKEY_UNACKED: AtomicU32 = AtomicU32::new(0);
+static REKEY_CONFIRMED: AtomicU32 = AtomicU32::new(0);
+static REKEY_TIMEOUTS: AtomicU32 = AtomicU32::new(0);
+/// ARP frames from stations: each one answers a group-addressed request of
+/// ours, so they say the station decrypts under the group key in use.
+static ARP_UP: AtomicU32 = AtomicU32::new(0);
 static PINGS_SENT: AtomicU32 = AtomicU32::new(0);
 static PINGS_ANSWERED: AtomicU32 = AtomicU32::new(0);
 static PING_RTT_SUM_MS: AtomicU32 = AtomicU32::new(0);
@@ -223,6 +244,8 @@ enum Stage {
     SentMessage1,
     SentMessage3,
     Done,
+    /// A group-key handshake's message 1 sent; message 2 awaited.
+    SentGroupMessage1,
 }
 
 /// A station's security association as the access point keeps it.
@@ -235,6 +258,9 @@ struct Peer {
     key_slot: Option<KeySlot<'static>>,
     tx_packet_number: u64,
     rx_packet_number: u64,
+    /// A group-key handshake's message 1 waits for this dozing station to
+    /// wake (its AID is in the TIM meanwhile).
+    group_key_wanted: bool,
 }
 
 struct AccessPoint {
@@ -244,9 +270,16 @@ struct AccessPoint {
     stations: Stations,
     peers: [Option<Peer>; MAX_STATIONS],
     pmk: [u8; 32],
+    /// The group key group frames go out under.
     gtk: GroupKey,
-    gtk_slot: KeySlot<'static>,
+    /// The next group key, while stations are being handed it.
+    pending_gtk: Option<GroupKey>,
+    /// Two key slots: the key in use and the one about to be.
+    gtk_slots: [KeySlot<'static>; 2],
+    gtk_slot_in_use: usize,
     group_packet_number: u64,
+    rekey_at_us: u64,
+    rekey_due: bool,
     held: &'static mut Held,
 }
 
@@ -258,6 +291,10 @@ impl AccessPoint {
     fn forget(&mut self, address: &Address) {
         for slot in self.peers.iter_mut() {
             if slot.as_ref().is_some_and(|p| p.address == *address) {
+                // a station that held the group key is gone: the key goes too
+                if slot.as_ref().is_some_and(|p| p.key_slot.is_some()) {
+                    self.rekey_due = true;
+                }
                 // its key slot is released (FoA deletes the key) as it drops
                 *slot = None;
             }
@@ -266,6 +303,14 @@ impl AccessPoint {
         if self.stations.remove(address).is_some() && self.stations.iter().next().is_none() {
             PING_TARGET.store(0, Ordering::Relaxed);
         }
+    }
+
+    /// The TIM's count for a station: frames held for it, and a group-key
+    /// message waiting for its wake.
+    fn refresh_queued(&mut self, station: &Address) {
+        let waiting = self.peer(station).is_some_and(|p| p.group_key_wanted);
+        let n = self.held.count(station) + u16::from(waiting);
+        self.stations.set_queued(station, n);
     }
 
     fn anyone_dozing(&self) -> bool {
@@ -294,8 +339,7 @@ impl AccessPoint {
                     GROUP_HELD.fetch_add(1, Ordering::Relaxed);
                 } else {
                     HELD.fetch_add(1, Ordering::Relaxed);
-                    let n = self.held.count(&to);
-                    self.stations.set_queued(&to, n);
+                    self.refresh_queued(&to);
                 }
             }
             Err(_) => {
@@ -307,23 +351,209 @@ impl AccessPoint {
     /// One held frame to a station that asked (PS-Poll), More Data set
     /// while more wait.
     async fn release_one(&mut self, station: Address) {
+        if self.peer(&station).is_some_and(|p| p.group_key_wanted) {
+            if let Some(p) = self.peer(&station) {
+                p.group_key_wanted = false;
+            }
+            self.refresh_queued(&station);
+            self.transmit_group_message_1(station).await;
+            return;
+        }
         let mut copy = [0u8; ap_core::hold::HELD_FRAME_BYTES];
         let Some((taken, more)) = self.held.pop(&station) else {
             return;
         };
         let n = taken.frame.len();
         copy[..n].copy_from_slice(taken.frame);
-        let left = self.held.count(&station);
-        self.stations.set_queued(&station, left);
         RELEASED.fetch_add(1, Ordering::Relaxed);
+        self.refresh_queued(&station);
         self.transmit(&copy[..n], more).await;
     }
 
     /// Every held frame to a station that woke (the Power Management bit
     /// clear).
     async fn release_all(&mut self, station: Address) {
-        while self.held.count(&station) > 0 {
+        while self.held.count(&station) > 0 || self.peer(&station).is_some_and(|p| p.group_key_wanted) {
             self.release_one(station).await;
+        }
+    }
+
+    fn new_group_key(key_id: u8) -> GroupKey {
+        let mut key = [0u8; 16];
+        Rng::new().read(&mut key);
+        GroupKey {
+            key,
+            key_id,
+            rsc: 0,
+            replay_counter: 0,
+        }
+    }
+
+    /// A new group key: into the spare key slot, then to every connected
+    /// station by a group-key handshake; group frames switch to it once all
+    /// have answered (`finish_rekey_if_done`).
+    async fn begin_rekey(&mut self, now: u64) {
+        self.rekey_due = false;
+        self.rekey_at_us = now + rekey_interval_us();
+        if self.pending_gtk.is_some() {
+            return;
+        }
+        let key_id = if self.gtk.key_id == 1 { 2 } else { 1 };
+        let gtk = Self::new_group_key(key_id);
+        let spare = 1 - self.gtk_slot_in_use;
+        if self.gtk_slots[spare]
+            .set_key(key_id, self.bss.bssid, ccmp(&gtk.key, KeyType::Group))
+            .is_err()
+        {
+            println!("open-ap: the spare key slot refused the group key");
+            return;
+        }
+        self.pending_gtk = Some(gtk);
+        let connected: [Option<Address>; MAX_STATIONS] = core::array::from_fn(|i| {
+            self.peers[i]
+                .as_ref()
+                .filter(|p| p.stage == Stage::Done)
+                .map(|p| p.address)
+        });
+        for station in connected.into_iter().flatten() {
+            if let Some(p) = self.peer(&station) {
+                p.resends = 0;
+            }
+            self.send_group_message_1(station).await;
+        }
+        self.finish_rekey_if_done();
+    }
+
+    /// Every station has the pending key (or is gone): group frames go
+    /// out under it from here.
+    fn finish_rekey_if_done(&mut self) {
+        let Some(gtk) = self.pending_gtk else {
+            return;
+        };
+        if self.peers.iter().flatten().any(|p| p.stage == Stage::SentGroupMessage1) {
+            return;
+        }
+        self.pending_gtk = None;
+        self.gtk = gtk;
+        self.gtk_slot_in_use = 1 - self.gtk_slot_in_use;
+        self.group_packet_number = 0;
+        REKEYS.fetch_add(1, Ordering::Relaxed);
+        println!("open-ap: group key rotated to key id {}", gtk.key_id);
+    }
+
+    /// A group-key handshake's message 1 to a station: now if it is awake;
+    /// for a dozing one it waits, its AID in the TIM, and goes when the
+    /// station wakes or polls (like any frame for it: P5), with no resend
+    /// timer running meanwhile.
+    async fn send_group_message_1(&mut self, station: Address) {
+        if self.stations.get(&station).is_some_and(|s| s.power_save) {
+            if let Some(p) = self.peer(&station) {
+                p.stage = Stage::SentGroupMessage1;
+                p.group_key_wanted = true;
+                p.sent_at_us = u64::MAX;
+            }
+            self.refresh_queued(&station);
+            return;
+        }
+        self.transmit_group_message_1(station).await;
+    }
+
+    /// The group-key handshake's message 1 on the air: the pending key,
+    /// protected under the station's pairwise key.
+    async fn transmit_group_message_1(&mut self, station: Address) {
+        let bssid = self.bss.bssid;
+        let Some(gtk) = self.pending_gtk else {
+            if let Some(p) = self.peer(&station) {
+                // the rotation finished without this station (it was dropped
+                // and came back): nothing to hand it
+                if p.stage == Stage::SentGroupMessage1 {
+                    p.stage = Stage::Done;
+                }
+            }
+            return;
+        };
+        let Some(peer) = self.peer(&station) else {
+            return;
+        };
+        let Some(keys) = peer.authenticator.keys.clone() else {
+            return;
+        };
+        let Some(slot) = peer.key_slot.as_ref().map(KeySlot::key_slot) else {
+            return;
+        };
+        let replay = peer.authenticator.next_replay_counter();
+        peer.tx_packet_number += 1;
+        let packet_number = peer.tx_packet_number;
+        peer.stage = Stage::SentGroupMessage1;
+        peer.sent_at_us = Instant::now().as_micros();
+        let mut buf = self.tx.alloc_tx_buf().await;
+        let mut scratch = [0u8; 512];
+        let Ok(n) = handshake::write_group_message_1(
+            &mut buf[..],
+            &mut scratch,
+            bssid,
+            station,
+            &keys,
+            replay,
+            &gtk,
+            packet_number,
+            0,
+        ) else {
+            return;
+        };
+        let done = self
+            .tx
+            .transmit_edca(
+                EdcaAccessCategory::default(),
+                buf,
+                n,
+                plcp(TxPhyRate::Ofdm(OfdmRate::Mbits24)),
+                TxMacParameters {
+                    key_slot_index: Some(slot as u8),
+                    wait_for_ack: true,
+                    override_seq_num: true,
+                    ..Default::default()
+                },
+                RetryBehaviour::RetryUntil(4),
+            )
+            .wait_for_completion()
+            .await;
+        REKEY_MESSAGES.fetch_add(1, Ordering::Relaxed);
+        if !matches!(done, Some(d) if d.result.is_ok()) {
+            REKEY_UNACKED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// A protected EAPOL-Key frame from a station, decrypted by the
+    /// hardware and unwrapped: a group-key handshake's message 2.
+    async fn group_eapol(&mut self, station: Address, plain: &mut [u8]) {
+        let confirmed = {
+            let Some(peer) = self.peer(&station) else {
+                return;
+            };
+            if peer.stage != Stage::SentGroupMessage1 {
+                return;
+            }
+            let replay = peer.authenticator.replay_counter;
+            let Some(keys) = peer.authenticator.keys.clone() else {
+                return;
+            };
+            match handshake::read_group_message_2(plain, &keys, replay) {
+                Ok(()) => {
+                    peer.stage = Stage::Done;
+                    peer.resends = 0;
+                    true
+                }
+                Err(why) => {
+                    HANDSHAKE_REFUSED.fetch_add(1, Ordering::Relaxed);
+                    println!("open-ap: group message 2 from {:02x?} refused: {:?}", station, why);
+                    false
+                }
+            }
+        };
+        if confirmed {
+            REKEY_CONFIRMED.fetch_add(1, Ordering::Relaxed);
+            self.finish_rekey_if_done();
         }
     }
 
@@ -382,7 +612,7 @@ impl AccessPoint {
     }
 
     async fn send_message_3(&mut self, station: Address) {
-        let (bssid, gtk) = (self.bss.bssid, self.gtk);
+        let (bssid, gtk) = (self.bss.bssid, self.pending_gtk.unwrap_or(self.gtk));
         let Some(peer) = self.peer(&station) else {
             return;
         };
@@ -413,6 +643,7 @@ impl AccessPoint {
                 key_slot: None,
                 tx_packet_number: 1,
                 rx_packet_number: 0,
+                group_key_wanted: false,
             });
             self.send_message_1(station).await;
         }
@@ -470,7 +701,7 @@ impl AccessPoint {
                 HANDSHAKES.fetch_add(1, Ordering::Relaxed);
                 println!("open-ap: {:02x?} keys installed: connected", station);
             }
-            Stage::Done => {}
+            Stage::Done | Stage::SentGroupMessage1 => {}
         }
     }
 
@@ -486,12 +717,22 @@ impl AccessPoint {
             return;
         };
         if resends >= HANDSHAKE_RESENDS {
-            HANDSHAKE_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
-            println!("open-ap: {:02x?} handshake timed out", station);
+            let group = stage == Stage::SentGroupMessage1;
+            if group {
+                REKEY_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+            } else {
+                HANDSHAKE_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+            }
+            println!("open-ap: {:02x?} {} handshake timed out", station, if group { "group-key" } else { "4-way" });
             self.forget(&station);
             let b = self.bss.bssid;
-            self.reply(|out, _| frames::deauthentication(out, b, station, reason::FOURWAY_HANDSHAKE_TIMEOUT))
-                .await;
+            let why = if group {
+                reason::GROUP_KEY_HANDSHAKE_TIMEOUT
+            } else {
+                reason::FOURWAY_HANDSHAKE_TIMEOUT
+            };
+            self.reply(|out, _| frames::deauthentication(out, b, station, why)).await;
+            self.finish_rekey_if_done();
             return;
         }
         if let Some(p) = self.peer(&station) {
@@ -501,6 +742,7 @@ impl AccessPoint {
         match stage {
             Stage::SentMessage1 => self.send_message_1(station).await,
             Stage::SentMessage3 => self.send_message_3(station).await,
+            Stage::SentGroupMessage1 => self.send_group_message_1(station).await,
             Stage::Done => {}
         }
     }
@@ -520,7 +762,7 @@ impl AccessPoint {
         let group = is_group(&to);
         let (slot, key_id, packet_number) = if group {
             self.group_packet_number += 1;
-            (self.gtk_slot.key_slot(), GTK_KEY_ID, self.group_packet_number)
+            (self.gtk_slots[self.gtk_slot_in_use].key_slot(), self.gtk.key_id, self.group_packet_number)
         } else {
             let Some(peer) = self.peer(&to) else {
                 return;
@@ -675,7 +917,9 @@ impl AccessPoint {
             // access point's side)
             let llc = f.get(header..header + 8);
             if llc.is_some_and(|l| l[..6] == SNAP && l[6..8] == EAPOL)
-                && self.peer(&station).is_some_and(|p| p.stage != Stage::Done)
+                && self
+                    .peer(&station)
+                    .is_some_and(|p| matches!(p.stage, Stage::SentMessage1 | Stage::SentMessage3))
             {
                 self.eapol(station, f).await;
             } else {
@@ -692,8 +936,8 @@ impl AccessPoint {
         let Some(peer) = self.peer(&station) else {
             return;
         };
-        if peer.stage != Stage::Done {
-            return;
+        if peer.key_slot.is_none() {
+            return; // no keys yet: nothing protected can be from it
         }
         if packet_number <= peer.rx_packet_number {
             REPLAYS.fetch_add(1, Ordering::Relaxed);
@@ -709,6 +953,18 @@ impl AccessPoint {
         }
         let ether_type = [llc[6], llc[7]];
         let payload_at = body + 8;
+        if ether_type == EAPOL {
+            // a group-key handshake's message 2, as the station-side
+            // unprotect lays a decrypted frame out
+            let mut plain = [0u8; 512];
+            if let Some(n) = sta_handshake::unprotect(f, &mut plain) {
+                self.group_eapol(station, &mut plain[..n]).await;
+            }
+            return;
+        }
+        if ether_type == [0x08, 0x06] {
+            ARP_UP.fetch_add(1, Ordering::Relaxed);
+        }
         UP_FRAMES.fetch_add(1, Ordering::Relaxed);
         // the station's address, for the access point's own pings
         if ether_type == [0x08, 0x00] {
@@ -822,8 +1078,11 @@ async fn main(spawner: Spawner) {
         rsc: 0,
         replay_counter: 0,
     };
-    let mut gtk_slot = control.acquire_key_slot().expect("a key slot for the group key");
-    gtk_slot
+    let mut gtk_slots = [
+        control.acquire_key_slot().expect("a key slot for the group key"),
+        control.acquire_key_slot().expect("a key slot for the next group key"),
+    ];
+    gtk_slots[0]
         .set_key(GTK_KEY_ID, bssid, ccmp(&gtk.key, KeyType::Group))
         .expect("the group key");
 
@@ -858,10 +1117,15 @@ async fn main(spawner: Spawner) {
         peers: [const { None }; MAX_STATIONS],
         pmk,
         gtk,
-        gtk_slot,
+        pending_gtk: None,
+        gtk_slots,
+        gtk_slot_in_use: 0,
         group_packet_number: 0,
+        rekey_at_us: Instant::now().as_micros() + rekey_interval_us(),
+        rekey_due: false,
         held: HELD_FRAMES.take(),
     };
+    println!("open-ap: group key rotates every {} s", rekey_interval_us() / 1_000_000);
     println!(
         "open-ap: hosting ssid=janus-e3-wpa2 (WPA2-PSK, CCMP) channel={CHANNEL} bssid={:02x?} address={ADDRESS} init_ms={}",
         bssid,
@@ -913,6 +1177,10 @@ async fn main(spawner: Spawner) {
                     ap.release_group().await;
                 }
                 ap.resend_due().await;
+                let now_us = Instant::now().as_micros();
+                if ap.rekey_due || now_us >= ap.rekey_at_us {
+                    ap.begin_rekey(now_us).await;
+                }
             }
             Either3::Second(received) => {
                 let bytes = received.mpdu_buffer();
@@ -948,7 +1216,7 @@ async fn main(spawner: Spawner) {
                 ap.reply(|out, _| frames::deauthentication(out, b, gone, reason::INACTIVITY)).await;
             }
             println!(
-                "open-ap: up_s={} stations={} beacons={} beacon_failures={} replies={} unacked={} handshakes={} resent={} refused={} timeouts={} up={} down={} forwarded={} plaintext_dropped={} replays={} held={} held_dropped={} released={} group_held={} ps_polls={} wakes={} dozing_now={} strangers={} ap_pings={}/{} rtt_avg_ms={} rtt_max_ms={}",
+                "open-ap: up_s={} stations={} beacons={} beacon_failures={} replies={} unacked={} handshakes={} resent={} refused={} timeouts={} up={} down={} forwarded={} plaintext_dropped={} replays={} held={} held_dropped={} released={} group_held={} ps_polls={} wakes={} dozing_now={} strangers={} ap_pings={}/{} rtt_avg_ms={} rtt_max_ms={} rekeys={} rekey_msgs={} rekey_unacked={} rekey_confirmed={} rekey_timeouts={} arp_up={}",
                 started.elapsed().as_secs(),
                 ap.stations.iter().count(),
                 BEACONS.load(Ordering::Relaxed),
@@ -976,6 +1244,12 @@ async fn main(spawner: Spawner) {
                 PINGS_SENT.load(Ordering::Relaxed),
                 PING_RTT_SUM_MS.load(Ordering::Relaxed) / PINGS_ANSWERED.load(Ordering::Relaxed).max(1),
                 PING_RTT_MAX_MS.load(Ordering::Relaxed),
+                REKEYS.load(Ordering::Relaxed),
+                REKEY_MESSAGES.load(Ordering::Relaxed),
+                REKEY_UNACKED.load(Ordering::Relaxed),
+                REKEY_CONFIRMED.load(Ordering::Relaxed),
+                REKEY_TIMEOUTS.load(Ordering::Relaxed),
+                ARP_UP.load(Ordering::Relaxed),
             );
         }
     }
