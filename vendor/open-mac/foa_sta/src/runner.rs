@@ -401,10 +401,12 @@ impl RoutingRunner<'_, '_> {
             match sta_handshake::read_group_message_1(&mut plain[..length], &keys, &mut scratch, floor) {
                 Ok(gtk) => {
                     crypto_state.update_gtksa(&gtk, bssid);
+                    GROUP_REKEYS.fetch_add(1, Ordering::Relaxed);
                     debug!("Group key handshake: GTK key ID {} installed.", gtk.key_id);
                     Some(gtk.replay_counter)
                 }
                 Err(refusal) => {
+                    GROUP_REFUSED.fetch_add(1, Ordering::Relaxed);
                     debug!("Group key message refused: {:?}", defmt_or_log::Debug2Format(&refusal));
                     None
                 }
@@ -479,6 +481,7 @@ impl RoutingRunner<'_, '_> {
             self.sta_tx_rx.rsna_activated(),
             data_frame.header.fcf_flags.protected(),
         ) {
+            UNPROTECTED_DROPPED.fetch_add(1, Ordering::Relaxed);
             trace!("Dropping an unprotected data frame.");
             return None;
         }
@@ -628,6 +631,22 @@ impl StaRunner<'_, '_> {
 /// attempts: a good link sends at the station's rate, a poor one ends where
 /// upstream always was, with one more try. Other rates keep upstream's
 /// behaviour.
+/// E2's counters: group rekeys taken and refused, unprotected data frames
+/// dropped after the join (F2, F6). The board's evidence for B1.
+static GROUP_REKEYS: AtomicU32 = AtomicU32::new(0);
+static GROUP_REFUSED: AtomicU32 = AtomicU32::new(0);
+static UNPROTECTED_DROPPED: AtomicU32 = AtomicU32::new(0);
+
+/// Group-key handshakes taken, group-key messages refused, and unprotected
+/// data frames dropped after keys were installed, since boot.
+pub fn air_stats() -> (u32, u32, u32) {
+    (
+        GROUP_REKEYS.load(Ordering::Relaxed),
+        GROUP_REFUSED.load(Ordering::Relaxed),
+        UNPROTECTED_DROPPED.load(Ordering::Relaxed),
+    )
+}
+
 /// The 802.11g rates, fastest first.
 const LADDER: [foa::esp_wifi_hal::rates::OfdmRate; 8] = {
     use foa::esp_wifi_hal::rates::OfdmRate::*;
