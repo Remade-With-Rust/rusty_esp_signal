@@ -1920,3 +1920,7 @@ laptop held on 5 GHz, against 456 in the afternoon's B1 with the same
 band: with these bursts the hotspot's own load shows in it, and the gap
 between 48 and 36 (85 % against 97 %) is now where any further rate gain
 lies. NOT Wi-Fi certified.
+
+## E3 of the experiments plan: the access point on the open MAC, from the bench to a cell (2026-10-04)
+
+The bench XIAO hosted a network from the open lower MAC through P3–P7 (beacons from the S3's soft-AP TSF, open and WPA2-PSK joins by the laptop, power save with the laptop dozing, group-key rotation, reconnects and a re-association after the access point reset itself, WMM and HT with Windows receiving at 72.2 Mbit/s), then the runner became a library: `rusty_esp_signal-open::access_point` (`hosted_stack` and its tasks in `hal::netstack`'s hosting shape; `stats()` for a watch line), `ap_core` under it (host tests, an independent Python check, `hold` for dozing stations, `qos` for WMM/HT). `rusty_esp_signal-esp` gained `udp-link`: the mID link over UDP on any embassy-net stack with no esp-radio behind it. FoA's receive queue length was the literal `2` in its interface transmute (fixed: `RX_QUEUE_LEN`). C16 — the camera cell hosting its own network on this, esp-radio absent — passed X9's kill test on the XIAO on run 7 (the umbrella's `docs/plans/e3-access-point.md`, P8). NOT Wi-Fi certified.
