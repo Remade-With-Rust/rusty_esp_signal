@@ -69,7 +69,11 @@ impl Held {
         if frame.len() < 14 || frame.len() > HELD_FRAME_BYTES {
             return Err(Full);
         }
-        let slot = self.slots.iter_mut().find(|s| s.sequence == 0).ok_or(Full)?;
+        let slot = self
+            .slots
+            .iter_mut()
+            .find(|s| s.sequence == 0)
+            .ok_or(Full)?;
         slot.sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.wrapping_add(1).max(1);
         slot.group = group;
@@ -123,7 +127,10 @@ impl Held {
     /// How many group frames wait (the TIM's group-buffered bit).
     #[must_use]
     pub fn group_count(&self) -> u16 {
-        self.slots.iter().filter(|s| s.sequence != 0 && s.group).count() as u16
+        self.slots
+            .iter()
+            .filter(|s| s.sequence != 0 && s.group)
+            .count() as u16
     }
 
     /// Frames held for a station that left: dropped; how many.

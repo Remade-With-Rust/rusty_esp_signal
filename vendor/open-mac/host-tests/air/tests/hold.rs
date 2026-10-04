@@ -1,7 +1,7 @@
 //! E3's P5: the frames held for dozing stations (`ap_core::hold`), oldest
 //! first per station, the group frames apart, a full pool refusing.
 
-use ap_core::hold::{Full, HELD_FRAMES, HELD_FRAME_BYTES, Held};
+use ap_core::hold::{Full, HELD_FRAME_BYTES, HELD_FRAMES, Held};
 
 const A: [u8; 6] = [2, 0, 0, 0, 0, 0xa];
 const B: [u8; 6] = [2, 0, 0, 0, 0, 0xb];
@@ -65,7 +65,8 @@ fn group_frames_are_kept_apart() {
 fn a_full_pool_refuses_and_a_leaving_station_frees_its_frames() {
     let mut held = Held::new();
     for i in 0..HELD_FRAMES {
-        held.push(&eth(if i % 2 == 0 { A } else { B }, i as u8, 100), false).unwrap();
+        held.push(&eth(if i % 2 == 0 { A } else { B }, i as u8, 100), false)
+            .unwrap();
     }
     assert_eq!(held.free(), 0);
     assert_eq!(held.push(&eth(A, 0xee, 10), false), Err(Full));
@@ -82,8 +83,15 @@ fn a_full_pool_refuses_and_a_leaving_station_frees_its_frames() {
 #[test]
 fn frame_sizes_are_bounded() {
     let mut held = Held::new();
-    assert_eq!(held.push(&[0u8; 13], false), Err(Full), "shorter than an Ethernet header");
-    assert_eq!(held.push(&vec![0u8; HELD_FRAME_BYTES + 1], false), Err(Full));
+    assert_eq!(
+        held.push(&[0u8; 13], false),
+        Err(Full),
+        "shorter than an Ethernet header"
+    );
+    assert_eq!(
+        held.push(&vec![0u8; HELD_FRAME_BYTES + 1], false),
+        Err(Full)
+    );
     held.push(&vec![0u8; HELD_FRAME_BYTES], true).unwrap();
     assert_eq!(held.pop_group().unwrap().0.frame.len(), HELD_FRAME_BYTES);
 }
