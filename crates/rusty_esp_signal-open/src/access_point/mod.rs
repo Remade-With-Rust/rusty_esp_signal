@@ -1209,8 +1209,10 @@ pub fn hosted_stack<const SOCK: usize>(
         .set_key(GTK_KEY_ID, bssid, ccmp(&gtk.key, KeyType::Group))
         .expect("the group key");
 
-    // 16 frames up: a bridge bursts a 16-chunk window onto the wire (E3's C16)
-    let state = mk_static!(ch::State<MTU, 16, 8>, ch::State::new());
+    // 8 frames each way: a bridge's 16-chunk window does not fit, and its
+    // go-back-N carries the loss; 16 cost 12 KB of .bss, which on the S3 is
+    // the main stack's (E3's C16, run 6: the stack guard tripped at boot)
+    let state = mk_static!(ch::State<MTU, 8, 8>, ch::State::new());
     let (net_runner, device) = ch::new(state, HardwareAddress::Ethernet(bssid));
     let (state_runner, up, down) = net_runner.split();
     state_runner.set_link_state(LinkState::Up);
