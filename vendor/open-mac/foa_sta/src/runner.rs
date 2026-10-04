@@ -487,13 +487,10 @@ impl RoutingRunner<'_, '_> {
         }
         let ether_type = data_frame
             .payload
-            .filter(|_| header.subtype.has_payload())
             .and_then(|payload| payload.pread::<SnapLlcFrame>(0).ok())
             .map_or(0, |llc| u16::from(llc.ether_type));
         DROPPED_LAST_ETHER_TYPE.store(u32::from(ether_type), Ordering::Relaxed);
-        if !header.subtype.has_payload() {
-            DROPPED_NO_PAYLOAD.fetch_add(1, Ordering::Relaxed);
-        } else if header.address_1.is_multicast() {
+        if header.address_1.is_multicast() {
             DROPPED_GROUP.fetch_add(1, Ordering::Relaxed);
         } else {
             DROPPED_UNICAST.fetch_add(1, Ordering::Relaxed);
@@ -501,6 +498,14 @@ impl RoutingRunner<'_, '_> {
     }
     /// Forward a received data frame to higher layers.
     fn handle_data_rx(&mut self, data_frame: DataFrame<'_, &[u8]>, mpdu: &[u8]) -> Option<()> {
+        // A Null or QoS Null frame carries no payload and is never protected:
+        // nothing goes up, and it is no refusal. The owner's hotspot sends the
+        // station one every 10 s (its keep-alive); they were all of the 348
+        // "unprotected frames dropped" in B1's hour (E2, 2026-10-03)
+        if !data_frame.header.subtype.has_payload() {
+            NULL_FRAMES.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
         // E2's F6: once the station holds keys, an unprotected data frame is
         // anyone's; FoA passed them up to the network stack
         #[cfg(feature = "rsn")]
@@ -657,24 +662,28 @@ impl StaRunner<'_, '_> {
 static GROUP_REKEYS: AtomicU32 = AtomicU32::new(0);
 static GROUP_REFUSED: AtomicU32 = AtomicU32::new(0);
 static UNPROTECTED_DROPPED: AtomicU32 = AtomicU32::new(0);
-/// The dropped frames by kind (E2, F6's loose end): no payload (Null,
-/// QoS Null and the CF ones: nothing would have gone up anyway), with a
-/// payload to a unicast address, with a payload to a group address; sent by
-/// another transmitter than the access point; and the last one's subtype
-/// (the 4-bit field) and LLC ether type (0 when it had none).
-static DROPPED_NO_PAYLOAD: AtomicU32 = AtomicU32::new(0);
+/// Null and QoS Null data frames received (no payload; not refusals).
+static NULL_FRAMES: AtomicU32 = AtomicU32::new(0);
+/// The dropped frames, all with a payload, by kind (E2, F6): to a unicast
+/// address, to a group address; sent by another transmitter than the
+/// access point; and the last one's subtype (the 4-bit field) and LLC
+/// ether type.
 static DROPPED_UNICAST: AtomicU32 = AtomicU32::new(0);
 static DROPPED_GROUP: AtomicU32 = AtomicU32::new(0);
 static DROPPED_NOT_AP: AtomicU32 = AtomicU32::new(0);
 static DROPPED_LAST_SUBTYPE: AtomicU8 = AtomicU8::new(0);
 static DROPPED_LAST_ETHER_TYPE: AtomicU32 = AtomicU32::new(0);
 
-/// The unprotected data frames dropped since boot, by kind: (no payload,
-/// unicast with a payload, group-addressed with a payload, not from the
-/// access point, the last one's subtype, the last one's ether type).
-pub fn dropped_unprotected() -> (u32, u32, u32, u32, u8, u16) {
+/// Null and QoS Null data frames received since boot.
+pub fn null_frames() -> u32 {
+    NULL_FRAMES.load(Ordering::Relaxed)
+}
+
+/// The unprotected data frames with a payload dropped since boot, by kind:
+/// (unicast, group-addressed, not from the access point, the last one's
+/// subtype, the last one's ether type).
+pub fn dropped_unprotected() -> (u32, u32, u32, u8, u16) {
     (
-        DROPPED_NO_PAYLOAD.load(Ordering::Relaxed),
         DROPPED_UNICAST.load(Ordering::Relaxed),
         DROPPED_GROUP.load(Ordering::Relaxed),
         DROPPED_NOT_AP.load(Ordering::Relaxed),

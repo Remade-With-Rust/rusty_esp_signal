@@ -59,7 +59,7 @@ pub use control::*;
 mod bss;
 pub use bss::*;
 mod runner;
-pub use runner::{SAMPLE_EVERY, StaRunner, air_stats, dropped_unprotected, set_data_sample_rate};
+pub use runner::{SAMPLE_EVERY, StaRunner, air_stats, dropped_unprotected, null_frames, set_data_sample_rate};
 use runner::{ConnectionRunner, RoutingRunner};
 mod operations;
 mod rx_router;

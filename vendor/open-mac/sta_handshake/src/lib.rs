@@ -426,7 +426,9 @@ pub fn unprotect(mpdu: &[u8], out: &mut [u8]) -> Option<usize> {
     Some(length)
 }
 
-/// Whether a received data frame may go up to the network stack: once the
+/// Whether a received data frame with a payload may go up to the network
+/// stack (Null frames carry none and are never protected; the caller sets
+/// them aside first): once the
 /// station holds keys, only frames that came protected (E2's F6: FoA passed
 /// unprotected frames up after the join, so anyone in range could inject
 /// them). EAPOL-Key frames are taken apart before this, by the handshakes.

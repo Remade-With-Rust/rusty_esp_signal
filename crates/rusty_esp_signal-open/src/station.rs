@@ -89,12 +89,19 @@ pub fn air_stats() -> (u32, u32, u32) {
     foa_sta::air_stats()
 }
 
-/// The unprotected data frames the station dropped after the join, by
-/// kind (E2): no payload, unicast with one, group-addressed with one, not
-/// from the access point, the last one's subtype and ether type.
+/// The unprotected data frames with a payload the station dropped after
+/// the join, by kind (E2): unicast, group-addressed, not from the access
+/// point, the last one's subtype and ether type.
 #[must_use]
-pub fn dropped_unprotected() -> (u32, u32, u32, u32, u8, u16) {
+pub fn dropped_unprotected() -> (u32, u32, u32, u8, u16) {
     foa_sta::dropped_unprotected()
+}
+
+/// Null and QoS Null data frames received (the access point's keep-alives;
+/// no payload, never protected).
+#[must_use]
+pub fn null_frames() -> u32 {
+    foa_sta::null_frames()
 }
 
 /// The joins tried, the joins that succeeded, and why the last one that
