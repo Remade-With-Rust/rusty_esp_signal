@@ -35,7 +35,11 @@ impl Rng {
         self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
     }
     fn below(&mut self, n: usize) -> usize {
-        if n == 0 { 0 } else { (self.next() % n as u64) as usize }
+        if n == 0 {
+            0
+        } else {
+            (self.next() % n as u64) as usize
+        }
     }
 }
 
@@ -66,12 +70,18 @@ fn rsn() -> Vec<u8> {
 
 fn beacon_elements() -> Vec<u8> {
     let mut e = element(0, b"janus-test");
-    e.extend(element(1, &[0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24]));
+    e.extend(element(
+        1,
+        &[0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24],
+    ));
     e.extend(element(3, &[6]));
     e.extend(element(5, &[0, 1, 0, 0]));
     e.extend(rsn());
     e.extend(element(11, &[1, 0, 0x20, 0, 0]));
-    e.extend(element(221, &[0x00, 0x50, 0xf2, 2, 1, 1, 0, 0, 3, 0xa4, 0, 0]));
+    e.extend(element(
+        221,
+        &[0x00, 0x50, 0xf2, 2, 1, 1, 0, 0, 3, 0xa4, 0, 0],
+    ));
     e
 }
 
@@ -109,7 +119,11 @@ fn llc(ether_type: u16, body: &[u8]) -> Vec<u8> {
 fn seeds() -> Vec<(&'static str, Vec<u8>)> {
     let mut s = Vec::new();
     // beacon and probe response: timestamp, interval, capabilities, elements
-    let fixed = [0u8; 8].iter().chain(&[0x64, 0, 0x11, 0x04]).copied().collect::<Vec<_>>();
+    let fixed = [0u8; 8]
+        .iter()
+        .chain(&[0x64, 0, 0x11, 0x04])
+        .copied()
+        .collect::<Vec<_>>();
     let mut b = header(0x80, 0);
     b.extend(&fixed);
     b.extend(beacon_elements());
@@ -134,9 +148,18 @@ fn seeds() -> Vec<(&'static str, Vec<u8>)> {
     x.extend_from_slice(&[8, 0]);
     s.push(("disassociation", x));
     // EAPOL message 1, message 3 (encrypted key data, MIC), group message 1
-    s.push(("eapol message 1", data(0x08, 0x02, &llc(0x888e, &eapol_key(0x008a, &[])))));
-    s.push(("eapol message 3", data(0x08, 0x02, &llc(0x888e, &eapol_key(0x13ca, &[0x5a; 56])))));
-    s.push(("eapol group 1", data(0x08, 0x42, &llc(0x888e, &eapol_key(0x1382, &[0x5a; 40])))));
+    s.push((
+        "eapol message 1",
+        data(0x08, 0x02, &llc(0x888e, &eapol_key(0x008a, &[]))),
+    ));
+    s.push((
+        "eapol message 3",
+        data(0x08, 0x02, &llc(0x888e, &eapol_key(0x13ca, &[0x5a; 56]))),
+    ));
+    s.push((
+        "eapol group 1",
+        data(0x08, 0x42, &llc(0x888e, &eapol_key(0x1382, &[0x5a; 40]))),
+    ));
     // data: IPv4 plain, protected (CCMP header), QoS, A-MSDU
     s.push(("data", data(0x08, 0x02, &llc(0x0800, &[0x45; 40]))));
     let mut ccmp = vec![1, 0, 0, 0x20, 0, 0, 0, 0];
@@ -284,9 +307,23 @@ fn receive(bytes: &[u8]) {
             let mut copy = bytes.to_vec();
             let (kck, kek) = ([0x42u8; 16], [0x24u8; 16]);
             let _ = if keys {
-                deserialize_eapol_data_frame(Some(&kck), Some(&kek), &mut copy, &mut scratch, IEEE80211AkmType::Psk, false)
+                deserialize_eapol_data_frame(
+                    Some(&kck),
+                    Some(&kek),
+                    &mut copy,
+                    &mut scratch,
+                    IEEE80211AkmType::Psk,
+                    false,
+                )
             } else {
-                deserialize_eapol_data_frame(None, None, &mut copy, &mut [], IEEE80211AkmType::Psk, false)
+                deserialize_eapol_data_frame(
+                    None,
+                    None,
+                    &mut copy,
+                    &mut [],
+                    IEEE80211AkmType::Psk,
+                    false,
+                )
             };
         }
     }
@@ -294,11 +331,17 @@ fn receive(bytes: &[u8]) {
 
 #[test]
 fn no_input_panics_the_receive_path() {
-    let rounds: usize = std::env::var("E2_CORPUS_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(20_000);
+    let rounds: usize = std::env::var("E2_CORPUS_ROUNDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20_000);
     let seeds = seeds();
     // the hook keeps where each panic happened, for the report
     std::panic::set_hook(Box::new(|info| {
-        let at = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
+        let at = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_default();
         WHERE.with(|w| *w.borrow_mut() = at);
     }));
     let mut failures = Vec::new();
@@ -317,7 +360,10 @@ fn no_input_panics_the_receive_path() {
                     .or_else(|| p.downcast_ref::<String>().cloned())
                     .unwrap_or_default();
                 let at = WHERE.with(|w| w.borrow().clone());
-                failures.push(format!("{name} round {round}: {why}\n    at {at}\n    input {}", hex(&input)));
+                failures.push(format!(
+                    "{name} round {round}: {why}\n    at {at}\n    input {}",
+                    hex(&input)
+                ));
                 if failures.len() > 40 {
                     break;
                 }
@@ -325,7 +371,12 @@ fn no_input_panics_the_receive_path() {
         }
     }
     let _ = std::panic::take_hook();
-    assert!(failures.is_empty(), "{} panics:\n{}", failures.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} panics:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }
 
 thread_local! {

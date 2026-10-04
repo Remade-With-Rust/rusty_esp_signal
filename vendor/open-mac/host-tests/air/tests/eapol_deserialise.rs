@@ -58,7 +58,8 @@ fn outcome(mut f: Vec<u8>, keys: bool) -> Result<bool, String> {
         } else {
             (None, None, &mut [])
         };
-        deserialize_eapol_data_frame(kck, kek, &mut f, scratch, IEEE80211AkmType::Psk, false).is_ok()
+        deserialize_eapol_data_frame(kck, kek, &mut f, scratch, IEEE80211AkmType::Psk, false)
+            .is_ok()
     }))
     .map_err(|p| {
         p.downcast_ref::<&str>()
@@ -74,7 +75,11 @@ fn a_frame_that_ends_inside_the_eapol_header_is_refused() {
     // offset (13 bytes in) is past the end
     for n in 0..13 {
         let e = &key_frame(AES_SHA1 | PAIRWISE | ACK, 0, &[])[..n];
-        assert_eq!(outcome(frame(e), false), Ok(false), "EAPOL cut to {n} bytes");
+        assert_eq!(
+            outcome(frame(e), false),
+            Ok(false),
+            "EAPOL cut to {n} bytes"
+        );
     }
 }
 
@@ -92,8 +97,16 @@ fn key_data_shorter_than_a_key_wrap_block_is_refused() {
     // with the keys present (message 3, the group handshake) and no MIC bit:
     // 4 bytes of "wrapped" key data, less than the 8-byte integrity block
     for len in 0..8u16 {
-        let e = key_frame(AES_SHA1 | PAIRWISE | ACK | ENCRYPTED, len, &vec![0; len as usize]);
-        assert_eq!(outcome(frame(&e), true), Ok(false), "key data of {len} bytes");
+        let e = key_frame(
+            AES_SHA1 | PAIRWISE | ACK | ENCRYPTED,
+            len,
+            &vec![0; len as usize],
+        );
+        assert_eq!(
+            outcome(frame(&e), true),
+            Ok(false),
+            "key data of {len} bytes"
+        );
     }
 }
 

@@ -33,7 +33,9 @@ fn read(bytes: &[u8]) -> Result<bool, String> {
         let Some(Ok(data_frame)) = generic.parse_to_typed::<DataFrame<'_, &[u8]>>() else {
             return false;
         };
-        data_frame.potentially_wrapped_payload(Some(MicState::NotPresent)).is_some()
+        data_frame
+            .potentially_wrapped_payload(Some(MicState::NotPresent))
+            .is_some()
     }))
     .map_err(|p| {
         p.downcast_ref::<&str>()
@@ -47,13 +49,20 @@ fn read(bytes: &[u8]) -> Result<bool, String> {
 fn a_protected_frame_too_short_for_its_ccmp_header_is_refused() {
     // CCMP's header is 8 bytes; a "protected" payload of 0..7 bytes
     for n in 0..8 {
-        assert_eq!(read(&frame(true, &vec![0; n])), Ok(false), "protected payload of {n} bytes");
+        assert_eq!(
+            read(&frame(true, &vec![0; n])),
+            Ok(false),
+            "protected payload of {n} bytes"
+        );
     }
 }
 
 #[test]
 fn an_unprotected_frame_of_any_length_reads_without_a_panic() {
     for n in 0..64 {
-        assert!(read(&frame(false, &vec![0xaa; n])).is_ok(), "payload of {n} bytes");
+        assert!(
+            read(&frame(false, &vec![0xaa; n])).is_ok(),
+            "payload of {n} bytes"
+        );
     }
 }

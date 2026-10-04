@@ -35,6 +35,34 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  air:
+    # E2 (the umbrella's docs/plans/e2-air-interface.md): the open MAC's
+    # receive path on the host. vendor/open-mac is outside the workspace, so
+    # its two E2 crates run here: the station's handshakes (sta_handshake)
+    # and host-tests/air (the EAPOL and data-frame regressions, the no-panic
+    # corpus, the simulated access point). Not Wi-Fi certified.
+    name: air (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - working-directory: vendor/open-mac/sta_handshake
+        run: cargo fmt --check
+      - working-directory: vendor/open-mac/sta_handshake
+        run: cargo clippy --release -- -D warnings
+      - working-directory: vendor/open-mac/host-tests/air
+        run: cargo fmt --check
+      - working-directory: vendor/open-mac/host-tests/air
+        run: cargo clippy --release --all-targets -- -D warnings
+      - working-directory: vendor/open-mac/host-tests/air
+        run: cargo test --release
+
   deny:
     name: cargo deny
     runs-on: ubuntu-latest

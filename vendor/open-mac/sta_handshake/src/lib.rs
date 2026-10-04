@@ -214,7 +214,14 @@ pub fn read_message_3(
     scratch: &mut [u8],
     floor: Option<u64>,
 ) -> Result<GroupKey, Refusal> {
-    let frame = deserialize_eapol_data_frame(Some(keys.kck()), Some(keys.kek()), mpdu, scratch, AKM, false)?;
+    let frame = deserialize_eapol_data_frame(
+        Some(keys.kck()),
+        Some(keys.kek()),
+        mpdu,
+        scratch,
+        AKM,
+        false,
+    )?;
     if !is_message_3(frame.key_information) {
         return Err(Refusal::KeyInformation);
     }
@@ -231,7 +238,14 @@ pub fn read_group_message_1(
     scratch: &mut [u8],
     floor: u64,
 ) -> Result<GroupKey, Refusal> {
-    let frame = deserialize_eapol_data_frame(Some(keys.kck()), Some(keys.kek()), mpdu, scratch, AKM, false)?;
+    let frame = deserialize_eapol_data_frame(
+        Some(keys.kck()),
+        Some(keys.kek()),
+        mpdu,
+        scratch,
+        AKM,
+        false,
+    )?;
     if !is_group_message_1(frame.key_information) {
         return Err(Refusal::KeyInformation);
     }
@@ -241,6 +255,7 @@ pub fn read_group_message_1(
 
 /// An EAPOL-Key frame from the station to the access point, MIC'd with the
 /// KCK; returns its length in `out`. `scratch` holds the MIC's work.
+#[allow(clippy::too_many_arguments)]
 fn write_key_frame<E: ieee80211::scroll::ctx::TryIntoCtx<(), Error = ieee80211::scroll::Error>>(
     out: &mut [u8],
     scratch: &mut [u8],
