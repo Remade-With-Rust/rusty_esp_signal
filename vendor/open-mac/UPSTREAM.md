@@ -170,6 +170,16 @@ esp-hal 1.1, esp-phy 0.2.0, esp-wifi-sys 0.2.0):
   where the same-crate tests passed; `corpus.rs` runs the access point's
   receive path too.
 
+- `ap_core/src/hold.rs` (ours, E3 P5): the frames held for dozing
+  stations, as pure bookkeeping over one fixed pool (eight Ethernet frames):
+  oldest first per station, the group frames apart until the DTIM beacon, a
+  full pool refusing, a leaving station's frames freed; `host-tests/air/tests/hold.rs`.
+  The runner (`firmware/xiao-s3-open-ap`, bin `wpa2-ap`) opens the RX
+  filter to PS-Poll, holds a frame when its station's last frame carried the
+  Power Management bit, releases one per PS-Poll with More Data set while
+  more wait, all of them when the station sends with the bit clear, and the
+  group frames after each DTIM beacon.
+
 ## Host tests
 
 `host-tests/air/` (ours, E2): the receive path on the host, std, against

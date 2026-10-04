@@ -6,7 +6,12 @@
 //! the host), each station's pairwise key in a key slot of its own once
 //! message 4 is in, and CCMP on every data frame: the hardware encrypts and
 //! decrypts, the frames' CCMP headers, packet numbers and replay checks are
-//! ours. **Not Wi-Fi certified.**
+//! ours. Power save (E3's P5): a station whose last frame carried the Power
+//! Management bit dozes; its frames are held (`ap_core::hold`) and named in
+//! the beacon's TIM, one released per PS-Poll with More Data set while more
+//! wait, all of them when it sends with the bit clear; group frames are
+//! held while anyone dozes and go after the DTIM beacon. **Not Wi-Fi
+//! certified.**
 //!
 //! The passphrase is `JANUS_AP_PASS` at build time and nowhere else:
 //! `tools/e3-p4b.py` makes a fresh one for each run, in memory, for this
@@ -22,6 +27,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use ap_core::frames::{self, Bss};
 use ap_core::handshake::{self, Authenticator};
+use ap_core::hold::Held;
 use ap_core::request::{self, Request};
 use ap_core::stations::{MAX_STATIONS, State, Stations};
 use ap_core::{Address, reason, status};
@@ -37,14 +43,14 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_println::println;
 use foa::esp_wifi_hal::ll::EdcaAccessCategory;
 use foa::esp_wifi_hal::prelude::{
-    AesCipherParameters, CipherParameters, KeyType, MultiLengthKey, RxFilterBank, TxMacParameters,
-    TxPlcpParameters,
+    AesCipherParameters, CipherParameters, ControlFrameFilterConfig, KeyType, MultiLengthKey, RxFilterBank,
+    TxMacParameters, TxPlcpParameters,
 };
 use foa::esp_wifi_hal::rates::{HrDsssRate, OfdmRate, TxPhyRate};
 use foa::LMacInterfaceControl;
 use foa::{FoAResources, FoARunner, KeySlot, RetryBehaviour, TxEndpoint, VirtualInterface};
 use sta_handshake::GroupKey;
-use static_cell::StaticCell;
+use static_cell::{ConstStaticCell, StaticCell};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -73,7 +79,12 @@ static MANAGEMENT_UNACKED: AtomicU32 = AtomicU32::new(0);
 static UP_FRAMES: AtomicU32 = AtomicU32::new(0);
 static DOWN_FRAMES: AtomicU32 = AtomicU32::new(0);
 static FORWARDED: AtomicU32 = AtomicU32::new(0);
-static TO_DOZING: AtomicU32 = AtomicU32::new(0);
+static HELD: AtomicU32 = AtomicU32::new(0);
+static HELD_DROPPED: AtomicU32 = AtomicU32::new(0);
+static RELEASED: AtomicU32 = AtomicU32::new(0);
+static GROUP_HELD: AtomicU32 = AtomicU32::new(0);
+static PS_POLLS: AtomicU32 = AtomicU32::new(0);
+static WAKES: AtomicU32 = AtomicU32::new(0);
 static STRANGERS: AtomicU32 = AtomicU32::new(0);
 static HANDSHAKES: AtomicU32 = AtomicU32::new(0);
 static HANDSHAKE_RESENT: AtomicU32 = AtomicU32::new(0);
@@ -189,6 +200,7 @@ struct AccessPoint {
     gtk: GroupKey,
     gtk_slot: KeySlot<'static>,
     group_packet_number: u64,
+    held: &'static mut Held,
 }
 
 impl AccessPoint {
@@ -203,7 +215,78 @@ impl AccessPoint {
                 *slot = None;
             }
         }
+        self.held.clear(address);
         self.stations.remove(address);
+    }
+
+    fn anyone_dozing(&self) -> bool {
+        self.stations.iter().any(|s| s.power_save)
+    }
+
+    /// An Ethernet frame for the air: held if its station dozes (or, for a
+    /// group frame, if anyone does), else sent now.
+    async fn deliver(&mut self, eth: &[u8]) {
+        let Some(to): Option<Address> = eth.get(..6).and_then(|a| a.try_into().ok()) else {
+            return;
+        };
+        let group = is_group(&to);
+        let dozing = if group {
+            self.anyone_dozing()
+        } else {
+            self.stations.get(&to).is_some_and(|s| s.power_save)
+        };
+        if !dozing {
+            self.transmit(eth, false).await;
+            return;
+        }
+        match self.held.push(eth, group) {
+            Ok(()) => {
+                if group {
+                    GROUP_HELD.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    HELD.fetch_add(1, Ordering::Relaxed);
+                    let n = self.held.count(&to);
+                    self.stations.set_queued(&to, n);
+                }
+            }
+            Err(_) => {
+                HELD_DROPPED.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// One held frame to a station that asked (PS-Poll), More Data set
+    /// while more wait.
+    async fn release_one(&mut self, station: Address) {
+        let mut copy = [0u8; ap_core::hold::HELD_FRAME_BYTES];
+        let Some((taken, more)) = self.held.pop(&station) else {
+            return;
+        };
+        let n = taken.frame.len();
+        copy[..n].copy_from_slice(taken.frame);
+        let left = self.held.count(&station);
+        self.stations.set_queued(&station, left);
+        RELEASED.fetch_add(1, Ordering::Relaxed);
+        self.transmit(&copy[..n], more).await;
+    }
+
+    /// Every held frame to a station that woke (the Power Management bit
+    /// clear).
+    async fn release_all(&mut self, station: Address) {
+        while self.held.count(&station) > 0 {
+            self.release_one(station).await;
+        }
+    }
+
+    /// The group frames held, after the DTIM beacon.
+    async fn release_group(&mut self) {
+        let mut copy = [0u8; ap_core::hold::HELD_FRAME_BYTES];
+        while let Some((taken, more)) = self.held.pop_group() {
+            let n = taken.frame.len();
+            copy[..n].copy_from_slice(taken.frame);
+            RELEASED.fetch_add(1, Ordering::Relaxed);
+            self.transmit(&copy[..n], more).await;
+        }
     }
 
     /// A frame the access point lays out with `write`, sent unprotected
@@ -373,15 +456,23 @@ impl AccessPoint {
         }
     }
 
-    /// A data frame from the access point: protected under the station's
-    /// pairwise key, or the group key when group-addressed.
-    async fn send_data(&mut self, to: Address, from: &[u8], ether_type: [u8; 2], payload: &[u8]) {
+    /// A data frame from the access point, from an Ethernet frame: protected
+    /// under the station's pairwise key, or the group key when
+    /// group-addressed; `more_data` for a frame released to a dozing
+    /// station with more behind it.
+    async fn transmit(&mut self, eth: &[u8], more_data: bool) {
+        if eth.len() < 14 {
+            return;
+        }
+        let to: Address = eth[..6].try_into().unwrap_or([0; 6]);
+        let from = &eth[6..12];
+        let ether_type = [eth[12], eth[13]];
+        let payload = &eth[14..];
         let group = is_group(&to);
         let (slot, key_id, packet_number) = if group {
             self.group_packet_number += 1;
             (self.gtk_slot.key_slot(), GTK_KEY_ID, self.group_packet_number)
         } else {
-            let dozing = self.stations.get(&to).is_some_and(|s| s.power_save);
             let Some(peer) = self.peer(&to) else {
                 return;
             };
@@ -389,9 +480,6 @@ impl AccessPoint {
                 return;
             };
             peer.tx_packet_number += 1;
-            if dozing {
-                TO_DOZING.fetch_add(1, Ordering::Relaxed);
-            }
             (slot, 0, peer.tx_packet_number)
         };
         let mut buf = self.tx.alloc_tx_buf().await;
@@ -399,7 +487,7 @@ impl AccessPoint {
         let Some(frame) = buf.get_mut(..n) else {
             return;
         };
-        frame[..4].copy_from_slice(&[0x08, 0x02 | 0x40, 0, 0]);
+        frame[..4].copy_from_slice(&[0x08, 0x02 | 0x40 | if more_data { 0x20 } else { 0 }, 0, 0]);
         frame[4..10].copy_from_slice(&to);
         frame[10..16].copy_from_slice(&self.bss.bssid);
         frame[16..22].copy_from_slice(from);
@@ -428,6 +516,24 @@ impl AccessPoint {
             retry,
         );
         DOWN_FRAMES.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A control frame: a PS-Poll (subtype 10) from a station releases one
+    /// held frame.
+    async fn control(&mut self, f: &[u8], fc0: u8, now: u64) {
+        if fc0 >> 4 != 10 || f.len() < 16 || f[4..10] != self.bss.bssid {
+            return;
+        }
+        let Ok(station) = <[u8; 6]>::try_from(&f[10..16]) else {
+            return;
+        };
+        if self.stations.get(&station).map(|s| s.state) != Some(State::Connected) {
+            return;
+        }
+        PS_POLLS.fetch_add(1, Ordering::Relaxed);
+        // a poll says it is awake for this frame, still dozing after
+        self.stations.heard(&station, now, true);
+        self.release_one(station).await;
     }
 
     async fn management(&mut self, f: &[u8], now: u64) {
@@ -492,7 +598,10 @@ impl AccessPoint {
             return;
         }
         let power_save = fc1 & 0x10 != 0;
-        let state = self.stations.get(&station).map(|s| s.state);
+        let (state, was_dozing) = match self.stations.get(&station) {
+            Some(s) => (Some(s.state), s.power_save),
+            None => (None, false),
+        };
         if !self.stations.heard(&station, now, power_save)
             || !matches!(state, Some(State::Associated | State::Connected))
         {
@@ -501,6 +610,10 @@ impl AccessPoint {
             self.reply(|out, _| frames::deauthentication(out, b, station, reason::CLASS3_FROM_NONASSOC))
                 .await;
             return;
+        }
+        if was_dozing && !power_save {
+            WAKES.fetch_add(1, Ordering::Relaxed);
+            self.release_all(station).await;
         }
         let subtype = fc0 >> 4;
         if subtype & 0b0100 != 0 {
@@ -565,10 +678,14 @@ impl AccessPoint {
         }
         if !for_us {
             FORWARDED.fetch_add(1, Ordering::Relaxed);
-            let mut payload = [0u8; 1600];
+            // as an Ethernet frame: the destination, the station, the type
+            let mut eth = [0u8; 1600];
             let len = f.len() - payload_at;
-            payload[..len].copy_from_slice(&f[payload_at..]);
-            self.send_data(destination, &station, ether_type, &payload[..len]).await;
+            eth[..6].copy_from_slice(&destination);
+            eth[6..12].copy_from_slice(&station);
+            eth[12..14].copy_from_slice(&ether_type);
+            eth[14..14 + len].copy_from_slice(&f[payload_at..]);
+            self.deliver(&eth[..14 + len]).await;
         }
     }
 }
@@ -632,6 +749,12 @@ async fn main(spawner: Spawner) {
     control.set_filter(RxFilterBank::ReceiverAddress, bssid);
     control.set_filter(RxFilterBank::Bssid, bssid);
     control.set_filter_bssid_check(false);
+    // PS-Poll is the one control frame the access point reads (the HAL
+    // passes none up by default)
+    control.set_control_frame_filter(&ControlFrameFilterConfig {
+        ps_poll: true,
+        ..ControlFrameFilterConfig::none()
+    });
 
     // the group key, random, in a key slot of its own
     let mut gtk_key = [0u8; 16];
@@ -662,6 +785,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(net_task(stack_runner).expect("net task"));
     spawner.spawn(dhcp_task(stack).expect("dhcp task"));
 
+    static HELD_FRAMES: ConstStaticCell<Held> = ConstStaticCell::new(Held::new());
     let mut ap = AccessPoint {
         tx,
         control,
@@ -678,6 +802,7 @@ async fn main(spawner: Spawner) {
         gtk,
         gtk_slot,
         group_packet_number: 0,
+        held: HELD_FRAMES.take(),
     };
     println!(
         "open-ap: hosting ssid=janus-e3-wpa2 (WPA2-PSK, CCMP) channel={CHANNEL} bssid={:02x?} address={ADDRESS} init_ms={}",
@@ -699,7 +824,8 @@ async fn main(spawner: Spawner) {
             Either3::First(()) => {
                 let dtim_count = (beacon_index % u32::from(DTIM_PERIOD)) as u8;
                 beacon_index = beacon_index.wrapping_add(1);
-                let tim = ap.stations.tim(dtim_count, DTIM_PERIOD, false);
+                let group_buffered = ap.held.group_count() > 0;
+                let tim = ap.stations.tim(dtim_count, DTIM_PERIOD, group_buffered);
                 let mut buf = ap.tx.alloc_tx_buf().await;
                 let Some(beacon) = frames::beacon(&mut buf[..], &ap.bss, &tim) else {
                     continue;
@@ -725,6 +851,9 @@ async fn main(spawner: Spawner) {
                 } else {
                     BEACON_FAILURES.fetch_add(1, Ordering::Relaxed);
                 }
+                if dtim_count == 0 && group_buffered {
+                    ap.release_group().await;
+                }
                 ap.resend_due().await;
             }
             Either3::Second(received) => {
@@ -736,6 +865,7 @@ async fn main(spawner: Spawner) {
                 let now = Instant::now().as_micros();
                 match (fc0 >> 2) & 0b11 {
                     0 => ap.management(&frame[..n], now).await,
+                    1 => ap.control(&frame[..n], fc0, now).await,
                     2 => ap.data(&mut frame[..n], fc0, fc1, now, &mut up).await,
                     _ => {}
                 }
@@ -747,12 +877,7 @@ async fn main(spawner: Spawner) {
                 }
                 down.tx_done();
                 if n >= 14 {
-                    let to: Address = frame[..6].try_into().unwrap_or([0; 6]);
-                    let from: [u8; 6] = frame[6..12].try_into().unwrap_or([0; 6]);
-                    let ether_type = [frame[12], frame[13]];
-                    let mut payload = [0u8; 1600];
-                    payload[..n - 14].copy_from_slice(&frame[14..n]);
-                    ap.send_data(to, &from, ether_type, &payload[..n - 14]).await;
+                    ap.deliver(&frame[..n]).await;
                 }
             }
         }
@@ -765,7 +890,7 @@ async fn main(spawner: Spawner) {
                 ap.reply(|out, _| frames::deauthentication(out, b, gone, reason::INACTIVITY)).await;
             }
             println!(
-                "open-ap: up_s={} stations={} beacons={} beacon_failures={} replies={} unacked={} handshakes={} resent={} refused={} timeouts={} up={} down={} forwarded={} plaintext_dropped={} replays={} to_dozing={} strangers={}",
+                "open-ap: up_s={} stations={} beacons={} beacon_failures={} replies={} unacked={} handshakes={} resent={} refused={} timeouts={} up={} down={} forwarded={} plaintext_dropped={} replays={} held={} held_dropped={} released={} group_held={} ps_polls={} wakes={} dozing_now={} strangers={}",
                 started.elapsed().as_secs(),
                 ap.stations.iter().count(),
                 BEACONS.load(Ordering::Relaxed),
@@ -781,7 +906,13 @@ async fn main(spawner: Spawner) {
                 FORWARDED.load(Ordering::Relaxed),
                 PLAINTEXT_DROPPED.load(Ordering::Relaxed),
                 REPLAYS.load(Ordering::Relaxed),
-                TO_DOZING.load(Ordering::Relaxed),
+                HELD.load(Ordering::Relaxed),
+                HELD_DROPPED.load(Ordering::Relaxed),
+                RELEASED.load(Ordering::Relaxed),
+                GROUP_HELD.load(Ordering::Relaxed),
+                PS_POLLS.load(Ordering::Relaxed),
+                WAKES.load(Ordering::Relaxed),
+                ap.stations.iter().filter(|s| s.power_save).count(),
                 STRANGERS.load(Ordering::Relaxed),
             );
         }

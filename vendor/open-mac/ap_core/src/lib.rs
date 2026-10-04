@@ -12,6 +12,7 @@
 pub mod elements;
 pub mod frames;
 pub mod handshake;
+pub mod hold;
 pub mod request;
 pub mod rsn;
 pub mod stations;
