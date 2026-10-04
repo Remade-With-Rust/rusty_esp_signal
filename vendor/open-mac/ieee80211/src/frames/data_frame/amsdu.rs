@@ -38,9 +38,13 @@ impl<'a> TryFromCtx<'a> for AMSDUSubframe<&'a [u8]> {
         let source_address = from.gread(&mut offset)?;
         let length = from.gread_with::<u16>(&mut offset, Endian::Little)?;
         let payload = from.gread_with(&mut offset, length as usize)?;
-        // Round to the nearest multiple of four.
+        // Round to the nearest multiple of four. Janus E2 (the family's
+        // change): only over padding that is there; the last subframe of
+        // an A-MSDU carries none, and the rounded offset past the end made
+        // the iterator slice out of bounds
         offset += 3;
         offset &= !0b0000_0011;
+        offset = offset.min(from.len());
         Ok((
             Self {
                 destination_address,

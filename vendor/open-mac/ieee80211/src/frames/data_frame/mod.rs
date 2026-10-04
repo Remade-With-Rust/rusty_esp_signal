@@ -134,11 +134,14 @@ impl DataFrame<'_> {
         mic_state: Option<MicState>,
     ) -> Option<PotentiallyWrappedPayload<DataFrameReadPayload<'_>>> {
         let payload = self.payload?;
+        // Janus E2 (the family's change): a Protected frame too short for
+        // its crypto header is the sender's doing, not ours: `None`, as the
+        // unprotected branch below already answers (it was an `unwrap`)
         Some(if self.header.fcf_flags.protected() {
             PotentiallyWrappedPayload::CryptoWrapped(
                 payload
                     .pread_with(0, (mic_state?, self.header.is_amsdu()))
-                    .unwrap(),
+                    .ok()?,
             )
         } else {
             PotentiallyWrappedPayload::Unwrapped(

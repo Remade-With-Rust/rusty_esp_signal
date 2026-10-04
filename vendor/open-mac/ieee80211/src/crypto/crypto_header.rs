@@ -143,8 +143,15 @@ impl<'a, P: TryFromCtx<'a, PayloadCtx, Error = scroll::Error>, PayloadCtx: Copy>
 
         let crypto_header = from.gread(&mut offset)?;
         let mic_length = mic_state.mic_length();
-        let payload =
-            from[offset..][..from.len() - offset - mic_length].pread_with(0, payload_ctx)?;
+        // Janus E2 (the family's change): a payload shorter than its MIC is
+        // the sender's doing: an error, where the subtraction underflowed
+        let payload_length = from.len().checked_sub(offset + mic_length).ok_or(
+            scroll::Error::TooBig {
+                size: offset + mic_length,
+                len: from.len(),
+            },
+        )?;
+        let payload = from[offset..][..payload_length].pread_with(0, payload_ctx)?;
 
         Ok((
             Self {

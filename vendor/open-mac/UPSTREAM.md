@@ -90,6 +90,26 @@ esp-hal 1.1, esp-phy 0.2.0, esp-wifi-sys 0.2.0):
   MIC is refused before it is unwrapped (802.11-2020 12.7.2). The crate's
   own 49 tests pass; `host-tests/air/tests/eapol_deserialise.rs` is the
   regression.
+- `ieee80211/src/frames/data_frame/mod.rs`, `potentially_wrapped_payload`
+  (E2's F7): a data frame with the Protected bit set and a payload too short
+  for its CCMP header panicked (an `unwrap`); now `None`, as the unprotected
+  branch beside it answers. `host-tests/air/tests/data_frame.rs`.
+- `ieee80211/src/crypto/crypto_header.rs`, `CryptoWrapper`'s parse (E2's
+  F8): a payload shorter than its MIC underflowed into a slice end; now an
+  error. Not reachable from FoA's station, which reads with
+  `MicState::NotPresent` (the hardware strips the MIC); the corpus found it
+  through the crate's API.
+- `ieee80211/src/frames/data_frame/amsdu.rs`, the A-MSDU subframe parse
+  (E2's F9): the offset was rounded up to four past the end of the bytes
+  when the last subframe carries no padding (as the standard sends it), and
+  the iterator then sliced out of bounds; the rounding now stops at the end.
+  Not changed, noted (E2's F10): the subframe length is read little-endian
+  where 802.11 (as 802.3) is big-endian; FoA's station does not negotiate
+  HT, so an access point sends it no A-MSDU.
+- `host-tests/air/tests/corpus.rs` (E2's A3): seeded mutations of synthetic
+  frames and the crate's own published fixtures through the chain FoA's
+  station runs; found F8 and F9 (58 and 2 panics in its first runs), clean
+  since at 20,000 and 300,000 rounds a seed.
 
 ## Host tests
 
