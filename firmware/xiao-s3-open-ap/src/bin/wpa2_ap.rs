@@ -21,7 +21,13 @@
 //! group-key handshake protected under its pairwise key, and group frames
 //! switch to it once all have answered (a station that never answers is
 //! deauthenticated, reason 16). A station joining mid-rotation is handed the
-//! key about to be used. **Not Wi-Fi certified.**
+//! key about to be used. Beyond 802.11g (E3's P7): the beacon offers WMM
+//! and HT (`ap_core::qos`); a station that asked for WMM gets QoS data
+//! frames; one with HT Capabilities is sent at HT rates, each station on a
+//! rate ladder of its own (6 Mbit/s to MCS 7, the short guard interval if
+//! it receives it) that steps down on a frame the station never
+//! acknowledged and up after eight in a row that it did. **Not Wi-Fi
+//! certified.**
 //!
 //! The passphrase is `JANUS_AP_PASS` at build time and nowhere else:
 //! `tools/e3-p4b.py` makes a fresh one for each run, in memory, for this
@@ -38,6 +44,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use ap_core::frames::{self, Bss};
 use ap_core::handshake::{self, Authenticator};
 use ap_core::hold::Held;
+use ap_core::qos::{self, HtCapabilities};
 use ap_core::request::{self, Request};
 use ap_core::stations::{MAX_STATIONS, State, Stations};
 use ap_core::{Address, reason, status};
@@ -58,7 +65,7 @@ use foa::esp_wifi_hal::prelude::{
     AesCipherParameters, CipherParameters, ControlFrameFilterConfig, KeyType, MultiLengthKey, RxFilterBank,
     TxMacParameters, TxPlcpParameters,
 };
-use foa::esp_wifi_hal::rates::{HrDsssRate, OfdmRate, TxPhyRate};
+use foa::esp_wifi_hal::rates::{HrDsssRate, HtRate, OfdmRate, TxPhyRate};
 use foa::LMacInterfaceControl;
 use foa::{FoAResources, FoARunner, KeySlot, RetryBehaviour, TxEndpoint, VirtualInterface};
 use sta_handshake::GroupKey;
@@ -127,6 +134,12 @@ static REKEY_TIMEOUTS: AtomicU32 = AtomicU32::new(0);
 /// ARP frames from stations: each one answers a group-addressed request of
 /// ours, so they say the station decrypts under the group key in use.
 static ARP_UP: AtomicU32 = AtomicU32::new(0);
+/// Data frames sent as QoS Data, and at HT rates (E3's P7).
+static QOS_DATA_SENT: AtomicU32 = AtomicU32::new(0);
+static HT_SENT: AtomicU32 = AtomicU32::new(0);
+static DATA_UNACKED: AtomicU32 = AtomicU32::new(0);
+static LADDER_UP: AtomicU32 = AtomicU32::new(0);
+static LADDER_DOWN: AtomicU32 = AtomicU32::new(0);
 static PINGS_SENT: AtomicU32 = AtomicU32::new(0);
 static PINGS_ANSWERED: AtomicU32 = AtomicU32::new(0);
 static PING_RTT_SUM_MS: AtomicU32 = AtomicU32::new(0);
@@ -252,6 +265,71 @@ fn ccmp_packet_number(header: &[u8]) -> u64 {
     u64::from_le_bytes([header[0], header[1], header[4], header[5], header[6], header[7], 0, 0])
 }
 
+/// A station's place on the rate ladder: 6, 12, 24, 36, 54 Mbit/s, then
+/// MCS 0-7 as far as the station receives (the short guard interval if it
+/// does). Down one on a frame it never acknowledged, up one after eight
+/// acknowledged in a row.
+#[derive(Clone, Copy, Debug)]
+struct Ladder {
+    rung: u8,
+    top: u8,
+    short_gi: bool,
+    streak: u8,
+}
+
+impl Ladder {
+    const LEGACY: [OfdmRate; 5] = [
+        OfdmRate::Mbits6,
+        OfdmRate::Mbits12,
+        OfdmRate::Mbits24,
+        OfdmRate::Mbits36,
+        OfdmRate::Mbits54,
+    ];
+    const START: u8 = 2; // 24 Mbit/s, as before P7
+
+    fn new(ht: Option<HtCapabilities>) -> Self {
+        let (top, short_gi) = match ht.and_then(|h| h.highest_mcs().map(|m| (m, h.short_gi_20))) {
+            Some((mcs, sgi)) => (Self::LEGACY.len() as u8 + mcs, sgi),
+            None => (Self::LEGACY.len() as u8 - 1, false),
+        };
+        Self {
+            rung: Self::START.min(top),
+            top,
+            short_gi,
+            streak: 0,
+        }
+    }
+
+    fn rate(&self) -> TxPhyRate {
+        let legacy = Self::LEGACY.len() as u8;
+        if self.rung < legacy {
+            TxPhyRate::Ofdm(Self::LEGACY[usize::from(self.rung)])
+        } else {
+            match HtRate::new(self.rung - legacy, self.short_gi, false) {
+                Some(ht) => TxPhyRate::Ht(ht),
+                None => TxPhyRate::Ofdm(OfdmRate::Mbits24),
+            }
+        }
+    }
+
+    fn acknowledged(&mut self) {
+        self.streak = self.streak.saturating_add(1);
+        if self.streak >= 8 && self.rung < self.top {
+            self.rung += 1;
+            self.streak = 0;
+            LADDER_UP.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn lost(&mut self) {
+        self.streak = 0;
+        if self.rung > 0 {
+            self.rung -= 1;
+            LADDER_DOWN.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stage {
     SentMessage1,
@@ -274,6 +352,10 @@ struct Peer {
     /// A group-key handshake's message 1 waits for this dozing station to
     /// wake (its AID is in the TIM meanwhile).
     group_key_wanted: bool,
+    /// It takes QoS data frames.
+    qos: bool,
+    /// Its rate ladder.
+    ladder: Ladder,
 }
 
 struct AccessPoint {
@@ -657,6 +739,8 @@ impl AccessPoint {
                 tx_packet_number: 1,
                 rx_packet_number: 0,
                 group_key_wanted: false,
+                qos: false,
+                ladder: Ladder::new(None),
             });
             self.send_message_1(station).await;
         }
@@ -773,9 +857,15 @@ impl AccessPoint {
         let ether_type = [eth[12], eth[13]];
         let payload = &eth[14..];
         let group = is_group(&to);
-        let (slot, key_id, packet_number) = if group {
+        let (slot, key_id, packet_number, qos_station, rate) = if group {
             self.group_packet_number += 1;
-            (self.gtk_slots[self.gtk_slot_in_use].key_slot(), self.gtk.key_id, self.group_packet_number)
+            (
+                self.gtk_slots[self.gtk_slot_in_use].key_slot(),
+                self.gtk.key_id,
+                self.group_packet_number,
+                false,
+                one_mbit(),
+            )
         } else {
             let Some(peer) = self.peer(&to) else {
                 return;
@@ -784,29 +874,35 @@ impl AccessPoint {
                 return;
             };
             peer.tx_packet_number += 1;
-            (slot, 0, peer.tx_packet_number)
+            (slot, 0, peer.tx_packet_number, peer.qos, peer.ladder.rate())
         };
+        // a QoS station gets QoS Data (subtype 8) with the QoS Control field
+        let header = if qos_station { 26 } else { 24 };
         let mut buf = self.tx.alloc_tx_buf().await;
-        let n = 24 + 8 + 8 + payload.len() + 8;
+        let n = header + 8 + 8 + payload.len() + 8;
         let Some(frame) = buf.get_mut(..n) else {
             return;
         };
-        frame[..4].copy_from_slice(&[0x08, 0x02 | 0x40 | if more_data { 0x20 } else { 0 }, 0, 0]);
+        let subtype = if qos_station { 0x88 } else { 0x08 };
+        frame[..4].copy_from_slice(&[subtype, 0x02 | 0x40 | if more_data { 0x20 } else { 0 }, 0, 0]);
         frame[4..10].copy_from_slice(&to);
         frame[10..16].copy_from_slice(&self.bss.bssid);
         frame[16..22].copy_from_slice(from);
         frame[22..24].copy_from_slice(&[0, 0]);
-        frame[24..32].copy_from_slice(&ccmp_header(packet_number, key_id));
-        frame[32..38].copy_from_slice(&SNAP);
-        frame[38..40].copy_from_slice(&ether_type);
-        frame[40..40 + payload.len()].copy_from_slice(payload);
+        if qos_station {
+            frame[24..26].copy_from_slice(&qos::qos_control(0));
+        }
+        frame[header..header + 8].copy_from_slice(&ccmp_header(packet_number, key_id));
+        frame[header + 8..header + 14].copy_from_slice(&SNAP);
+        frame[header + 14..header + 16].copy_from_slice(&ether_type);
+        frame[header + 16..header + 16 + payload.len()].copy_from_slice(payload);
         frame[n - 8..].fill(0);
-        let (rate, retry) = if group {
-            (one_mbit(), RetryBehaviour::Drop)
+        let retry = if group {
+            RetryBehaviour::Drop
         } else {
-            (TxPhyRate::Ofdm(OfdmRate::Mbits24), RetryBehaviour::RetryUntil(7))
+            RetryBehaviour::RetryUntil(7)
         };
-        let _ = self.tx.transmit_edca(
+        let pending = self.tx.transmit_edca(
             EdcaAccessCategory::default(),
             buf,
             n,
@@ -820,6 +916,28 @@ impl AccessPoint {
             retry,
         );
         DOWN_FRAMES.fetch_add(1, Ordering::Relaxed);
+        if qos_station {
+            QOS_DATA_SENT.fetch_add(1, Ordering::Relaxed);
+        }
+        if matches!(rate, TxPhyRate::Ht(_)) {
+            HT_SENT.fetch_add(1, Ordering::Relaxed);
+        }
+        if !group {
+            // the ladder learns from the acknowledgement (a frame at a time:
+            // the bench's access point, not a streaming one yet)
+            let done = pending.wait_for_completion().await;
+            let acked = matches!(done, Some(d) if d.result.is_ok());
+            if !acked {
+                DATA_UNACKED.fetch_add(1, Ordering::Relaxed);
+            }
+            if let Some(peer) = self.peer(&to) {
+                if acked {
+                    peer.ladder.acknowledged();
+                } else {
+                    peer.ladder.lost();
+                }
+            }
+        }
     }
 
     /// A control frame: a PS-Poll (subtype 10) from a station releases one
@@ -860,11 +978,14 @@ impl AccessPoint {
                 println!("open-ap: authentication from {:02x?} status={status}", from);
                 self.reply(|out, _| frames::authentication(out, bss.bssid, from, status)).await;
             }
-            Some(Request::Association { from, ssid, rsn_element, reassociation }) => {
+            Some(Request::Association { from, ssid, rsn_element, reassociation, qos, ht }) => {
                 let (status, aid) = match self.stations.associate(from, ssid == Some(SSID), rsn_element, true) {
                     Ok(aid) => (status::SUCCESS, aid),
                     Err(status) => (status, 0),
                 };
+                if status == status::SUCCESS {
+                    self.stations.set_capabilities(&from, qos, ht);
+                }
                 self.stations.heard(&from, now, false);
                 println!(
                     "open-ap: {} from {:02x?} status={status} aid={aid}",
@@ -874,7 +995,19 @@ impl AccessPoint {
                 self.reply(|out, _| frames::association_response(out, &bss, from, status, aid, reassociation))
                     .await;
                 if status == status::SUCCESS {
+                    println!(
+                        "open-ap: {:02x?} qos={qos} ht={}",
+                        from,
+                        match ht {
+                            Some(h) => h.highest_mcs().map_or(0, |m| i32::from(m) + 1),
+                            None => -1,
+                        }
+                    );
                     self.begin_handshake(from).await;
+                    if let Some(p) = self.peer(&from) {
+                        p.qos = qos;
+                        p.ladder = Ladder::new(ht);
+                    }
                 }
             }
             Some(Request::Deauthentication { from, reason } | Request::Disassociation { from, reason }) => {
@@ -1125,6 +1258,7 @@ async fn main(spawner: Spawner) {
             channel: CHANNEL,
             beacon_interval_tu: BEACON_INTERVAL_TU,
             protected: true,
+            ht: true,
         },
         stations: Stations::new(),
         peers: [const { None }; MAX_STATIONS],
@@ -1242,7 +1376,7 @@ async fn main(spawner: Spawner) {
                 ap.reply(|out, _| frames::deauthentication(out, b, gone, reason::INACTIVITY)).await;
             }
             println!(
-                "open-ap: up_s={} stations={} beacons={} beacon_failures={} replies={} unacked={} handshakes={} resent={} refused={} timeouts={} up={} down={} forwarded={} plaintext_dropped={} replays={} held={} held_dropped={} released={} group_held={} ps_polls={} wakes={} dozing_now={} strangers={} ap_pings={}/{} rtt_avg_ms={} rtt_max_ms={} rekeys={} rekey_msgs={} rekey_unacked={} rekey_confirmed={} rekey_timeouts={} arp_up={}",
+                "open-ap: up_s={} stations={} beacons={} beacon_failures={} replies={} unacked={} handshakes={} resent={} refused={} timeouts={} up={} down={} forwarded={} plaintext_dropped={} replays={} held={} held_dropped={} released={} group_held={} ps_polls={} wakes={} dozing_now={} strangers={} ap_pings={}/{} rtt_avg_ms={} rtt_max_ms={} rekeys={} rekey_msgs={} rekey_unacked={} rekey_confirmed={} rekey_timeouts={} arp_up={} qos_sent={} ht_sent={} data_unacked={} ladder_up={} ladder_down={} rungs={:?}",
                 started.elapsed().as_secs(),
                 ap.stations.iter().count(),
                 BEACONS.load(Ordering::Relaxed),
@@ -1276,6 +1410,18 @@ async fn main(spawner: Spawner) {
                 REKEY_CONFIRMED.load(Ordering::Relaxed),
                 REKEY_TIMEOUTS.load(Ordering::Relaxed),
                 ARP_UP.load(Ordering::Relaxed),
+                QOS_DATA_SENT.load(Ordering::Relaxed),
+                HT_SENT.load(Ordering::Relaxed),
+                DATA_UNACKED.load(Ordering::Relaxed),
+                LADDER_UP.load(Ordering::Relaxed),
+                LADDER_DOWN.load(Ordering::Relaxed),
+                {
+                    let mut rungs = [None::<u8>; MAX_STATIONS];
+                    for (i, p) in ap.peers.iter().enumerate() {
+                        rungs[i] = p.as_ref().map(|p| p.ladder.rung);
+                    }
+                    rungs
+                },
             );
         }
     }
