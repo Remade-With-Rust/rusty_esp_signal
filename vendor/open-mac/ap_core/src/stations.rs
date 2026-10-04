@@ -1,6 +1,14 @@
 //! The stations the access point serves, and the decisions on their
 //! authentication and association requests. Four at most, as the family's
 //! hosted cells serve today.
+//!
+//! Beyond joining (E3, a robust access point): when each station was last
+//! heard, so one that went away is dropped rather than holding a slot
+//! (`inactive`); whether it dozes (the Power Management bit of its frames)
+//! and how many frames wait for it, from which the beacon's TIM is built
+//! (`tim`; the frames themselves are the driver's to hold, P5). A station
+//! roaming in re-associates: it keeps its AID and runs the 4-way handshake
+//! again.
 
 use crate::{Address, rsn, status};
 
@@ -31,6 +39,12 @@ pub struct Station {
     pub aid: u16,
     /// Where it is.
     pub state: State,
+    /// When it was last heard, in the caller's clock (microseconds).
+    pub last_heard_us: u64,
+    /// It dozes: its last frame had the Power Management bit set.
+    pub power_save: bool,
+    /// Frames the access point holds for it while it dozes.
+    pub queued: u16,
     rsne: [u8; MAX_RSN_ELEMENT],
     rsne_len: usize,
 }
@@ -90,6 +104,9 @@ impl Stations {
             address,
             aid: 0,
             state: State::Authenticated,
+            last_heard_us: 0,
+            power_save: false,
+            queued: 0,
             rsne: [0; MAX_RSN_ELEMENT],
             rsne_len: 0,
         };
@@ -163,6 +180,54 @@ impl Stations {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// A frame from `address` at `now_us`, its Power Management bit
+    /// `power_save`: it is alive, and dozes or not. False for a station not
+    /// held (a class 2 or 3 frame from a stranger: the caller deauthenticates).
+    pub fn heard(&mut self, address: &Address, now_us: u64, power_save: bool) -> bool {
+        match self.get_mut(address) {
+            Some(station) => {
+                station.last_heard_us = now_us;
+                station.power_save = power_save;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The frames held for a dozing station, as the driver's queue changes.
+    pub fn set_queued(&mut self, address: &Address, queued: u16) {
+        if let Some(station) = self.get_mut(address) {
+            station.queued = queued;
+        }
+    }
+
+    /// A station not heard for `limit_us`: the next to drop (reason
+    /// [`crate::reason::INACTIVITY`]), oldest first. The caller removes it.
+    #[must_use]
+    pub fn inactive(&self, now_us: u64, limit_us: u64) -> Option<Address> {
+        self.iter()
+            .filter(|s| now_us.saturating_sub(s.last_heard_us) > limit_us)
+            .min_by_key(|s| s.last_heard_us)
+            .map(|s| s.address)
+    }
+
+    /// The beacon's TIM: frames wait for the associated stations whose AIDs
+    /// are set (dozing ones with frames queued); the DTIM fields are the
+    /// caller's.
+    #[must_use]
+    pub fn tim(&self, dtim_count: u8, dtim_period: u8, group_buffered: bool) -> crate::frames::Tim {
+        let buffered_aids = self
+            .iter()
+            .filter(|s| s.aid != 0 && s.aid < 16 && s.queued > 0)
+            .fold(0u16, |bits, s| bits | 1 << s.aid);
+        crate::frames::Tim {
+            dtim_count,
+            dtim_period,
+            group_buffered,
+            buffered_aids,
         }
     }
 

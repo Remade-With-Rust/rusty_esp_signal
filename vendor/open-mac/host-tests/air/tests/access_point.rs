@@ -129,7 +129,8 @@ fn the_other_frames_read_back_as_laid_out() {
     assert_eq!(f.authentication_transaction_sequence_number, 2);
     assert_eq!(u16::from(f.status_code), 0);
 
-    let n = frames::association_response(&mut out, &bss(true), STA, status::SUCCESS, 3).unwrap();
+    let n =
+        frames::association_response(&mut out, &bss(true), STA, status::SUCCESS, 3, false).unwrap();
     let f = out[..n].pread::<AssociationResponseFrame>(0).unwrap();
     assert_eq!(u16::from(f.status_code), 0);
     assert_eq!(f.association_id.map(|a| a.aid()), Some(3));
@@ -506,4 +507,93 @@ fn message_3_carries_the_beacons_rsn_element() {
     )
     .unwrap();
     assert!(frame.key_data.bytes.starts_with(&RSN_ELEMENT));
+}
+
+// ---- roaming, liveness, power save (E3: a robust access point) ---------------
+
+#[test]
+fn a_station_roaming_in_gets_a_reassociation_response_and_keeps_its_aid() {
+    // the request: subtype 2, the current access point's address after the
+    // capability and listen interval fields
+    let rsn = station_rsn_element();
+    let mut body = vec![0x11, 0x04, 10, 0];
+    body.extend_from_slice(&[0x02, 0, 0, 0, 0, 0x77]);
+    body.extend_from_slice(&[0, SSID.len() as u8]);
+    body.extend_from_slice(SSID);
+    body.extend_from_slice(&rsn);
+    let request = mgmt(2, STA, AP, AP, &body);
+    let Some(Request::Association {
+        reassociation,
+        rsn_element,
+        ..
+    }) = request::parse(&request, &AP)
+    else {
+        panic!("a re-association request");
+    };
+    assert!(reassociation);
+    assert_eq!(rsn_element, Some(&rsn[..]));
+    // the response: subtype 3 (0x30), the status, the AID with its high bits
+    let mut out = [0u8; 128];
+    let n =
+        frames::association_response(&mut out, &bss(true), STA, status::SUCCESS, 2, true).unwrap();
+    assert_eq!(out[0], 0x30, "a re-association response");
+    assert_eq!(u16::from_le_bytes([out[26], out[27]]), 0, "status success");
+    assert_eq!(u16::from_le_bytes([out[28], out[29]]), 0xc002);
+    assert_eq!(&out[4..10], &STA);
+    let _ = n;
+    // the table: a connected station that re-associates keeps its AID and
+    // goes back to Associated (the 4-way handshake runs again)
+    let mut s = Stations::new();
+    s.authenticate(STA, 0, 1);
+    let aid = s.associate(STA, true, Some(&rsn), true).unwrap();
+    assert!(s.connected(&STA));
+    assert_eq!(s.associate(STA, true, Some(&rsn), true), Ok(aid));
+    assert_eq!(
+        s.get(&STA).unwrap().state,
+        ap_core::stations::State::Associated
+    );
+}
+
+#[test]
+fn a_station_gone_quiet_is_the_one_dropped() {
+    let mut s = Stations::new();
+    let (a, b) = ([2, 0, 0, 0, 0, 1], [2, 0, 0, 0, 0, 2]);
+    s.authenticate(a, 0, 1);
+    s.authenticate(b, 0, 1);
+    assert!(s.heard(&a, 1_000_000, false));
+    assert!(s.heard(&b, 9_000_000, false));
+    assert!(
+        !s.heard(&[9; 6], 9_000_000, false),
+        "a stranger is not held"
+    );
+    assert_eq!(s.inactive(10_000_000, 5_000_000), Some(a));
+    assert_eq!(s.inactive(10_000_000, 9_500_000), None);
+    s.remove(&a);
+    assert_eq!(s.inactive(20_000_000, 5_000_000), Some(b));
+}
+
+#[test]
+fn the_tim_names_the_dozing_stations_with_frames_waiting() {
+    let rsn = station_rsn_element();
+    let mut s = Stations::new();
+    let (a, b, c) = ([2, 0, 0, 0, 0, 1], [2, 0, 0, 0, 0, 2], [2, 0, 0, 0, 0, 3]);
+    for x in [a, b, c] {
+        s.authenticate(x, 0, 1);
+        s.associate(x, true, Some(&rsn), true).unwrap();
+    }
+    s.heard(&a, 0, true);
+    s.set_queued(&a, 2);
+    s.heard(&b, 0, true);
+    s.heard(&c, 0, true);
+    s.set_queued(&c, 1);
+    let tim = s.tim(0, 2, true);
+    assert_eq!(tim.buffered_aids, (1 << 1) | (1 << 3));
+    assert!(tim.group_buffered);
+    // and it is laid out in the beacon: the bitmap's octets from AID 0
+    let mut out = [0u8; 256];
+    let beacon = frames::beacon(&mut out, &bss(true), &tim).unwrap();
+    assert_eq!(
+        &out[beacon.tim_at..beacon.tim_at + 7],
+        &[5, 5, 0, 2, 1, 0b1010, 0]
+    );
 }

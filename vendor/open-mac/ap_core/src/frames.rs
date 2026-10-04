@@ -192,8 +192,10 @@ pub fn authentication(out: &mut [u8], bssid: Address, to: Address, status: u16) 
     Some(w.at)
 }
 
-/// An association response (9.3.3.7); `aid` is set only on success, with
-/// the two high bits the standard sets in the AID field.
+/// An association response (9.3.3.7), or a re-association response
+/// (9.3.3.9, subtype 3: what a station roaming in, or re-associating,
+/// expects); `aid` is set only on success, with the two high bits the
+/// standard sets in the AID field.
 #[must_use]
 pub fn association_response(
     out: &mut [u8],
@@ -201,9 +203,10 @@ pub fn association_response(
     to: Address,
     status: u16,
     aid: u16,
+    reassociation: bool,
 ) -> Option<usize> {
     let mut w = Writer { out, at: 0 };
-    w.header(1, to, bss.bssid)?;
+    w.header(if reassociation { 3 } else { 1 }, to, bss.bssid)?;
     w.u16(capabilities(bss.protected))?;
     w.u16(status)?;
     w.u16(if status == crate::status::SUCCESS {

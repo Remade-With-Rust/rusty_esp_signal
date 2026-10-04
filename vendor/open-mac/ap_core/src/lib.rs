@@ -53,6 +53,10 @@ pub mod status {
 pub mod reason {
     /// Unspecified.
     pub const UNSPECIFIED: u16 = 1;
+    /// Disassociated for inactivity.
+    pub const INACTIVITY: u16 = 4;
+    /// The access point is leaving (or cannot serve the station).
+    pub const LEAVING: u16 = 3;
     /// Class 2 frame from a station not authenticated.
     pub const CLASS2_FROM_NONAUTH: u16 = 6;
     /// Class 3 frame from a station not associated.
