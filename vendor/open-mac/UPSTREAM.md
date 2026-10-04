@@ -191,6 +191,12 @@ esp-hal 1.1, esp-phy 0.2.0, esp-wifi-sys 0.2.0):
   category, the QoS Control field. `Bss.ht` turns it on in the beacon,
   probe response and association response.
 
+- `foa/src/lib.rs` (E3): the receive queue's length in the `VirtualInterface`
+  transmute was the literal `2`, the default of `FOA_CONFIG_RX_QUEUE_LEN`, so
+  any other value failed to compile; it is `RX_QUEUE_LEN` now. Found when
+  C16's config set the queue to 32 (a bridge's window of 16 chunks does not
+  fit a queue of two).
+
 ## Host tests
 
 `host-tests/air/` (ours, E2): the receive path on the host, std, against

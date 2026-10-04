@@ -292,7 +292,7 @@ pub fn init<'res>(
                     embassy_sync::channel::Channel<
                         embassy_sync::blocking_mutex::raw::NoopRawMutex,
                         esp_wifi_hal::borrowed_buffer::BorrowedBuffer<'static>,
-                        2,
+                        RX_QUEUE_LEN,
                     >,
                     portable_atomic::AtomicBool,
                 ),
@@ -300,7 +300,7 @@ pub fn init<'res>(
                     embassy_sync::channel::Channel<
                         embassy_sync::blocking_mutex::raw::NoopRawMutex,
                         esp_wifi_hal::borrowed_buffer::BorrowedBuffer<'res>,
-                        2,
+                        RX_QUEUE_LEN,
                     >,
                     portable_atomic::AtomicBool,
                 ),
