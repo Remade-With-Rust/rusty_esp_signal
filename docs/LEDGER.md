@@ -1879,3 +1879,44 @@ category cut B's measured overhead an attempt (305 and 479 µs against
 a little slower in both C runs (13.91 and 14.28 fps against 14.89 to
 14.96 in A and B on 5 GHz): it stays off by default. B stays the default
 rate control.
+
+### E1 follow-up: probe against expected throughput, the band held (2026-10-03)
+
+Fixes first: the per-rate success counts take each frame's first attempt
+only (retries had made 24 Mbit/s read 69 % under 36's 97 %), and the
+burst is 10,000 frames (about 7 s) where it was 2,000. The laptop was held
+on 5 GHz for the whole session (its adapter's 802.11a/b/g mode set to
+5 GHz 802.11a, preferred band 5 GHz, both reverted after), and
+tools/e1-ab.py would have re-run any run whose four band readings were not
+all 5 GHz: none needed it. Two builds alternated three times, A1 B1 A2 B2
+A3 B3: A the whole-second probe (`JANUS_OPEN_RATE=probe`), B expected
+throughput (the default). Board -> laptop, Mbit/s:
+
+| | round 1 | round 2 | round 3 | mean |
+|---|---:|---:|---:|---:|
+| A at rest | 14.22 | 12.64 | 12.79 | 13.22 |
+| B at rest | 13.65 | 14.89 | 15.29 | **14.61** |
+| A under the stream | 12.52 | 13.82 | 11.45 | 12.60 |
+| B under the stream | 12.72 | 13.31 | 13.39 | **13.14** |
+| A camera | 13.44 fps | 14.89 fps | 12.54 fps | |
+| B camera | 14.90 fps | 14.95 fps | 14.87 fps | |
+| A frames lost of 20,000 | 83 | 2 | 69 | |
+| B frames lost of 20,000 | 0 | 0 | 0 | |
+| first attempts through, A / B | 73 / 83 % | 76 / 87 % | 84 / 91 % | |
+
+B is ahead by 1.4 Mbit/s at rest (11 %) and 0.5 under the stream (4 %) on
+the means, and won four of the six paired phases; three rounds cannot
+call a difference that size certain. Where B is plainly better is
+steadiness: no frame lost in any of its six bursts (A lost some in five),
+the camera at 14.9 fps in every run (A fell to 12.5 and 13.4), and fewer
+wasted attempts. Its model now reads in order (54 Mbit/s 49 to 67 %, 48
+85 to 91 %, 36 96 to 98 %, 24 98 to 99 %, 18 99 %) and settled at 36 in
+all three runs. 15 under the stream was not reached (best 13.82, A2);
+B3's 15.29 at rest is the best at-rest burst with the band held. B stays
+the default rate control.
+
+Still open: B's measured overhead an attempt read 657 to 914 µs with the
+laptop held on 5 GHz, against 456 in the afternoon's B1 with the same
+band: with these bursts the hotspot's own load shows in it, and the gap
+between 48 and 36 (85 % against 97 %) is now where any further rate gain
+lies. NOT Wi-Fi certified.
