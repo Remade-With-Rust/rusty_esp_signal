@@ -36,11 +36,13 @@ jobs:
       - run: cargo test --workspace
 
   air:
-    # E2 (the umbrella's docs/plans/e2-air-interface.md): the open MAC's
-    # receive path on the host. vendor/open-mac is outside the workspace, so
-    # its two E2 crates run here: the station's handshakes (sta_handshake)
-    # and host-tests/air (the EAPOL and data-frame regressions, the no-panic
-    # corpus, the simulated access point). Not Wi-Fi certified.
+    # E2 and E3 (the umbrella's docs/plans/e2-air-interface.md and
+    # e3-access-point.md): the open MAC's station and access point on the
+    # host. vendor/open-mac is outside the workspace, so its crates run here:
+    # the station's handshakes (sta_handshake), the access point's logic
+    # (ap_core) and host-tests/air (the regressions, the no-panic corpus, the
+    # simulated access point, the independent Python check). Not Wi-Fi
+    # certified.
     name: air (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -56,6 +58,16 @@ jobs:
         run: cargo fmt --check
       - working-directory: vendor/open-mac/sta_handshake
         run: cargo clippy --release -- -D warnings
+      - working-directory: vendor/open-mac/ap_core
+        run: cargo fmt --check
+      - working-directory: vendor/open-mac/ap_core
+        run: cargo clippy --release -- -D warnings
+      # E3: interop.rs checks the access point's handshakes against a second
+      # implementation in Python (interop/wpa2.py), which needs `cryptography`
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install cryptography
       - working-directory: vendor/open-mac/host-tests/air
         run: cargo fmt --check
       - working-directory: vendor/open-mac/host-tests/air

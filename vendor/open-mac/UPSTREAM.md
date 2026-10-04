@@ -150,6 +150,26 @@ esp-hal 1.1, esp-phy 0.2.0, esp-wifi-sys 0.2.0):
   station runs; found F8 and F9 (58 and 2 panics in its first runs), clean
   since at 20,000 and 300,000 rounds a seed.
 
+## Added for E3 (an access point in Rust)
+
+- `ap_core/` (ours, E3 P2): the access point as pure functions. Its
+  management frames (beacon with the timestamp and TIM offsets for the
+  sending hook, probe response, authentication, association response,
+  deauthentication) are laid out by hand from 802.11-2020, so the tests read
+  them back with `ieee80211`'s parsers; the station table (four stations,
+  AIDs, open-system authentication, association decisions); the RSN element
+  a station offers, read field by field (WPA2-PSK, CCMP, no PMF); the
+  requests a station sends, read with its own bounds-checked element walk;
+  WPA2-PSK's authenticator (messages 1 and 3, group message 1 laid out
+  protected; messages 2 and 4 and group message 2 read, message 2's RSN
+  element checked against the association request's).
+- `host-tests/air/tests/access_point.rs`: our station against `ap_core`
+  (a join, a rekey, the refusals); `interop.rs` with `interop/wpa2.py`: the
+  handshakes against a second implementation in Python (stdlib HMAC/PBKDF2,
+  `cryptography`'s AES key wrap), which caught E2's F13 when it was put back
+  where the same-crate tests passed; `corpus.rs` runs the access point's
+  receive path too.
+
 ## Host tests
 
 `host-tests/air/` (ours, E2): the receive path on the host, std, against

@@ -5,7 +5,9 @@
 //! the chain FoA's station runs on bytes off the air: `GenericFrame::new`,
 //! the typed parse by frame type, the elements it reads, a data frame's
 //! payload and LLC/SNAP and A-MSDU subframes, and the EAPOL deserialiser
-//! with and without keys. Property: no input panics. `E2_CORPUS_ROUNDS`
+//! with and without keys; and the access point's (E3): its management
+//! requests, the element walk, the RSN check and station table, and the
+//! authenticator's reads. Property: no input panics. `E2_CORPUS_ROUNDS`
 //! (default 20,000 a seed) sets the length; CI runs the default.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -24,6 +26,13 @@ use ieee80211::mgmt_frame::{
 };
 use ieee80211::scroll::Pread;
 use llc_rs::SnapLlcFrame;
+
+use ap_core::elements::Elements;
+use ap_core::handshake;
+use ap_core::request::{self, Request};
+use ap_core::stations::Stations;
+use ieee80211::mac_parser::MACAddress;
+use sta_handshake::PairwiseKeys;
 
 /// xorshift64*: a fixed sequence, so a failure reproduces from its seed.
 struct Rng(u64);
@@ -176,6 +185,47 @@ fn seeds() -> Vec<(&'static str, Vec<u8>)> {
     amsdu.extend(&sub);
     amsdu.extend(&sub);
     s.push(("a-msdu", amsdu));
+    // what stations send an access point (E3): to `AP`, from `STA`
+    let rsn = [
+        48u8, 20, 1, 0, 0x00, 0x0f, 0xac, 4, 1, 0, 0x00, 0x0f, 0xac, 4, 1, 0, 0x00, 0x0f, 0xac, 2,
+        0, 0,
+    ];
+    let mut assoc = vec![0x11, 0x04, 10, 0];
+    assoc.extend(element(0, b"janus-test"));
+    assoc.extend(element(1, &[0x82, 0x84, 0x8b, 0x96]));
+    assoc.extend_from_slice(&rsn);
+    s.push(("ap: probe request", to_ap(4, &element(0, b""))));
+    s.push(("ap: authentication", to_ap(11, &[0, 0, 1, 0, 0, 0])));
+    s.push(("ap: association request", to_ap(0, &assoc)));
+    let mut reassoc = vec![0x11, 0x04, 10, 0];
+    reassoc.extend_from_slice(&AP);
+    reassoc.extend_from_slice(&assoc[4..]);
+    s.push(("ap: reassociation request", to_ap(2, &reassoc)));
+    s.push(("ap: deauthentication", to_ap(12, &[3, 0])));
+    s.push(("ap: disassociation", to_ap(10, &[8, 0])));
+    let keys = ap_keys();
+    let (mut out, mut scratch) = (vec![0u8; 1024], vec![0u8; 1024]);
+    let n = sta_handshake::write_message_2(
+        &mut out,
+        &mut scratch,
+        MACAddress::new(AP),
+        MACAddress::new(STA),
+        &keys,
+        &[0x5a; 32],
+        1,
+    )
+    .unwrap();
+    s.push(("ap: eapol message 2", out[..n].to_vec()));
+    let n = sta_handshake::write_message_4(
+        &mut out,
+        &mut scratch,
+        MACAddress::new(AP),
+        MACAddress::new(STA),
+        &keys,
+        2,
+    )
+    .unwrap();
+    s.push(("ap: eapol message 4", out[..n].to_vec()));
     // the crate's own published fixtures
     let bins = concat!(env!("CARGO_MANIFEST_DIR"), "/../../ieee80211/bins/frames");
     for entry in std::fs::read_dir(bins).expect("ieee80211/bins/frames") {
@@ -243,6 +293,68 @@ fn elements(e: ReadElements<'_>) {
 }
 
 /// The receive path on `bytes`, as the station runs it.
+/// The access point's address in the access point's seeds, and a station.
+const AP: [u8; 6] = [0x02, 0, 0, 0, 0, 0xa1];
+const STA: [u8; 6] = [0x02, 0, 0, 0, 0, 0x51];
+
+/// A management frame from `STA` to `AP`.
+fn to_ap(subtype: u8, body: &[u8]) -> Vec<u8> {
+    let mut f = vec![subtype << 4, 0, 0, 0];
+    f.extend_from_slice(&AP);
+    f.extend_from_slice(&STA);
+    f.extend_from_slice(&AP);
+    f.extend_from_slice(&[0x10, 0]);
+    f.extend_from_slice(body);
+    f
+}
+
+fn ap_keys() -> PairwiseKeys {
+    PairwiseKeys::derive(&[0x33; 32], &AP, &STA, &[0xa5; 32], &[0x5a; 32])
+}
+
+/// The access point's receive path on `bytes` (E3): the management
+/// requests, the element walk, the RSN check and the station table, and
+/// the authenticator's reads of messages 2 and 4 and group message 2.
+fn receive_ap(bytes: &[u8]) {
+    if let Some(r) = request::parse(bytes, &AP) {
+        let mut stations = Stations::new();
+        match r {
+            Request::Authentication {
+                from,
+                algorithm,
+                sequence,
+            } => {
+                let _ = stations.authenticate(from, algorithm, sequence);
+            }
+            Request::Association {
+                from,
+                ssid,
+                rsn_element,
+                ..
+            } => {
+                let _ = stations.authenticate(from, 0, 1);
+                let _ = stations.associate(from, ssid == Some(b"janus-test"), rsn_element, true);
+                let _ = stations.associate(from, true, rsn_element, false);
+            }
+            _ => {}
+        }
+    }
+    for (_, body) in Elements::new(bytes.get(24..).unwrap_or(&[])) {
+        let _ = ap_core::rsn::check_station(body);
+    }
+    let _ = ap_core::rsn::check_station(bytes);
+    let keys = ap_keys();
+    let rsn = [48u8, 2, 1, 0];
+    let mut copy = bytes.to_vec();
+    let _ = handshake::read_message_2(&mut copy, &[0x33; 32], &AP, &STA, &[0xa5; 32], 1, &rsn);
+    let mut copy = bytes.to_vec();
+    let _ = handshake::read_message_4(&mut copy, &keys, 2);
+    let mut copy = bytes.to_vec();
+    let _ = handshake::read_group_message_2(&mut copy, &keys, 3);
+    let mut plain = [0u8; 2048];
+    let _ = sta_handshake::unprotect(bytes, &mut plain);
+}
+
 fn receive(bytes: &[u8]) {
     let Ok(generic) = GenericFrame::new(bytes, false) else {
         return;
@@ -347,13 +459,21 @@ fn no_input_panics_the_receive_path() {
     let mut failures = Vec::new();
     for (k, (name, seed)) in seeds.iter().enumerate() {
         // every seed first, unmutated
-        if catch_unwind(AssertUnwindSafe(|| receive(seed))).is_err() {
+        if catch_unwind(AssertUnwindSafe(|| {
+            receive(seed);
+            receive_ap(seed);
+        }))
+        .is_err()
+        {
             failures.push(format!("{name}: the seed itself"));
         }
         let mut rng = Rng(0x9e37_79b9_7f4a_7c15 ^ (k as u64 + 1));
         for round in 0..rounds {
             let input = mutate(&mut rng, seed);
-            if let Err(p) = catch_unwind(AssertUnwindSafe(|| receive(&input))) {
+            if let Err(p) = catch_unwind(AssertUnwindSafe(|| {
+                receive(&input);
+                receive_ap(&input);
+            })) {
                 let why = p
                     .downcast_ref::<&str>()
                     .map(|s| s.to_string())
