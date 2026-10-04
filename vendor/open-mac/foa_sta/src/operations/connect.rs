@@ -47,8 +47,6 @@ struct ConnectionOperation<'foa, 'vif, 'params> {
 }
 #[cfg(feature = "rsn")]
 mod private {
-    use core::marker::PhantomData;
-
     use foa::{
         RetryBehaviour, TxBuffer, TxReturnData,
         esp_wifi_hal::{

@@ -10,7 +10,6 @@ use ieee80211::{
 };
 use portable_atomic::AtomicU64;
 
-use crate::util::HexWrapper;
 
 /// The length of a Pairwise Master Key.
 ///

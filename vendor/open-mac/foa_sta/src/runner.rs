@@ -472,6 +472,33 @@ impl RoutingRunner<'_, '_> {
             .await;
         debug!("Group key handshake: message 2 sent.");
     }
+    /// Count an unprotected data frame dropped after the join by kind.
+    #[cfg(feature = "rsn")]
+    fn classify_dropped(&self, data_frame: &DataFrame<'_, &[u8]>) {
+        let header = &data_frame.header;
+        DROPPED_LAST_SUBTYPE.store(header.subtype.into_bits(), Ordering::Relaxed);
+        let from_ap = self
+            .sta_tx_rx
+            .connection_state
+            .connection_info()
+            .is_some_and(|connection_info| *header.transmitter_address() == connection_info.bss.bssid);
+        if !from_ap {
+            DROPPED_NOT_AP.fetch_add(1, Ordering::Relaxed);
+        }
+        let ether_type = data_frame
+            .payload
+            .filter(|_| header.subtype.has_payload())
+            .and_then(|payload| payload.pread::<SnapLlcFrame>(0).ok())
+            .map_or(0, |llc| u16::from(llc.ether_type));
+        DROPPED_LAST_ETHER_TYPE.store(u32::from(ether_type), Ordering::Relaxed);
+        if !header.subtype.has_payload() {
+            DROPPED_NO_PAYLOAD.fetch_add(1, Ordering::Relaxed);
+        } else if header.address_1.is_multicast() {
+            DROPPED_GROUP.fetch_add(1, Ordering::Relaxed);
+        } else {
+            DROPPED_UNICAST.fetch_add(1, Ordering::Relaxed);
+        }
+    }
     /// Forward a received data frame to higher layers.
     fn handle_data_rx(&mut self, data_frame: DataFrame<'_, &[u8]>, mpdu: &[u8]) -> Option<()> {
         // E2's F6: once the station holds keys, an unprotected data frame is
@@ -482,6 +509,7 @@ impl RoutingRunner<'_, '_> {
             data_frame.header.fcf_flags.protected(),
         ) {
             UNPROTECTED_DROPPED.fetch_add(1, Ordering::Relaxed);
+            self.classify_dropped(&data_frame);
             trace!("Dropping an unprotected data frame.");
             return None;
         }
@@ -624,18 +652,36 @@ impl StaRunner<'_, '_> {
     }
 }
 
-/// How a data MPDU is retried (E1, the family's change; upstream sent every
-/// data frame at OFDM 6 Mbit/s with seven retries at that rate). From an
-/// OFDM rate the frame steps down the 802.11g ladder, two attempts at the
-/// first rate and one at each rate below, padded with 6 Mbit/s to eight
-/// attempts: a good link sends at the station's rate, a poor one ends where
-/// upstream always was, with one more try. Other rates keep upstream's
-/// behaviour.
 /// E2's counters: group rekeys taken and refused, unprotected data frames
 /// dropped after the join (F2, F6). The board's evidence for B1.
 static GROUP_REKEYS: AtomicU32 = AtomicU32::new(0);
 static GROUP_REFUSED: AtomicU32 = AtomicU32::new(0);
 static UNPROTECTED_DROPPED: AtomicU32 = AtomicU32::new(0);
+/// The dropped frames by kind (E2, F6's loose end): no payload (Null,
+/// QoS Null and the CF ones: nothing would have gone up anyway), with a
+/// payload to a unicast address, with a payload to a group address; sent by
+/// another transmitter than the access point; and the last one's subtype
+/// (the 4-bit field) and LLC ether type (0 when it had none).
+static DROPPED_NO_PAYLOAD: AtomicU32 = AtomicU32::new(0);
+static DROPPED_UNICAST: AtomicU32 = AtomicU32::new(0);
+static DROPPED_GROUP: AtomicU32 = AtomicU32::new(0);
+static DROPPED_NOT_AP: AtomicU32 = AtomicU32::new(0);
+static DROPPED_LAST_SUBTYPE: AtomicU8 = AtomicU8::new(0);
+static DROPPED_LAST_ETHER_TYPE: AtomicU32 = AtomicU32::new(0);
+
+/// The unprotected data frames dropped since boot, by kind: (no payload,
+/// unicast with a payload, group-addressed with a payload, not from the
+/// access point, the last one's subtype, the last one's ether type).
+pub fn dropped_unprotected() -> (u32, u32, u32, u32, u8, u16) {
+    (
+        DROPPED_NO_PAYLOAD.load(Ordering::Relaxed),
+        DROPPED_UNICAST.load(Ordering::Relaxed),
+        DROPPED_GROUP.load(Ordering::Relaxed),
+        DROPPED_NOT_AP.load(Ordering::Relaxed),
+        DROPPED_LAST_SUBTYPE.load(Ordering::Relaxed),
+        DROPPED_LAST_ETHER_TYPE.load(Ordering::Relaxed) as u16,
+    )
+}
 
 /// Group-key handshakes taken, group-key messages refused, and unprotected
 /// data frames dropped after keys were installed, since boot.
@@ -679,6 +725,13 @@ fn data_frame_rate(rate: foa::esp_wifi_hal::rates::TxPhyRate) -> foa::esp_wifi_h
         .map_or(rate, |r| foa::esp_wifi_hal::rates::TxPhyRate::Ofdm(*r))
 }
 
+/// How a data MPDU is retried (E1, the family's change; upstream sent every
+/// data frame at OFDM 6 Mbit/s with seven retries at that rate). From an
+/// OFDM rate the frame steps down the 802.11g ladder, two attempts at the
+/// first rate and one at each rate below, padded with 6 Mbit/s to eight
+/// attempts: a good link sends at the station's rate, a poor one ends where
+/// upstream always was, with one more try. Other rates keep upstream's
+/// behaviour.
 fn data_retry_behaviour(rate: foa::esp_wifi_hal::rates::TxPhyRate) -> RetryBehaviour {
     use foa::esp_wifi_hal::rates::{OfdmRate, TxPhyRate};
     let TxPhyRate::Ofdm(first) = rate else {
