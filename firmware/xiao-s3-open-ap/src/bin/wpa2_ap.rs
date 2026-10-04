@@ -10,8 +10,11 @@
 //! Management bit dozes; its frames are held (`ap_core::hold`) and named in
 //! the beacon's TIM, one released per PS-Poll with More Data set while more
 //! wait, all of them when it sends with the bit clear; group frames are
-//! held while anyone dozes and go after the DTIM beacon. **Not Wi-Fi
-//! certified.**
+//! held while anyone dozes and go after the DTIM beacon. To give the
+//! holding something to hold, the access point pings its station itself,
+//! twice a second, once it has seen the station's address: the only
+//! downlink traffic a quiet station gets, and its round trip measures what
+//! dozing costs. **Not Wi-Fi certified.**
 //!
 //! The passphrase is `JANUS_AP_PASS` at build time and nowhere else:
 //! `tools/e3-p4b.py` makes a fresh one for each run, in memory, for this
@@ -33,6 +36,8 @@ use ap_core::stations::{MAX_STATIONS, State, Stations};
 use ap_core::{Address, reason, status};
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either3, select3};
+use embassy_net::icmp::PacketMetadata;
+use embassy_net::icmp::ping::{PingManager, PingParams};
 use embassy_net::{Ipv4Cidr, Stack, StackResources, StaticConfigV4};
 use embassy_net_driver::{HardwareAddress, LinkState};
 use embassy_net_driver_channel as ch;
@@ -85,6 +90,13 @@ static RELEASED: AtomicU32 = AtomicU32::new(0);
 static GROUP_HELD: AtomicU32 = AtomicU32::new(0);
 static PS_POLLS: AtomicU32 = AtomicU32::new(0);
 static WAKES: AtomicU32 = AtomicU32::new(0);
+/// The station's IPv4 address, from the first IPv4 frame it sent (0: none
+/// yet); the access point's own pings go there.
+static PING_TARGET: AtomicU32 = AtomicU32::new(0);
+static PINGS_SENT: AtomicU32 = AtomicU32::new(0);
+static PINGS_ANSWERED: AtomicU32 = AtomicU32::new(0);
+static PING_RTT_SUM_MS: AtomicU32 = AtomicU32::new(0);
+static PING_RTT_MAX_MS: AtomicU32 = AtomicU32::new(0);
 static STRANGERS: AtomicU32 = AtomicU32::new(0);
 static HANDSHAKES: AtomicU32 = AtomicU32::new(0);
 static HANDSHAKE_RESENT: AtomicU32 = AtomicU32::new(0);
@@ -108,6 +120,41 @@ async fn mac_task(mut runner: FoARunner<'static>) {
 #[embassy_executor::task]
 async fn net_task(mut runner: embassy_net::Runner<'static, ch::Device<'static, MTU>>) -> ! {
     runner.run().await
+}
+
+/// The access point's own pings to its station, twice a second once its
+/// address is known: downlink traffic a quiet station would never see, so
+/// the holding (P5) has something to hold, and the round trip says what a
+/// dozing station costs.
+#[embassy_executor::task]
+async fn ping_task(stack: Stack<'static>) -> ! {
+    let mut rx_meta = [PacketMetadata::EMPTY; 2];
+    let mut tx_meta = [PacketMetadata::EMPTY; 2];
+    let mut rx_buffer = [0u8; 256];
+    let mut tx_buffer = [0u8; 256];
+    let mut pings = PingManager::new(stack, &mut rx_meta, &mut rx_buffer, &mut tx_meta, &mut tx_buffer);
+    let payload = [0x4au8; 32];
+    loop {
+        let target = PING_TARGET.load(Ordering::Relaxed);
+        if target == 0 {
+            Timer::after(Duration::from_millis(200)).await;
+            continue;
+        }
+        let mut params = PingParams::new(Ipv4Addr::from_bits(target));
+        params
+            .set_count(1)
+            .set_timeout(Duration::from_millis(1500))
+            .set_rate_limit(Duration::from_millis(0))
+            .set_payload(&payload);
+        PINGS_SENT.fetch_add(1, Ordering::Relaxed);
+        if let Ok(rtt) = pings.ping(&params).await {
+            let ms = rtt.as_millis() as u32;
+            PINGS_ANSWERED.fetch_add(1, Ordering::Relaxed);
+            PING_RTT_SUM_MS.fetch_add(ms, Ordering::Relaxed);
+            PING_RTT_MAX_MS.fetch_max(ms, Ordering::Relaxed);
+        }
+        Timer::after(Duration::from_millis(500)).await;
+    }
 }
 
 #[embassy_executor::task]
@@ -216,7 +263,9 @@ impl AccessPoint {
             }
         }
         self.held.clear(address);
-        self.stations.remove(address);
+        if self.stations.remove(address).is_some() && self.stations.iter().next().is_none() {
+            PING_TARGET.store(0, Ordering::Relaxed);
+        }
     }
 
     fn anyone_dozing(&self) -> bool {
@@ -661,6 +710,14 @@ impl AccessPoint {
         let ether_type = [llc[6], llc[7]];
         let payload_at = body + 8;
         UP_FRAMES.fetch_add(1, Ordering::Relaxed);
+        // the station's address, for the access point's own pings
+        if ether_type == [0x08, 0x00] {
+            if let Some(source) = f.get(payload_at + 12..payload_at + 16) {
+                if source[..3] == [192, 168, 4] {
+                    PING_TARGET.store(u32::from_be_bytes([source[0], source[1], source[2], source[3]]), Ordering::Relaxed);
+                }
+            }
+        }
         let for_us = destination == self.bss.bssid;
         let group = is_group(&destination);
         if for_us || group {
@@ -784,6 +841,7 @@ async fn main(spawner: Spawner) {
         embassy_net::new(device, config, mk_static!(StackResources<6>, StackResources::new()), seed);
     spawner.spawn(net_task(stack_runner).expect("net task"));
     spawner.spawn(dhcp_task(stack).expect("dhcp task"));
+    spawner.spawn(ping_task(stack).expect("ping task"));
 
     static HELD_FRAMES: ConstStaticCell<Held> = ConstStaticCell::new(Held::new());
     let mut ap = AccessPoint {
@@ -890,7 +948,7 @@ async fn main(spawner: Spawner) {
                 ap.reply(|out, _| frames::deauthentication(out, b, gone, reason::INACTIVITY)).await;
             }
             println!(
-                "open-ap: up_s={} stations={} beacons={} beacon_failures={} replies={} unacked={} handshakes={} resent={} refused={} timeouts={} up={} down={} forwarded={} plaintext_dropped={} replays={} held={} held_dropped={} released={} group_held={} ps_polls={} wakes={} dozing_now={} strangers={}",
+                "open-ap: up_s={} stations={} beacons={} beacon_failures={} replies={} unacked={} handshakes={} resent={} refused={} timeouts={} up={} down={} forwarded={} plaintext_dropped={} replays={} held={} held_dropped={} released={} group_held={} ps_polls={} wakes={} dozing_now={} strangers={} ap_pings={}/{} rtt_avg_ms={} rtt_max_ms={}",
                 started.elapsed().as_secs(),
                 ap.stations.iter().count(),
                 BEACONS.load(Ordering::Relaxed),
@@ -914,6 +972,10 @@ async fn main(spawner: Spawner) {
                 WAKES.load(Ordering::Relaxed),
                 ap.stations.iter().filter(|s| s.power_save).count(),
                 STRANGERS.load(Ordering::Relaxed),
+                PINGS_ANSWERED.load(Ordering::Relaxed),
+                PINGS_SENT.load(Ordering::Relaxed),
+                PING_RTT_SUM_MS.load(Ordering::Relaxed) / PINGS_ANSWERED.load(Ordering::Relaxed).max(1),
+                PING_RTT_MAX_MS.load(Ordering::Relaxed),
             );
         }
     }
