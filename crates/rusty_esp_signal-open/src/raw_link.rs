@@ -374,6 +374,14 @@ impl<E: Sha256Blocks> RawLink<E> {
         self.send_raw(&buf.0[..n]).await
     }
 
+    /// Send `bytes` as one ESP-NOW datagram outside any session, to the
+    /// peer (broadcast until one is known): a probe, a numbered beacon for
+    /// counting loss. Nothing sent here is authenticated; the link's own
+    /// frames go through [`RawLink::send`].
+    pub async fn send_unsealed(&mut self, bytes: &[u8]) -> Result<()> {
+        self.send_raw(bytes).await
+    }
+
     /// Receive one frame from the peer within `patience` and open it with
     /// `session`, the plaintext copied into `out`. `Timeout` when nothing
     /// came; a refused frame returns the core's error and is counted in the

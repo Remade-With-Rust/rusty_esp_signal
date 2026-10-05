@@ -70,6 +70,49 @@ const JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// sealed frame's header and tag.
 const PAYLOAD: usize = 64;
 
+/// `JANUS_BEACON=count,gap_us,length` at build time: instead of S1, send
+/// that many numbered broadcasts (one way, no session) for a receiver to
+/// count -- `JB`, a tag octet for the stack, a 32-bit sequence number,
+/// filler. The same frames from both stacks, at the same pace.
+fn beacon_plan() -> Option<(u32, u64, usize)> {
+    let mut parts = option_env!("JANUS_BEACON")?.split(',');
+    let count = parts.next()?.trim().parse().ok()?;
+    let gap_us = parts.next()?.trim().parse().ok()?;
+    let length: usize = parts.next()?.trim().parse().ok()?;
+    Some((count, gap_us, length.clamp(7, 250)))
+}
+
+async fn beacon(
+    sender: &mut esp_radio::esp_now::EspNowSender,
+    count: u32,
+    gap_us: u64,
+    length: usize,
+) {
+    println!("S1 beacon stack=blob count={count} gap_us={gap_us} len={length}");
+    // let the receiver's capture start (and a USB console reattach)
+    Timer::after(Duration::from_secs(3)).await;
+    let mut frame = [0xA5u8; 250];
+    frame[..3].copy_from_slice(b"JBB");
+    let started = embassy_time::Instant::now();
+    let mut failed = 0u32;
+    for sequence in 0..count {
+        Timer::at(started + Duration::from_micros(u64::from(sequence) * gap_us)).await;
+        frame[3..7].copy_from_slice(&sequence.to_be_bytes());
+        if sender
+            .send_async(&esp_radio::esp_now::BROADCAST_ADDRESS, &frame[..length])
+            .await
+            .is_err()
+        {
+            failed += 1;
+        }
+    }
+    println!(
+        "S1 beacon elapsed_ms={} sent={count} failed={failed}",
+        started.elapsed().as_millis()
+    );
+    println!("RESULT: beacons done sent={count} failed={failed}");
+}
+
 fn now() -> Micros {
     Micros(Instant::now().duration_since_epoch().as_micros())
 }
@@ -124,7 +167,14 @@ async fn main(_spawner: embassy_executor::Spawner) {
     .expect("station config");
 
     let esp_now = wifi.esp_now();
-    let (_manager, sender, receiver) = esp_now.split();
+    #[allow(unused_mut)]
+    let (_manager, mut sender, receiver) = esp_now.split();
+    if let Some((count, gap_us, length)) = beacon_plan() {
+        beacon(&mut sender, count, gap_us, length).await;
+        loop {
+            Timer::after(Duration::from_secs(60)).await;
+        }
+    }
     let mut link = EspNowLink::new(
         sender,
         receiver,

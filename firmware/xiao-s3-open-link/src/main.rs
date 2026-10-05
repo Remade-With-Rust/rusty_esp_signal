@@ -82,6 +82,41 @@ const fn parse_channel(s: &str) -> u8 {
     n
 }
 
+/// `JANUS_BEACON=count,gap_us,length` at build time: instead of S1, send
+/// that many numbered broadcasts (one way, no session) for a receiver to
+/// count -- `JB`, a tag octet for the stack, a 32-bit sequence number,
+/// filler. The same frames from both stacks, at the same pace.
+fn beacon_plan() -> Option<(u32, u64, usize)> {
+    let mut parts = option_env!("JANUS_BEACON")?.split(',');
+    let count = parts.next()?.trim().parse().ok()?;
+    let gap_us = parts.next()?.trim().parse().ok()?;
+    let length: usize = parts.next()?.trim().parse().ok()?;
+    Some((count, gap_us, length.clamp(7, 250)))
+}
+
+async fn beacon(link: &mut RawLink, count: u32, gap_us: u64, length: usize) {
+    println!("S1 beacon stack=open-mac count={count} gap_us={gap_us} len={length}");
+    // let the receiver's capture start
+    Timer::after(Duration::from_secs(3)).await;
+    let mut frame = [0xA5u8; 250];
+    frame[..3].copy_from_slice(b"JBO");
+    let started = embassy_time::Instant::now();
+    let mut failed = 0u32;
+    for sequence in 0..count {
+        Timer::at(started + Duration::from_micros(u64::from(sequence) * gap_us)).await;
+        frame[3..7].copy_from_slice(&sequence.to_be_bytes());
+        if link.send_unsealed(&frame[..length]).await.is_err() {
+            failed += 1;
+        }
+    }
+    println!(
+        "S1 beacon elapsed_ms={} sent={count} failed={failed}",
+        started.elapsed().as_millis()
+    );
+    raw_line();
+    println!("RESULT: beacons done sent={count} failed={failed}");
+}
+
 fn now() -> Micros {
     Micros(Instant::now().duration_since_epoch().as_micros())
 }
@@ -149,6 +184,13 @@ async fn main(spawner: embassy_executor::Spawner) {
             "unicast once the peer is known"
         }
     );
+
+    if let Some((count, gap_us, length)) = beacon_plan() {
+        beacon(&mut link, count, gap_us, length).await;
+        loop {
+            Timer::after(Duration::from_secs(60)).await;
+        }
+    }
 
     #[cfg(feature = "role-responder")]
     responder(&mut link, &me, &mut rng).await;
