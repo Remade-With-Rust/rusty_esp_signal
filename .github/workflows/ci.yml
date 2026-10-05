@@ -159,6 +159,9 @@ jobs:
       matrix:
         project:
           - xiao-s3-sense-hal-ble-provision
+          # the link on raw frames on the open MAC (E4); its image is E6's
+          # gate: at most esp-radio's 5 dBm, none of esp-radio
+          - xiao-s3-open-link
     steps:
       - uses: actions/checkout@v4
       - name: Authorise private sibling fetches
@@ -176,3 +179,5 @@ jobs:
       # needs rust-src, which the action above installs.
       - run: cargo build --release
         working-directory: firmware/${{ matrix.project }}
+      - if: ${{ matrix.project == 'xiao-s3-open-link' }}
+        run: python3 tools/open-mac-image-check.py firmware/xiao-s3-open-link/target/xtensa-esp32s3-none-elf/release/xiao-s3-open-link
