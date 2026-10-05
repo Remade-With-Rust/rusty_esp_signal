@@ -1924,3 +1924,29 @@ lies. NOT Wi-Fi certified.
 ## E3 of the experiments plan: the access point on the open MAC, from the bench to a cell (2026-10-04)
 
 The bench XIAO hosted a network from the open lower MAC through P3–P7 (beacons from the S3's soft-AP TSF, open and WPA2-PSK joins by the laptop, power save with the laptop dozing, group-key rotation, reconnects and a re-association after the access point reset itself, WMM and HT with Windows receiving at 72.2 Mbit/s), then the runner became a library: `rusty_esp_signal-open::access_point` (`hosted_stack` and its tasks in `hal::netstack`'s hosting shape; `stats()` for a watch line), `ap_core` under it (host tests, an independent Python check, `hold` for dozing stations, `qos` for WMM/HT). `rusty_esp_signal-esp` gained `udp-link`: the mID link over UDP on any embassy-net stack with no esp-radio behind it. FoA's receive queue length was the literal `2` in its interface transmute (fixed: `RX_QUEUE_LEN`). C16 — the camera cell hosting its own network on this, esp-radio absent — passed X9's kill test on the XIAO on run 7 (the umbrella's `docs/plans/e3-access-point.md`, P8). NOT Wi-Fi certified.
+
+## E4 of the experiments plan: the link on raw frames (2026-10-04)
+
+The mID link rides ESP-NOW's vendor action frame, laid out and parsed by hand (`vendor/open-mac/espnow_frame`: version 1 written, 1 and 2 read, a receiver's duplicate detection; eight host tests, `ieee80211`'s own parser reading the frame back) on the open lower MAC: `rusty_esp_signal-open::raw_link` (`RawLink` in `UdpLink`'s shape: handshake, send and receive under a session; its receive side drained by a task into a queue of 16; the hardware filter set to ESP-NOW's addresses; broadcast until a handshake names the peer, then acknowledged unicast with seven retries; a learned peer forgotten when it stops answering), alone (`raw_link`) or beside the access point on the radio's second virtual interface (`access_point::hosted_stack_with_raw_link`). No esp-radio, no `libespnow`.
+
+**Across the two stacks** (S1: 1,000 round trips of 64 bytes under the session, a lost frame costing its 500 ms timeout; the initiator on a XIAO ESP32-S3, the responder `c6-s1-link` on esp-radio's ESP-NOW on an ESP32-CAM, channel 1):
+
+| the initiator | it sends | back, of 1,000 | elapsed |
+|---|---|---|---|
+| raw frames on the open MAC (`xiao-s3-open-link`) | acknowledged unicast once the peer is known | 1000, 1000, 1000 | 7,046 / 6,982 / 6,885 ms |
+| the same, kept on broadcast | broadcast, once | 979, 986 | 16,536 / 13,161 ms |
+| the blob (`c6-s1-link` for the S3) | broadcast, once | 958, 960, 950 | 27,388 / 26,573 / 31,617 ms |
+
+The handshake first time in every pass, no refused tag in any of the eight passes, the third identity refused each time. The zero is the acknowledgement, not the stack: on broadcast both lose frames on a busy channel, and every lost frame was lost on the way to the ESP32-CAM (its responder received exactly what came back). Why it missed fewer of the open MAC's broadcasts than of the blob's is not established.
+
+**What it bought** (the same link probe, the same chip):
+
+| | esp-radio's ESP-NOW | raw frames on the open MAC |
+|---|---|---|
+| app image as flashed | 471,776 B | 192,416 B |
+| C in it (the umbrella's `c-census.py`) | 322,292 B, 8 Espressif archives, 1,734 symbols | 33,519 B, libphy alone, 180 symbols |
+| heap in use after the radio is up and 1,000 round trips are done | (53 KB at radio start, E0) | 0 |
+
+**Through a bridge.** The generated camera cell that hosts its WPA2 network from the open MAC and links on raw frames (espino's C17) passed the bridge kill test on the XIAO on its third run: linked, listed with a verifying manifest, the owner's adoption, a signed update of 540,512 B in 46.9 s (`sent=134 unacked=0 heard=2059 taken=2058 inbox_dropped=0 duplicates=1`), the new slot booted and marked valid, paired after a restart and a hard reset. The bridge's side was `firmware/espnow-relay` on the ESP32-CAM (esp-radio's ESP-NOW to and from UART0 as text lines; it holds no key) with the umbrella's `tools/e4-relay.py` carrying its line to the bridge example's unmodified UDP radio. Run 1 stalled on the bench's shim (a serial read sitting out its timeout); run 2 passed on the device and failed the client's patience (a 115200-baud line carries 4.2 KB/s: the relay takes `JANUS_RELAY_BAUD`, 460800 here, and drains its UART by interrupt) and showed a retried frame reaching the session as a replay, which `raw_link` now drops at the radio.
+
+Also from the bench: `c6-s1-link` on a plain ESP32 needs the DRAM its ROM loader used for the radio's heap (32 KB alone does not start it) and `ESP_HAL_CONFIG_MIN_CHIP_REVISION=100` on a revision 1.0 chip; `JANUS_S1_REARM_S` restarts it after its verdict for a board with no reset line. NOT Wi-Fi certified; the PHY and its limits are untouched.
