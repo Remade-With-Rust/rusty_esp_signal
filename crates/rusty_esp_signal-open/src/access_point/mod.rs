@@ -16,7 +16,8 @@
 //! answered, stations gone quiet dropped. The PHY is Espressif's `libphy`,
 //! untouched. Counters for the firmware's watch line: [`stats`].
 //!
-//! Only WPA2-PSK is hosted: a passphrase of 8 to 63 bytes.
+//! WPA2-PSK (a passphrase of 8 to 63 bytes) or, for a device's setup
+//! network, an open one ([`AccessPointConfig::open`]).
 
 mod tsf;
 
@@ -438,7 +439,7 @@ impl AccessPoint {
     async fn begin_rekey(&mut self, now: u64) {
         self.rekey_due = false;
         self.rekey_at_us = now + self.rekey_interval_us;
-        if self.pending_gtk.is_some() {
+        if !self.bss.protected || self.pending_gtk.is_some() {
             return;
         }
         let key_id = if self.gtk.key_id == 1 { 2 } else { 1 };
@@ -684,8 +685,32 @@ impl AccessPoint {
         .await;
     }
 
-    /// A station associated: its 4-way handshake begins with a fresh ANonce.
+    /// A station associated: its 4-way handshake begins with a fresh ANonce;
+    /// on an open network it is connected at once.
     async fn begin_handshake(&mut self, station: Address) {
+        if !self.bss.protected {
+            if let Some(free) = self
+                .peers
+                .iter_mut()
+                .find(|p| p.as_ref().is_none_or(|p| p.address == station))
+            {
+                *free = Some(Peer {
+                    address: station,
+                    authenticator: Authenticator::new([0; 32]),
+                    stage: Stage::Done,
+                    sent_at_us: 0,
+                    resends: 0,
+                    key_slot: None,
+                    tx_packet_number: 0,
+                    rx_packet_number: 0,
+                    group_key_wanted: false,
+                    qos: false,
+                    ladder: Ladder::new(None),
+                });
+            }
+            self.stations.connected(&station);
+            return;
+        }
         let mut anonce = [0u8; 32];
         Rng::new().read(&mut anonce);
         if let Some(free) = self
@@ -832,6 +857,84 @@ impl AccessPoint {
         }
     }
 
+    /// A data frame on an open network: in the clear, to a connected
+    /// station or to the group.
+    async fn transmit_open(
+        &mut self,
+        to: Address,
+        from: &[u8],
+        ether_type: [u8; 2],
+        payload: &[u8],
+        more_data: bool,
+        group: bool,
+    ) {
+        let (qos_station, rate) = if group {
+            (false, one_mbit())
+        } else {
+            let Some(peer) = self.peer(&to) else {
+                return;
+            };
+            (peer.qos, peer.ladder.rate())
+        };
+        let header = if qos_station { 26 } else { 24 };
+        let mut buf = self.tx.alloc_tx_buf().await;
+        let n = header + 8 + payload.len();
+        let Some(frame) = buf.get_mut(..n) else {
+            return;
+        };
+        let subtype = if qos_station { 0x88 } else { 0x08 };
+        frame[..4].copy_from_slice(&[subtype, 0x02 | if more_data { 0x20 } else { 0 }, 0, 0]);
+        frame[4..10].copy_from_slice(&to);
+        frame[10..16].copy_from_slice(&self.bss.bssid);
+        frame[16..22].copy_from_slice(from);
+        frame[22..24].copy_from_slice(&[0, 0]);
+        if qos_station {
+            frame[24..26].copy_from_slice(&qos::qos_control(0));
+        }
+        frame[header..header + 6].copy_from_slice(&SNAP);
+        frame[header + 6..header + 8].copy_from_slice(&ether_type);
+        frame[header + 8..].copy_from_slice(payload);
+        let retry = if group {
+            RetryBehaviour::Drop
+        } else {
+            RetryBehaviour::RetryUntil(7)
+        };
+        let pending = self.tx.transmit_edca(
+            EdcaAccessCategory::default(),
+            buf,
+            n,
+            plcp(rate),
+            TxMacParameters {
+                wait_for_ack: !group,
+                override_seq_num: true,
+                ..Default::default()
+            },
+            retry,
+        );
+        DOWN_FRAMES.fetch_add(1, Ordering::Relaxed);
+        if qos_station {
+            QOS_DATA_SENT.fetch_add(1, Ordering::Relaxed);
+        }
+        if matches!(rate, TxPhyRate::Ht(_)) {
+            HT_SENT.fetch_add(1, Ordering::Relaxed);
+        }
+        if !group {
+            // the ladder learns from the acknowledgement, as on WPA2
+            let done = pending.wait_for_completion().await;
+            let acked = matches!(done, Some(d) if d.result.is_ok());
+            if !acked {
+                DATA_UNACKED.fetch_add(1, Ordering::Relaxed);
+            }
+            if let Some(peer) = self.peer(&to) {
+                if acked {
+                    peer.ladder.acknowledged();
+                } else {
+                    peer.ladder.lost();
+                }
+            }
+        }
+    }
+
     /// A data frame from the access point, from an Ethernet frame: protected
     /// under the station's pairwise key, or the group key when
     /// group-addressed; `more_data` for a frame released to a dozing
@@ -845,6 +948,11 @@ impl AccessPoint {
         let ether_type = [eth[12], eth[13]];
         let payload = &eth[14..];
         let group = is_group(&to);
+        if !self.bss.protected {
+            self.transmit_open(to, from, ether_type, payload, more_data, group)
+                .await;
+            return;
+        }
         let (slot, key_id, packet_number, qos_station, rate) = if group {
             self.group_packet_number += 1;
             (
@@ -1082,6 +1190,15 @@ impl AccessPoint {
         }
         let header = if subtype & 0b1000 != 0 { 26 } else { 24 };
         let protected = fc1 & 0x40 != 0;
+        if !self.bss.protected {
+            // an open network: data in the clear, and nothing protected can
+            // be meant for it
+            if protected {
+                return;
+            }
+            self.station_data(f, header, station, destination, up).await;
+            return;
+        }
         if !protected {
             // in the clear only the 4-way handshake's frames (E2's F6, the
             // access point's side)
@@ -1114,7 +1231,20 @@ impl AccessPoint {
             return;
         }
         peer.rx_packet_number = packet_number;
-        let body = header + 8;
+        self.station_data(f, header + 8, station, destination, up).await;
+    }
+
+    /// A station's data frame, its LLC header at `body` (after the CCMP
+    /// header, or right after the MAC header on an open network): to the
+    /// stack, to another station, or both.
+    async fn station_data(
+        &mut self,
+        f: &mut [u8],
+        body: usize,
+        station: Address,
+        destination: Address,
+        up: &mut ch::RxRunner<'static, MTU>,
+    ) {
         let Some(llc) = f.get(body..body + 8) else {
             return;
         };
@@ -1123,7 +1253,7 @@ impl AccessPoint {
         }
         let ether_type = [llc[6], llc[7]];
         let payload_at = body + 8;
-        if ether_type == EAPOL {
+        if ether_type == EAPOL && self.bss.protected {
             // a group-key handshake's message 2, as the station-side
             // unprotect lays a decrypted frame out
             let mut plain = [0u8; 512];
@@ -1196,7 +1326,8 @@ mod heapless_rsn {
 pub struct AccessPointConfig {
     /// The network's name, up to 32 bytes.
     pub ssid: &'static str,
-    /// WPA2-PSK's passphrase, 8 to 63 bytes.
+    /// WPA2-PSK's passphrase, 8 to 63 bytes; empty for an open network
+    /// ([`AccessPointConfig::open`]).
     pub passphrase: &'static str,
     /// The 2.4 GHz channel, 1 to 13.
     pub channel: u8,
@@ -1228,6 +1359,17 @@ impl AccessPointConfig {
             ht: true,
             tsf_seed_us,
         }
+    }
+
+    /// An open network: no passphrase, no handshake, data in the clear.
+    /// For a device's setup network (the experiments plan's E7): what
+    /// crosses it is a setup session that authenticates and seals itself
+    /// (`rusty_esp_signal-core::setup::page`), and it is hosted only while
+    /// the device is unprovisioned or its setup window is open. Everything
+    /// else as [`AccessPointConfig::new`].
+    #[must_use]
+    pub const fn open(ssid: &'static str, tsf_seed_us: u64) -> Self {
+        Self::new(ssid, "", tsf_seed_us)
     }
 }
 
@@ -1290,16 +1432,19 @@ fn bring_up<const SOCK: usize>(
     seed: u64,
     raw_peer: Option<[u8; 6]>,
 ) -> (OpenAccessPoint, Option<(RawLink, RawRunner)>) {
+    let protected = !config.passphrase.is_empty();
     assert!(
-        (8..=63).contains(&config.passphrase.len()),
-        "WPA2-PSK's passphrase is 8 to 63 bytes"
+        !protected || (8..=63).contains(&config.passphrase.len()),
+        "WPA2-PSK's passphrase is 8 to 63 bytes (or empty: an open network)"
     );
     assert!(config.ssid.len() <= 32, "an SSID is up to 32 bytes");
     tsf::start_access_point_clock_at(config.tsf_seed_us);
 
-    // the PMK, once: PBKDF2-HMAC-SHA1, 4,096 rounds
+    // the PMK, once: PBKDF2-HMAC-SHA1, 4,096 rounds (none on an open network)
     let mut pmk = [0u8; 32];
-    ieee80211::crypto::map_passphrase_to_psk(config.passphrase, config.ssid, &mut pmk);
+    if protected {
+        ieee80211::crypto::map_passphrase_to_psk(config.passphrase, config.ssid, &mut pmk);
+    }
 
     static FOA: StaticCell<FoAResources> = StaticCell::new();
     static VIF: StaticCell<VirtualInterface<'static>> = StaticCell::new();
@@ -1375,7 +1520,7 @@ fn bring_up<const SOCK: usize>(
             ssid: &ssid_bytes[..config.ssid.len()],
             channel: config.channel,
             beacon_interval_tu: BEACON_INTERVAL_TU,
-            protected: true,
+            protected,
             ht: config.ht,
         },
         stations: Stations::new(),
