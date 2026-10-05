@@ -1,21 +1,27 @@
 """E6's gate where signal's CI can run it: an open-MAC image transmits at
 esp-radio's cap and carries none of esp-radio.
 
-    python tools/open-mac-image-check.py ELF [--allow-power QDBM]
+    python tools/open-mac-image-check.py ELF [--map MAP] [--allow-power QDBM]
 
 Reads the ELF's symbol table (standard library only): the PHY init data's
 fourteen per-rate power limits must be at most 20 quarter dBm (5 dBm, the
 cap esp-radio sets; `--allow-power` names another cap a firmware chose with
 `ESP_PHY_CONFIG_PHY_MAX_TX_POWER`), and no symbol of esp-radio's blob API
-(`esp_wifi_*`, `esp_now_*`, `ieee80211_*`, `ppTxPkt`) may be defined. The
-umbrella's `tools/e6-phy.py` is the full gate (archives and members from the
-linker map, the PHY functions our code calls); this is the part that needs
-nothing but the image.
+(`esp_wifi_*`, `esp_now_*`, `ieee80211_*`, `ppTxPkt`) may be defined. With
+`--map` (the linker map of the same link, GNU ld's), every C archive that
+put bytes in the image is listed by member, and anything but `libphy.a`
+fails. The umbrella's `tools/e6-phy.py` is the full gate (the census's
+classification, and the PHY functions our code calls).
 """
+import re
 import struct
 import sys
 
 CAP = 20
+ACCEPTED = {"libphy.a"}
+# an input section from an archive member: its address, its size, the
+# archive and the member (a long section name puts these on the next line)
+MAP_PIECE = re.compile(r"0x[0-9a-f]+\s+0x([0-9a-f]+)\s+(\S+\.a)\(([^)]+)\)")
 FORBIDDEN_PREFIXES = ("esp_wifi_", "esp_now_", "ieee80211_")
 FORBIDDEN = {"ppTxPkt", "ppRxPkt", "wDev_ProcessFiq"}
 
@@ -42,6 +48,25 @@ def symbols(path):
     return b, secs, out
 
 
+def archives(map_path):
+    """{archive: {member: bytes}} for the C archives in a GNU ld map."""
+    got = {}
+    started = False
+    for line in open(map_path, encoding="utf-8", errors="replace"):
+        if not started:
+            started = line.startswith("Linker script and memory map")
+            continue
+        m = MAP_PIECE.search(line)
+        if not m:
+            continue
+        size = int(m.group(1), 16)
+        name = m.group(2).replace("\\", "/").rsplit("/", 1)[-1]
+        if size:
+            got.setdefault(name, {}).setdefault(m.group(3), 0)
+            got[name][m.group(3)] += size
+    return got
+
+
 def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__)
@@ -64,9 +89,20 @@ def main():
                    if 0 < shndx < len(secs) and (n.startswith(FORBIDDEN_PREFIXES) or n in FORBIDDEN)})
     if blob:
         failed.append(f"esp-radio's blob API is in the image: {', '.join(blob[:8])}")
+    if "--map" in sys.argv:
+        got = archives(sys.argv[sys.argv.index("--map") + 1])
+        for name in sorted(got):
+            total = sum(got[name].values())
+            print(f"C archive {name}: {len(got[name])} members, {total:,} B")
+        extra = sorted(set(got) - ACCEPTED)
+        if extra:
+            failed.append(f"C beside the PHY: {', '.join(extra)}")
+        if "libphy.a" not in got:
+            failed.append("no libphy.a in the map: is this the open MAC's image?")
     if failed:
         sys.exit("open-MAC image check FAILED: " + "; ".join(failed))
-    print(f"open-MAC image check: at most {cap / 4:g} dBm, no esp-radio")
+    print(f"open-MAC image check: at most {cap / 4:g} dBm, no esp-radio"
+          + (", no C but the PHY" if "--map" in sys.argv else ""))
 
 
 if __name__ == "__main__":
