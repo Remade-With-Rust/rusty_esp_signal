@@ -53,6 +53,12 @@ use rusty_esp_mid_core::key::DeviceKey;
 use rusty_esp_signal_esp::hal::link::EspNowLink;
 use rusty_esp_signal_esp::hal::rng::EspTrng;
 
+/// `JANUS_MAC_SNAPSHOT` (E5's P2 method): the MAC's registers as the radio
+/// stack left them.
+#[allow(dead_code)]
+#[path = "../../common/mac_snapshot.rs"]
+mod mac_snapshot;
+
 esp_bootloader_esp_idf::esp_app_desc!();
 
 #[cfg(all(feature = "role-initiator", feature = "role-responder"))]
@@ -169,6 +175,22 @@ async fn main(_spawner: embassy_executor::Spawner) {
     let esp_now = wifi.esp_now();
     #[allow(unused_mut)]
     let (_manager, mut sender, receiver) = esp_now.split();
+    if mac_snapshot::ON {
+        // the blob's MAC, started in station mode with ESP-NOW on
+        Timer::after(Duration::from_millis(500)).await;
+        #[cfg(feature = "chip-esp32s3")]
+        mac_snapshot::window(
+            "blob",
+            mac_snapshot::S3_BASE,
+            mac_snapshot::S3_LEN,
+            mac_snapshot::S3_SKIP,
+        );
+        #[cfg(feature = "chip-esp32c6")]
+        mac_snapshot::list("blob", &mac_snapshot::C6_REGISTERS);
+        loop {
+            Timer::after(Duration::from_secs(60)).await;
+        }
+    }
     if let Some((count, gap_us, length)) = beacon_plan() {
         beacon(&mut sender, count, gap_us, length).await;
         loop {

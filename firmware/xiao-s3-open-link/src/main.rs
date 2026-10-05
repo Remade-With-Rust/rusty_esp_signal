@@ -43,6 +43,12 @@ use rusty_esp_mid_core::key::DeviceKey;
 use rusty_esp_signal_esp::hal::rng::EspTrng;
 use rusty_esp_signal_open::raw_link::{self, BROADCAST, RawLink};
 
+/// `JANUS_MAC_SNAPSHOT` (E5's P2 method): the MAC's registers as the radio
+/// stack left them.
+#[allow(dead_code)]
+#[path = "../../common/mac_snapshot.rs"]
+mod mac_snapshot;
+
 esp_bootloader_esp_idf::esp_app_desc!();
 
 #[cfg(all(feature = "role-initiator", feature = "role-responder"))]
@@ -184,6 +190,20 @@ async fn main(spawner: embassy_executor::Spawner) {
             "unicast once the peer is known"
         }
     );
+
+    if mac_snapshot::ON {
+        // the open MAC, brought up by esp-wifi-hal for the raw link
+        Timer::after(Duration::from_millis(500)).await;
+        mac_snapshot::window(
+            "open",
+            mac_snapshot::S3_BASE,
+            mac_snapshot::S3_LEN,
+            mac_snapshot::S3_SKIP,
+        );
+        loop {
+            Timer::after(Duration::from_secs(60)).await;
+        }
+    }
 
     if let Some((count, gap_us, length)) = beacon_plan() {
         beacon(&mut link, count, gap_us, length).await;
