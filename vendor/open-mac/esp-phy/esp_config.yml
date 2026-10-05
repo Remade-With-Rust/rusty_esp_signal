@@ -1,0 +1,34 @@
+crate: esp-phy
+
+options:
+  - name: phy_enable_usb
+    description: "Keeps USB running when using WiFi.
+      This allows debugging and log messages via USB Serial JTAG.
+      Turn off for best WiFi performance."
+    default:
+      - value: true
+
+  - name: phy_skip_calibration_after_deep_sleep
+    description: "Use PHY_RF_CAL_NONE after deep sleep."
+    default:
+      - value: false
+
+  - name: phy_full_calibration
+    description: "Use PHY_RF_CAL_FULL instead of PHY_RF_CAL_PARTIAL."
+    default:
+      - value: true
+
+  # Janus (E6): the open MAC's transmit power, matched to esp-radio's
+  - name: phy_max_tx_power
+    description: "The maximum transmit power for every rate, in quarter dBm,
+      written into the PHY's init data (ESP32-S3; the other chips keep
+      upstream's 20 dBm). 20 (5 dBm) is the cap esp-radio sets at start; 80
+      is ESP-IDF's default (20 dBm). Each rate's own ceiling still applies."
+    default:
+      - value: 20
+    constraints:
+      - type:
+          validator: integer_in_range
+          value:
+            start: 8
+            end: 85

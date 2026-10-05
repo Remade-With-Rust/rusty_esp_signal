@@ -242,7 +242,7 @@ impl AccessPoint {
                 println!("open-ap: authentication from {:02x?} status={status}", from);
                 self.reply(|out| frames::authentication(out, bss.bssid, from, status)).await;
             }
-            Some(Request::Association { from, ssid, rsn_element, reassociation }) => {
+            Some(Request::Association { from, ssid, rsn_element, reassociation, .. }) => {
                 let (status, aid) =
                     match self.stations.associate(from, ssid == Some(SSID), rsn_element, bss.protected) {
                         Ok(aid) => (status::SUCCESS, aid),

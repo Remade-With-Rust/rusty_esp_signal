@@ -5,8 +5,10 @@
 //! repository at pinned upstream commits and ported to the family's esp-hal
 //! 1.2 (`vendor/open-mac/UPSTREAM.md`). The PHY is still Espressif's
 //! `libphy`, the one radio blob in an image built on this crate; nothing here
-//! sets transmit power, channels or regulatory tables. Its first boot is on a
-//! sacrificial S3, never the bench board first.
+//! sets channels or regulatory tables. The transmit power is capped where
+//! esp-radio caps it, 5 dBm, by the vendored esp-phy's `phy_max_tx_power`
+//! option (quarter dBm; `ESP_PHY_CONFIG_PHY_MAX_TX_POWER` in a firmware's
+//! `[env]`, 80 for ESP-IDF's 20 dBm).
 //!
 //! The shape is `rusty_esp_signal-esp`'s `hal::netstack`, so a cell swaps
 //! one for the other: [`stack`] gives the embassy-net [`Stack`] and the

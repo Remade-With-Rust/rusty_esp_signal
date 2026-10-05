@@ -56,9 +56,12 @@ the link on raw frames for the ESP32-S3, with no esp-radio. **Images built
 on it carry no C except the PHY**: Espressif's `libphy`, 18 members,
 33.5 KB, which brings the radio up, calibrates it and tunes it. Our code
 calls ten of its functions and none that sets a transmit power or a
-regulatory table; the radio transmits at the PHY's own default, which is
-above the 5 dBm esp-radio sets. The umbrella's `tools/e6-phy.py` checks both
-for every open-MAC image. **Not Wi-Fi certified.**
+regulatory table. The transmit power is capped where esp-radio caps it,
+**5 dBm**, through the PHY's own init data (the vendored esp-phy's
+`phy_max_tx_power`, quarter dBm; `ESP_PHY_CONFIG_PHY_MAX_TX_POWER = "80"`
+for ESP-IDF's 20 dBm), so a firmware moving from esp-radio transmits as it
+did. The umbrella's `tools/e6-phy.py` checks all three for every open-MAC
+image. **Not Wi-Fi certified.**
 
 Every number, with the run that produced it:
 [`docs/LEDGER.md`](https://github.com/Remade-With-Rust/rusty_esp_signal/blob/main/docs/LEDGER.md).

@@ -21,6 +21,7 @@ register mapping.
 | `esp-wifi-hal/` | https://github.com/opensensor/esp-wifi-hal (`esp-wifi-hal/`) | `f159fcf` (2026-09-11) | the last commit before the fork began replacing `libphy` with Rust (`65bc9a2`). The S3 port was proposed upstream as https://github.com/esp32-open-mac/esp-wifi-hal/pull/23 (closed unmerged 2026-09-10; head `909be70`, an ancestor of this commit) |
 | `esp32s3-wifi-regs/src/wifi.rs`, `src/wifi/` | https://github.com/opensensor/esp-pacs (`esp32s3/src/`) | `37b54bd` (2026-09-10) | svd2rust output for the Wi-Fi MAC; proposed upstream as https://github.com/esp-rs/esp-pacs/pull/511. `lib.rs.upstream.diff` is the 9 lines the commit added to the PAC's root; `svd/wifi.yaml` the patch they were generated from |
 | `foa/`, `foa_sta/` | https://github.com/opensensor/FoA (fork of https://github.com/esp32-open-mac/FoA) | `39f4476` | what `f159fcf`'s station example pinned |
+| `esp-phy/` | https://crates.io/crates/esp-phy 0.3.0 (MIT OR Apache-2.0) | the published crate | vendored for E6; one change, below |
 | `ieee80211/` | https://crates.io/crates/ieee80211 0.5.9 (https://github.com/Frostie314159/ieee80211-rs `6a26b0a`) | the published crate | the frame parsers and EAPOL code under FoA; vendored for E2 (the umbrella's `docs/plans/e2-air-interface.md`), byte-identical to the published files in `4cf7d60` |
 
 Taken as they were at those commits (H1); every change since is in git
@@ -227,3 +228,15 @@ list. All pass on the port (2026-10-03).
   on the board: a retried frame whose acknowledgement was lost reached the
   link twice and the session refused the copy as a replay. Host-tested in
   `espnow.rs`; one caught in the passing run.
+- `esp-phy/` (E6, 2026-10-05): the published 0.3.0, with one change. The
+  ESP32-S3's PHY init data takes its per-rate maximum transmit power from a
+  new option, `phy_max_tx_power` (quarter dBm, 8 to 84), in place of the
+  fixed `CONFIG_ESP_PHY_MAX_TX_POWER = 20` dBm; the default is 20 quarter
+  dBm, 5 dBm, the cap esp-radio sets at start, so a firmware moving from
+  esp-radio to the open MAC transmits as it did (the owner's decision D-E6).
+  Each rate's own ceiling still applies; the other chips' tables are
+  upstream's. Set it in a firmware's `.cargo/config.toml`:
+  `[env] ESP_PHY_CONFIG_PHY_MAX_TX_POWER = "80"` for ESP-IDF's 20 dBm.
+  `esp-wifi-hal` depends on it by path; nothing else in an open-MAC image
+  depends on esp-phy. Before this the open MAC transmitted at the PHY's
+  20 dBm, 15 dB above esp-radio's cells (E4's beacon count).

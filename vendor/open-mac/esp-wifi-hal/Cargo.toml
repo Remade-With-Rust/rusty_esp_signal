@@ -14,7 +14,9 @@ repository = "https://github.com/opensensor/esp-wifi-hal"
 # esp-sync it pairs with. Upstream at f159fcf: esp-hal 1.1.1, esp-phy 0.2.0,
 # esp-wifi-sys 0.2.0, esp-sync 0.2.
 esp-hal = { version = "=1.2.0", features = ["unstable"] }
-esp-phy = { version = "=0.3.0" }
+# vendored beside this crate: the PHY's maximum transmit power is an option
+# there (E6), matched to esp-radio's 5 dBm by default
+esp-phy = { path = "../esp-phy" }
 esp-sync = "0.3.0"
 
 # The S3 only (upstream also carried the ESP32, S2 and C3).
