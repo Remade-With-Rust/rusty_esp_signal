@@ -15,7 +15,12 @@
 //!
 //! The carrier session ends when the session does (Result, a refusal that
 //! ends it, or [`super::device::IDLE_TIMEOUT_US`]): HTTP has no disconnect
-//! to report. This module parses nothing of HTTP itself: a server hands it
+//! to report. So a Start under the name in flight begins the session again,
+//! as a reconnect does on Bluetooth: a browser that learned its code was
+//! wrong at Reply never sends Confirm, and without this the person who
+//! retypes the code would wait out the idle minute (E7's bench, run 2: 63 s
+//! of Busy). The failure that Reply counted stands, and the backoff applies
+//! to the new Start, so starting again escapes nothing. This module parses nothing of HTTP itself: a server hands it
 //! the method and path it matched, the header's value and the body, and
 //! sends back the status and the bytes.
 
@@ -142,6 +147,8 @@ impl Page {
         match self.session {
             // another browser's session is in flight: it never sees this
             Some(current) if current != session => return Self::refuse(ResultCode::Busy, out),
+            // the same browser starting again: its half-finished session goes
+            Some(_) if body.get(1) == Some(&kind::START) => device.carrier_closed(),
             Some(_) => {}
             // idle: this message opens the carrier session
             None => self.session = Some(session),

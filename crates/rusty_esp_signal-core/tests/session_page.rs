@@ -2,7 +2,8 @@
 //! `setup::page`), the browser's half against the device's as an HTTP
 //! server would carry them: the session end to end, a second browser that
 //! never reaches the first one's session, the header, the statuses, the
-//! idle timeout, and a session built for another carrier.
+//! idle timeout, a browser starting again after a wrong code, and a session
+//! built for another carrier.
 
 use rusty_esp_core::Micros;
 use rusty_esp_core::hal::Kv;
@@ -269,6 +270,55 @@ fn an_abandoned_session_frees_the_carrier_after_the_idle_timeout() {
     b.now = b.now.add_micros(IDLE_TIMEOUT_US + 1);
     let (status, reply, _) = b.post(B, &start_b);
     assert_eq!((status, reply[1]), (200, kind::REPLY));
+}
+
+#[test]
+fn a_browser_that_retypes_its_code_starts_again_under_its_own_name() {
+    // E7's bench, run 2: a wrong code is found at Reply, the browser sends no
+    // Confirm, and the session it leaves held kept the person out for the
+    // idle minute. A Start under the same name begins it again.
+    let mut b = Bench::new();
+    let (_, discover) = b.get();
+    let devpub = *b.key.did().pubkey();
+    let mut buf = [0u8; MAX_MESSAGE];
+    let (mut wrong, n) = Browser::start(
+        &discover,
+        &Code::parse("8KXQ3-M9PRT").unwrap(),
+        Some(&devpub),
+        label::PAGE,
+        &mut InsecureTestRng::seeded(3),
+        &mut buf,
+    )
+    .unwrap();
+    let (_, reply, _) = b.post(A, &buf[..n]);
+    assert!(
+        wrong.on_reply(&reply, &mut buf).is_err(),
+        "the code is wrong"
+    );
+    assert_eq!(b.fails(), 1);
+
+    // retyped at once: the held session goes, the backoff answers
+    let (_, start) = b.browser(label::PAGE, 1);
+    let (status, answer, _) = b.post(A, &start);
+    assert_eq!(
+        (status, error_code(&answer)),
+        (403, Some(ResultCode::Backoff))
+    );
+    assert!(!b.page.in_flight(), "nothing held after the refusal");
+    assert_eq!(b.fails(), 1, "the refused Start counted nothing");
+
+    // a second later: a fresh session, and a stranger is still Busy
+    b.now = b.now.add_micros(1_000_001);
+    let (mut browser, start) = b.browser(label::PAGE, 1);
+    let (status, reply, _) = b.post(A, &start);
+    assert_eq!((status, reply[1]), (200, kind::REPLY));
+    assert_eq!(b.fails(), 2, "starting again escapes nothing");
+    let (_, start_b) = b.browser(label::PAGE, 2);
+    assert_eq!(b.post(B, &start_b).0, 409);
+    let n = browser.on_reply(&reply, &mut buf).unwrap();
+    let (status, ready, _) = b.post(A, &buf[..n]);
+    assert_eq!((status, ready[1]), (200, kind::READY));
+    assert_eq!(b.fails(), 0, "the verified Confirm cleared them");
 }
 
 #[test]

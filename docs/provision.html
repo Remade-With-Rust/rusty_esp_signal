@@ -789,7 +789,12 @@ function sessionName() {
   return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 }
 
-/** `exchange(message)` over the page at `base` ('' when the device serves this page). */
+/**
+ * `exchange(message)` over the page at `base` ('' when the device serves this page).
+ * Keep one per device for the page's life: a Start under the same name begins the
+ * session again, so a person who retypes a wrong code is not kept out by the session
+ * the wrong one left held (another name would be Busy until the device's idle minute).
+ */
 function openPage(base) {
   const name = sessionName();
   return async (message) => {

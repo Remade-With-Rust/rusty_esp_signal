@@ -1,0 +1,15 @@
+[build]
+target = "xtensa-esp32s3-none-elf"
+
+[target.xtensa-esp32s3-none-elf]
+runner = "espflash flash --monitor"
+# `-nostartfiles` (killing-C X11): no crti.o/crtn.o, no C in the image
+rustflags = ["-C", "link-arg=-Tlinkall.x", "-C", "link-arg=-nostartfiles"]
+
+[unstable]
+build-std = ["core", "alloc"]
+
+[env]
+ESP_LOG = "info"
+# the open MAC's receive queue (E3's C16, run 5)
+FOA_CONFIG_RX_QUEUE_LEN = "32"

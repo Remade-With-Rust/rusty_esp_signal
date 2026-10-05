@@ -234,6 +234,20 @@ await test('page: a wrong code fails, and nothing is applied', async () => {
   assert.equal(device.network(), undefined);
 });
 
+await test('page: a wrong code, then the right one on the same page, after the backoff', async () => {
+  const device = new SimPageDevice(CODE, 1000, 'bench-net');
+  serve(device);
+  const { bytes } = await api.readPageOffer('');
+  const exchange = api.openPage('');
+  await assert.rejects(api.unlock(exchange, bytes, '8KXQ3-M9PRT', '', 'page'), /code is wrong/);
+  // at once: the held session goes, and the device asks for a moment
+  await assert.rejects(api.unlock(exchange, bytes, CODE, '', 'page'), /too soon after a wrong code/);
+  device.advance_ms(1100);
+  const session = await api.unlock(exchange, bytes, CODE, '', 'page');
+  await api.provision(exchange, session, bytes, CODE, '', 'bench-net', 'example-pass-1', '', 'page');
+  assert.equal(device.network(), 'bench-net');
+});
+
 let failed = 0;
 for (const [verdict, name, e] of results) {
   console.log(`${verdict.padEnd(6)} ${name}`);

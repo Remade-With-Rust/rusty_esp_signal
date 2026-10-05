@@ -1,0 +1,46 @@
+[package]
+name = "xiao-s3-open-setup"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+description = "E7's bench: the setup session over the device's own page (setup protocol section 11.2) on an open network hosted by the open MAC, no Bluetooth and no esp-radio. NOT Wi-Fi certified."
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "xiao-s3-open-setup"
+path = "src/main.rs"
+test = false
+bench = false
+doctest = false
+
+[dependencies]
+# No esp-radio: the MAC is the vendored esp-wifi-hal and FoA's lower MAC
+# (rusty_esp_signal-open); esp-rtos is embassy's time.
+esp-hal = { version = "=1.2.0", features = ["esp32s3", "unstable", "rt"] }
+esp-rtos = { version = "=0.4.0", features = ["esp32s3", "embassy"] }
+esp-alloc = { version = "=0.11.0", features = ["esp32s3"] }
+esp-bootloader-esp-idf = { version = "=0.6.0", features = ["esp32s3"] }
+esp-println = { version = "=0.18.0", features = ["esp32s3"] }
+esp-backtrace = { version = "=0.20.0", features = ["esp32s3", "panic-handler", "println"] }
+esp-storage = { version = "=0.10.0", features = ["esp32s3"] }
+embassy-executor = "0.10"
+embassy-time = "0.5"
+embassy-net = { version = "0.9", default-features = false, features = ["proto-ipv4", "tcp", "udp", "medium-ethernet"] }
+static_cell = "2"
+
+rusty_esp_signal-open = { path = "../../crates/rusty_esp_signal-open", features = ["esp32s3"] }
+rusty_esp_signal-core = { path = "../../crates/rusty_esp_signal-core", default-features = false, features = ["alloc"] }
+rusty_esp_core = { git = "https://github.com/Remade-With-Rust/rusty_esp_core", version = "0.1", default-features = false, features = ["alloc"] }
+rusty_esp_mid-core = { git = "https://github.com/Remade-With-Rust/rusty_esp_mid", default-features = false, features = ["alloc"] }
+rusty_esp_mid-esp = { git = "https://github.com/Remade-With-Rust/rusty_esp_mid", default-features = false, features = ["esp-hal"] }
+# the camera page's HTTP, parsed in place (POST /setup, E7)
+rusty_esp_video-core = { git = "https://github.com/Remade-With-Rust/rusty_esp_video", default-features = false }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[workspace]

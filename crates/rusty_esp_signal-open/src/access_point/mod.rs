@@ -709,6 +709,11 @@ impl AccessPoint {
                 });
             }
             self.stations.connected(&station);
+            JOINS.fetch_add(1, Ordering::Relaxed);
+            note!(
+                "open-ap: {:02x?} associated on the open network: connected",
+                station
+            );
             return;
         }
         let mut anonce = [0u8; 32];
@@ -1092,14 +1097,15 @@ impl AccessPoint {
                 qos,
                 ht,
             }) => {
-                let (status, aid) =
-                    match self
-                        .stations
-                        .associate(from, ssid == Some(bss.ssid), rsn_element, true)
-                    {
-                        Ok(aid) => (status::SUCCESS, aid),
-                        Err(status) => (status, 0),
-                    };
+                let (status, aid) = match self.stations.associate(
+                    from,
+                    ssid == Some(bss.ssid),
+                    rsn_element,
+                    bss.protected,
+                ) {
+                    Ok(aid) => (status::SUCCESS, aid),
+                    Err(status) => (status, 0),
+                };
                 if status == status::SUCCESS {
                     self.stations.set_capabilities(&from, qos, ht);
                 }
@@ -1231,7 +1237,8 @@ impl AccessPoint {
             return;
         }
         peer.rx_packet_number = packet_number;
-        self.station_data(f, header + 8, station, destination, up).await;
+        self.station_data(f, header + 8, station, destination, up)
+            .await;
     }
 
     /// A station's data frame, its LLC header at `body` (after the CCMP

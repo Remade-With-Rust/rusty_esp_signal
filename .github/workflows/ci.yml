@@ -162,6 +162,9 @@ jobs:
           # the link on raw frames on the open MAC (E4); its image is E6's
           # gate: at most esp-radio's 5 dBm, none of esp-radio
           - xiao-s3-open-link
+          # the setup page on an open network from the open MAC (E7): the
+          # same gate
+          - xiao-s3-open-setup
     steps:
       - uses: actions/checkout@v4
       - name: Authorise private sibling fetches
@@ -181,8 +184,8 @@ jobs:
         working-directory: firmware/${{ matrix.project }}
       # E6's gate: the same link again with a linker map, then the image and
       # the map checked (at most 5 dBm, none of esp-radio, no C but the PHY)
-      - if: ${{ matrix.project == 'xiao-s3-open-link' }}
-        working-directory: firmware/xiao-s3-open-link
-        run: cargo rustc --release --bin xiao-s3-open-link -- -C link-arg=-Wl,-Map=${{ github.workspace }}/open-link.map
-      - if: ${{ matrix.project == 'xiao-s3-open-link' }}
-        run: python3 tools/open-mac-image-check.py firmware/xiao-s3-open-link/target/xtensa-esp32s3-none-elf/release/xiao-s3-open-link --map open-link.map
+      - if: ${{ startsWith(matrix.project, 'xiao-s3-open-') }}
+        working-directory: firmware/${{ matrix.project }}
+        run: cargo rustc --release --bin ${{ matrix.project }} -- -C link-arg=-Wl,-Map=${{ github.workspace }}/open-mac.map
+      - if: ${{ startsWith(matrix.project, 'xiao-s3-open-') }}
+        run: python3 tools/open-mac-image-check.py firmware/${{ matrix.project }}/target/xtensa-esp32s3-none-elf/release/${{ matrix.project }} --map open-mac.map
