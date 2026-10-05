@@ -40,11 +40,25 @@ millimetre-wave radar. Pure Rust, no C, no FFI, `no_std` by default.
 | the identity behind it | the same `did:mata` held across six reflashes |
 | the advertisement budget | 31 bytes, which is what forced the name and service layout |
 | a failed join | must not spend the modem — a device that cannot join has to stay askable |
+| a station on the open MAC (`rusty_esp_signal-open`, XIAO ESP32-S3) | a WPA2 join, DHCP, 100/100 pings, the camera page and 1,500 stream frames; heap at radio start 53 KB on the blob, 0.1 KB here |
+| an access point on the open MAC | a laptop joined as 802.11n (65 Mbit/s), through power save, group-key rotation and re-association; the camera cell hosting it took a signed 538 KB update over its own network |
+| the link on raw frames on the open MAC | 1,000 of 1,000 round trips, three runs, against esp-radio's ESP-NOW on an ESP32-CAM; a signed 540 KB update through a relay in 35–41 s; a laptop streaming at 14.92 fps from the same radio meanwhile |
 
-**A known gap, stated plainly:** channel-state presence and the peer-to-peer
-link are verified against captures and against the host, not yet on two chips
-talking to each other. Those rows need boards that are not on this bench, and
-the ledger says so rather than implying otherwise.
+**Known gaps, stated plainly:** channel-state presence is verified against
+captures and against the host, not on a chip; S1 as written (C6 to C6) has
+not run, for want of C6 boards. The ledger says so rather than implying
+otherwise.
+
+## The open MAC
+
+`rusty_esp_signal-open` (off by default) is a station, an access point and
+the link on raw frames for the ESP32-S3, with no esp-radio. **Images built
+on it carry no C except the PHY**: Espressif's `libphy`, 18 members,
+33.5 KB, which brings the radio up, calibrates it and tunes it. Our code
+calls ten of its functions and none that sets a transmit power or a
+regulatory table; the radio transmits at the PHY's own default, which is
+above the 5 dBm esp-radio sets. The umbrella's `tools/e6-phy.py` checks both
+for every open-MAC image. **Not Wi-Fi certified.**
 
 Every number, with the run that produced it:
 [`docs/LEDGER.md`](https://github.com/Remade-With-Rust/rusty_esp_signal/blob/main/docs/LEDGER.md).
