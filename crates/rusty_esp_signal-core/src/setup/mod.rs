@@ -28,6 +28,7 @@ mod browser;
 mod code;
 pub mod device;
 pub mod message;
+pub mod page;
 pub mod record;
 mod seal;
 mod spake;
@@ -37,6 +38,7 @@ pub use browser::{Browser, Failure, Outcome, Ready};
 pub use code::{ALPHABET, CODE_SYMBOLS, Code, DISPLAY_LEN};
 pub use device::{Answer, Applied, Device, Reset, Status, Window};
 pub use message::{Discover, MAX_MESSAGE, ResultCode};
+pub use page::{Page, PageAnswer};
 pub use record::{Record, RecordWriter};
 pub use seal::{Opener, Sealer, TAG_LEN};
 #[doc(hidden)]
