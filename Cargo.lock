@@ -1704,6 +1704,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "espnow_frame"
+version = "0.1.0"
+
+[[package]]
 name = "ether-type"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2969,9 +2973,11 @@ dependencies = [
  "embassy-net",
  "embassy-net-driver",
  "embassy-net-driver-channel",
+ "embassy-sync 0.8.0",
  "embassy-time",
  "esp-hal",
  "esp-wifi-hal",
+ "espnow_frame",
  "foa",
  "foa_sta",
  "ieee80211",
