@@ -37,9 +37,12 @@ use wasm_bindgen::prelude::*;
 use zeroize::Zeroize;
 
 /// What a device's Discover says, before anything is typed.
-#[wasm_bindgen(getter_with_clone)]
+#[wasm_bindgen]
 pub struct Offer {
     /// The device's `did:mata`.
+    // cloned for the getter on this field alone: on the whole struct the
+    // macro clones the `Copy` fields too, which clippy refuses
+    #[wasm_bindgen(getter_with_clone)]
     pub did: String,
     /// Whether it takes a setup code at all.
     pub takes_code: bool,
