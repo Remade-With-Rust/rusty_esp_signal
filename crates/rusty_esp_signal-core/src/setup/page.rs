@@ -41,6 +41,20 @@ pub const CONTENT_TYPE: &str = "application/octet-stream";
 /// Hex digits in the session's name.
 pub const SESSION_DIGITS: usize = 16;
 
+/// The page a device serves at `/` on its open setup network: the setup
+/// session's browser half (the same wasm and session script as
+/// `docs/provision.html`) with a form for the code and the network,
+/// gzip-compressed. Serve it with [`SETUP_PAGE_HEAD`]. Built by
+/// `tools/build-provision-page.py`, which checks it is what the build makes.
+#[cfg(feature = "setup-page")]
+pub const SETUP_PAGE_GZ: &[u8] = include_bytes!("setup-page.html.gz");
+
+/// The response head for [`SETUP_PAGE_GZ`], up to its `Content-Length`
+/// value (the server writes the length, then a blank line, then the bytes).
+/// Not cached: the page and the device's state go together.
+#[cfg(feature = "setup-page")]
+pub const SETUP_PAGE_HEAD: &str = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Encoding: gzip\r\nCache-Control: no-store\r\nConnection: close\r\nContent-Length: ";
+
 /// What one request answers: the HTTP status, the body's length in `out`,
 /// and what an accepted Settings changed (the credentials it carries: not
 /// `Clone`, as the session's own [`Answer`] is not).

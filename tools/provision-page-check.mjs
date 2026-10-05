@@ -248,6 +248,54 @@ await test('page: a wrong code, then the right one on the same page, after the b
   assert.equal(device.network(), 'bench-net');
 });
 
+// E7: the page a device serves on its own setup network (docs/setup-page.html,
+// gzipped into rusty_esp_signal-core): its own scripts, as they stand, against
+// the device half over the same fake fetch.
+const setupPage = readFileSync(path.join(root, 'docs', 'setup-page.html'), 'utf8');
+const setupScript = (id) => {
+  const m = setupPage.match(new RegExp(`<script id="${id}">([\\s\\S]*?)</script>`));
+  assert.ok(m, `the setup page has a <script id="${id}">`);
+  return m[1];
+};
+const setupApi = new Function(
+  `${setupScript('setup-wasm')}\n${setupScript('session')}\n${setupScript('setup-ui')}\n` +
+    'return { wasm_bindgen, PAGE_WASM, openPage, setUp };',
+)();
+await setupApi.wasm_bindgen({ module_or_path: Buffer.from(setupApi.PAGE_WASM, 'base64') });
+
+await test('setup page: the gzip the firmware serves is this page', async () => {
+  const { gunzipSync } = await import('node:zlib');
+  const gz = readFileSync(path.join(root, 'crates', 'rusty_esp_signal-core', 'src', 'setup', 'setup-page.html.gz'));
+  assert.equal(gunzipSync(gz).toString('utf8'), setupPage);
+  assert.equal(setupApi.PAGE_WASM, api.PAGE_WASM, 'the same wasm as provision.html');
+  assert.ok(!/log\([^)]*psk/i.test(setupPage) && !/say\([^)]*psk/i.test(setupPage), 'no line takes the passphrase');
+});
+
+await test('setup page: a device is set up, a wrong code first', async () => {
+  const device = new SimPageDevice(CODE, 1000, '');
+  serve(device);
+  const said = [];
+  const exchange = setupApi.openPage('');
+  await assert.rejects(setupApi.setUp('', exchange, '8KXQ3-M9PRT', 'bench-net', 'example-pass-1', '', '', (l) => said.push(l)), /code is wrong/);
+  device.advance_ms(1100);
+  const ssid = await setupApi.setUp('', exchange, CODE, 'bench-net', 'example-pass-1', 'porch', '', (l) => said.push(l));
+  assert.equal(ssid, 'bench-net');
+  assert.equal(device.network(), 'bench-net');
+  assert.ok(device.passphrase_is('example-pass-1'));
+  assert.ok(said.some((l) => l.includes('4 attempts left')), 'the attempts the wrong code left');
+});
+
+await test('setup page: the form is checked before an attempt is spent', async () => {
+  const device = new SimPageDevice(CODE, 1000, '');
+  const names = serve(device);
+  const exchange = setupApi.openPage('');
+  await assert.rejects(setupApi.setUp('', exchange, CODE, '', 'example-pass-1', '', '', () => {}), /type the network/);
+  await assert.rejects(setupApi.setUp('', exchange, CODE, 'bench-net', 'short', '', '', () => {}), /8 to 63/);
+  assert.equal(names.length, 0, 'nothing was posted');
+  const { offer } = await api.readPageOffer('');
+  assert.equal(offer.attempts_left, 5);
+});
+
 let failed = 0;
 for (const [verdict, name, e] of results) {
   console.log(`${verdict.padEnd(6)} ${name}`);

@@ -6,9 +6,10 @@ use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use embassy_net::{Config, DhcpConfig, Runner, Stack, StackResources};
 use embassy_time::{Duration, Timer, with_timeout};
 use foa::{FoAResources, FoARunner, VirtualInterface};
-use foa_sta::{
-    ConnectionConfig, Credentials, StaControl, StaError, StaNetDevice, StaResources, StaRunner,
-};
+/// FoA's station control: [`Station::control`]'s type, which a firmware
+/// names to hand it to its own task over [`run_station`].
+pub use foa_sta::StaControl;
+use foa_sta::{ConnectionConfig, Credentials, StaError, StaNetDevice, StaResources, StaRunner};
 use rusty_esp_signal_core::esp_core::Micros;
 use rusty_esp_signal_core::wifi::{Action, Event, Phase, PolicyConfig, StationPolicy};
 use static_cell::StaticCell;

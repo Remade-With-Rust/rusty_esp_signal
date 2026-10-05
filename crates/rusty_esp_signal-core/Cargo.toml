@@ -19,6 +19,11 @@ default = ["std"]
 # the crate is pure `core` and still builds on riscv32 bare metal.
 std = ["alloc", "rusty_esp_core/std", "rusty_esp_dsp/std", "rusty_esp_mid-core/std", "p256/std", "sha2/std", "zeroize/std"]
 alloc = ["rusty_esp_core/alloc", "rusty_esp_dsp/alloc", "rusty_esp_mid-core/alloc", "p256/alloc", "zeroize/alloc"]
+# The setup page a device serves at `/` on its open setup network (E7,
+# protocol section 11.2), gzipped (`setup::page::SETUP_PAGE_GZ`, ~76 KB of
+# flash): the page's wasm and session script, built by
+# tools/build-provision-page.py. Only a firmware that hosts it turns it on.
+setup-page = []
 
 [dependencies]
 rusty_esp_core = { workspace = true }
