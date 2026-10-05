@@ -27,12 +27,12 @@ const script = (id) => {
 // the page's wasm and session, in one scope, as the browser runs them
 const api = new Function(
   `${script('setup-wasm')}\n${script('session')}\n` +
-    'return { wasm_bindgen, PAGE_WASM, openSetup, readOffer, unlock, sendSettings, provision, parseScan, CHAR_STATUS, CHAR_SETUP, CHAR_DISCOVER };',
+    'return { wasm_bindgen, PAGE_WASM, openSetup, readOffer, openPage, readPageOffer, SESSION_HEADER, unlock, sendSettings, provision, parseScan, CHAR_STATUS, CHAR_SETUP, CHAR_DISCOVER };',
 )();
 assert.ok(api.PAGE_WASM.length > 0, 'the page carries its wasm: run tools/build-provision-page.py');
 await api.wasm_bindgen({ module_or_path: Buffer.from(api.PAGE_WASM, 'base64') });
 
-const { SimDevice } = createRequire(import.meta.url)(path.join(target, 'provision-sim', 'rusty_esp_signal_web.js'));
+const { SimDevice, SimPageDevice } = createRequire(import.meta.url)(path.join(target, 'provision-sim', 'rusty_esp_signal_web.js'));
 const [STATUS, SETUP, DISCOVER] = SimDevice.uuids();
 assert.deepEqual([STATUS, SETUP, DISCOVER], [api.CHAR_STATUS, api.CHAR_SETUP, api.CHAR_DISCOVER], 'the page names the table the router serves');
 
@@ -167,6 +167,71 @@ await test('the page names no retired characteristic and never logs a passphrase
   assert.ok(!page.includes('4a616e75-7300-4d41-5441-000000000101'), 'credentials is retired');
   assert.ok(!page.includes('4a616e75-7300-4d41-5441-000000000103'), 'scan is retired');
   assert.ok(!/log\([^)]*psk/i.test(page), 'no log line takes the passphrase');
+});
+
+// E7: the device's own page (protocol section 11.2). `fetch` is the page's
+// own call; here it reaches SimPageDevice, which is the firmware's
+// `setup::page` over in-memory stores. The status and the bytes come back as
+// a server would send them, and nothing else.
+function serve(device) {
+  const seen = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const method = init.method ?? 'GET';
+    assert.ok(url.endsWith('/setup'), `the page asks for /setup, not ${url}`);
+    let body;
+    if (method === 'GET') body = device.get();
+    else {
+      const name = init.headers?.[api.SESSION_HEADER] ?? '';
+      seen.push(name);
+      body = device.post(name, new Uint8Array(init.body));
+    }
+    const status = device.last_status;
+    return { status, ok: status === 200, arrayBuffer: async () => body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) };
+  };
+  return seen;
+}
+
+await test('page: a device is set up over its own page', async () => {
+  const device = new SimPageDevice(CODE, 1000, 'bench-net,next-door');
+  const names = serve(device);
+  const { bytes, offer } = await api.readPageOffer('');
+  assert.equal(offer.did, device.did);
+  const exchange = api.openPage('');
+  const session = await api.unlock(exchange, bytes, CODE, device.did, 'page');
+  assert.deepEqual(api.parseScan(session.scan).map((n) => n.ssid), ['bench-net', 'next-door']);
+  await api.provision(exchange, session, bytes, CODE, device.did, 'bench-net', 'example-pass-1', 'porch', 'page');
+  assert.equal(device.network(), 'bench-net');
+  assert.ok(device.passphrase_is('example-pass-1'));
+  assert.ok(names.length >= 3 && names.every((n) => n === names[0] && /^[0-9a-f]{16}$/.test(n)),
+    'one session name, sixteen hex digits, on every message');
+});
+
+await test('page: a second browser is Busy and the first goes on', async () => {
+  const device = new SimPageDevice(CODE, 1000, 'bench-net');
+  serve(device);
+  const { bytes } = await api.readPageOffer('');
+  const first = api.openPage('');
+  const session = await api.unlock(first, bytes, CODE, '', 'page');
+  const second = api.openPage('');
+  await assert.rejects(api.unlock(second, bytes, CODE, '', 'page'), /another setup session/);
+  await api.provision(first, session, bytes, CODE, '', 'bench-net', 'example-pass-1', '', 'page');
+  assert.equal(device.network(), 'bench-net');
+});
+
+await test('page: a session computed for Bluetooth is refused on the page', async () => {
+  const device = new SimPageDevice(CODE, 1000, 'bench-net');
+  serve(device);
+  const { bytes } = await api.readPageOffer('');
+  await assert.rejects(api.unlock(api.openPage(''), bytes, CODE, '', 'ble'));
+  assert.equal(device.network(), undefined);
+});
+
+await test('page: a wrong code fails, and nothing is applied', async () => {
+  const device = new SimPageDevice(CODE, 1000, 'bench-net');
+  serve(device);
+  const { bytes } = await api.readPageOffer('');
+  await assert.rejects(api.unlock(api.openPage(''), bytes, '8KXQ3-M9PRT', '', 'page'));
+  assert.equal(device.network(), undefined);
 });
 
 let failed = 0;

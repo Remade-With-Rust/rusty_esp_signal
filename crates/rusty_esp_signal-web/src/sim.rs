@@ -162,3 +162,155 @@ fn parse(uuid: &str) -> Result<Uuid128, JsError> {
         .map_err(|_| JsError::new("not a 128-bit UUID"))?;
     Ok(Uuid128::new(bytes))
 }
+
+/// E7: a device set up over its own page (protocol section 11.2), the
+/// session behind `setup::page::Page` over in-memory stores, addressed the
+/// way a server would hand it requests: `get` is `GET /setup`, `post` is
+/// `POST /setup` with `X-Setup-Session`. Never in the page's build.
+#[wasm_bindgen]
+pub struct SimPageDevice {
+    device: rusty_esp_signal_core::setup::Device,
+    page: rusty_esp_signal_core::setup::Page,
+    settings: MemoryKv,
+    identity: MemoryKv,
+    rng: InsecureTestRng,
+    signer: DeviceKey,
+    scan: Vec<u8>,
+    now: Micros,
+    did: String,
+    network: Option<(Vec<u8>, Vec<u8>)>,
+    last_status: u16,
+}
+
+#[wasm_bindgen]
+impl SimPageDevice {
+    /// A device whose setup code is `code` (verifier at `iterations`), that
+    /// sees the networks `scan` names (comma-separated), at power-on.
+    #[wasm_bindgen(constructor)]
+    pub fn new(code: &str, iterations: u32, scan: &str) -> Result<SimPageDevice, JsError> {
+        let salt = [0x5A; 16];
+        let code = Code::parse(code).map_err(|e| JsError::new(&alloc::format!("{e:?}")))?;
+        let secrets = Secrets::derive(&code, &salt, iterations)
+            .map_err(|e| JsError::new(&alloc::format!("{e:?}")))?;
+        let mut settings = MemoryKv::new();
+        settings
+            .put(
+                key::SETUP_V,
+                &Verifier::from_secrets(&secrets, &salt, iterations).encode(),
+            )
+            .map_err(|e| JsError::new(&alloc::format!("{e:?}")))?;
+        let signer = DeviceKey::from_secret(&[0x42; 32], "sim").expect("a key");
+        let devpub = *signer.did().pubkey();
+        let did = alloc::string::ToString::to_string(&signer.did());
+        let now = Micros::from_secs(1);
+        let device = rusty_esp_signal_core::setup::Device::new(
+            rusty_esp_signal_core::setup::label::PAGE,
+            devpub,
+            Reset::PowerOn,
+            now,
+            &mut settings,
+        )
+        .map_err(|e| JsError::new(&alloc::format!("{e:?}")))?;
+        let mut list: ScanList = ScanList::new();
+        for (i, name) in scan.split(',').filter(|s| !s.is_empty()).enumerate() {
+            let rssi = -40 - 7 * i8::try_from(i).unwrap_or(10);
+            if let Ok(e) = ScanEntry::new(name.as_bytes(), rssi, true) {
+                list.push(e);
+            }
+        }
+        let mut encoded = [0u8; 256];
+        let n = list
+            .encode(&mut encoded)
+            .map_err(|e| JsError::new(&alloc::format!("{e:?}")))?;
+        Ok(SimPageDevice {
+            device,
+            page: rusty_esp_signal_core::setup::Page::new(),
+            settings,
+            identity: MemoryKv::new(),
+            rng: InsecureTestRng::seeded(11),
+            signer,
+            scan: encoded[..n].to_vec(),
+            now,
+            did,
+            network: None,
+            last_status: 0,
+        })
+    }
+
+    /// The device's `did:mata`.
+    #[wasm_bindgen(getter)]
+    pub fn did(&self) -> String {
+        self.did.clone()
+    }
+
+    /// Moves the clock on.
+    pub fn advance_ms(&mut self, ms: u32) {
+        self.now = self.now.add_micros(u64::from(ms) * 1_000);
+    }
+
+    /// `GET /setup`: Discover's bytes (the status is `last_status`).
+    pub fn get(&mut self) -> Result<Vec<u8>, JsError> {
+        let mut out = [0u8; 64];
+        let a = self
+            .page
+            .discover(&mut self.device, self.now, &self.settings, &mut out)
+            .map_err(|e| JsError::new(&alloc::format!("{e:?}")))?;
+        self.last_status = a.status;
+        Ok(out[..a.len].to_vec())
+    }
+
+    /// `POST /setup` with `X-Setup-Session: session`: the answer's bytes
+    /// (the status is `last_status`).
+    pub fn post(&mut self, session: &str, body: &[u8]) -> Result<Vec<u8>, JsError> {
+        let mut out = [0u8; rusty_esp_signal_core::setup::MAX_MESSAGE];
+        let status = rusty_esp_signal_core::setup::Status {
+            phase: 0,
+            scan: &self.scan,
+        };
+        let a = self
+            .page
+            .post(
+                &mut self.device,
+                session.as_bytes(),
+                body,
+                self.now,
+                &mut self.settings,
+                &mut self.identity,
+                &mut self.rng,
+                &self.signer,
+                &status,
+                &mut out,
+            )
+            .map_err(|e| JsError::new(&alloc::format!("{e:?}")))?;
+        if let Some(net) = a
+            .applied
+            .as_ref()
+            .and_then(|applied| applied.network.as_ref())
+        {
+            self.network = Some((net.ssid().to_vec(), net.psk().to_vec()));
+        }
+        self.last_status = a.status;
+        Ok(out[..a.len].to_vec())
+    }
+
+    /// The last request's HTTP status.
+    #[wasm_bindgen(getter)]
+    pub fn last_status(&self) -> u16 {
+        self.last_status
+    }
+
+    /// The network the device was given, as `ssid` (never the passphrase).
+    pub fn network(&self) -> Option<String> {
+        self.network
+            .as_ref()
+            .map(|(ssid, _)| String::from_utf8_lossy(ssid).into_owned())
+    }
+
+    /// Whether the given passphrase is `psk` (compared here, never handed
+    /// out).
+    pub fn passphrase_is(&self, psk: &str) -> bool {
+        self.network
+            .as_ref()
+            .is_some_and(|(_, p)| p.as_slice() == psk.as_bytes())
+    }
+}

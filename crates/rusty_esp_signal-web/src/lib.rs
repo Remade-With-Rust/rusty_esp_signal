@@ -85,14 +85,27 @@ pub struct SetupSession {
 impl SetupSession {
     /// Starts a session from the device's Discover and the code the person
     /// typed. `expect_did`: the device the page was sent to set up, when it
-    /// knows it; any other device is refused before a guess is spent. Runs
-    /// PBKDF2, the slow step; the Start to write is [`Self::start_message`].
+    /// knows it; any other device is refused before a guess is spent.
+    /// `carrier`: `"ble"` (the default) or `"page"`, the device's own page
+    /// (protocol section 11.2): it is in the session's Context, so a session
+    /// computed for one carrier does not verify on another. Runs PBKDF2, the
+    /// slow step; the Start to write is [`Self::start_message`].
     #[wasm_bindgen(constructor)]
     pub fn new(
         discover: &[u8],
         code: &str,
         expect_did: Option<String>,
+        carrier: Option<String>,
     ) -> Result<SetupSession, JsError> {
+        let label = match carrier.as_deref() {
+            None | Some("ble") => label::BLE,
+            Some("page") => label::PAGE,
+            Some(other) => {
+                return Err(JsError::new(&alloc::format!(
+                    "no setup carrier called {other:?}: \"ble\" or \"page\""
+                )));
+            }
+        };
         let code = Code::parse(code).map_err(|_| {
             JsError::new("a setup code is ten letters and digits, like 7KXQ3-M9PRT")
         })?;
@@ -113,7 +126,7 @@ impl SetupSession {
             discover,
             &code,
             expect.as_ref(),
-            label::BLE,
+            label,
             &mut CryptoRng,
             &mut out,
         )
