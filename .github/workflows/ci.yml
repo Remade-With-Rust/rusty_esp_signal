@@ -131,6 +131,8 @@ jobs:
           - c6-ble-provision
           # E4's bench relay (the blob's ESP-NOW <-> serial): crates.io only
           - espnow-relay
+          # S1, the link's kill test (its default image is the C6 responder)
+          - c6-s1-link
     steps:
       - uses: actions/checkout@v4
       - name: Authorise private sibling fetches
@@ -142,6 +144,10 @@ jobs:
           targets: riscv32imac-unknown-none-elf
       # Track B on a RISC-V part builds on stable; espup is only for Xtensa.
       - run: cargo build --release
+        working-directory: firmware/${{ matrix.project }}
+      # S1's other half, from the same source
+      - if: ${{ matrix.project == 'c6-s1-link' }}
+        run: cargo build --release --no-default-features --features role-initiator,chip-esp32c6
         working-directory: firmware/${{ matrix.project }}
 
   # Track B on the S3 (Xtensa): the esp toolchain from espup, no ESP-IDF.
