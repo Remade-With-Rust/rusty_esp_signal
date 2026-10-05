@@ -153,3 +153,63 @@ pub fn parse(mpdu: &[u8]) -> Option<Frame<'_>> {
         body,
     })
 }
+
+/// How many transmitters' last frames [`Duplicates`] remembers.
+pub const DUPLICATE_CACHE: usize = 4;
+
+/// The receiver's duplicate detection (IEEE 802.11-2020, 10.3.2.14): a
+/// transmitter that missed an acknowledgement sends the frame again with
+/// the Retry bit set and the same sequence control, and a receiver that
+/// already has it drops the copy. Without this every lost acknowledgement
+/// hands the layer above the same datagram twice (the link's session then
+/// refuses the second as a replay, and counts an attack that was not one).
+#[derive(Clone, Copy, Debug)]
+pub struct Duplicates {
+    /// The last sequence control taken from each transmitter.
+    last: [Option<(Address, u16)>; DUPLICATE_CACHE],
+    /// The slot the next new transmitter takes.
+    next: usize,
+}
+
+impl Default for Duplicates {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Duplicates {
+    /// Nothing remembered.
+    #[must_use]
+    pub const fn new() -> Self {
+        Duplicates {
+            last: [None; DUPLICATE_CACHE],
+            next: 0,
+        }
+    }
+
+    /// Whether `mpdu` (a management or data frame as received, without its
+    /// FCS) is a retransmission of the last frame taken from its
+    /// transmitter; a frame that is not is remembered. Too short to carry a
+    /// sequence control: not a duplicate, and not remembered.
+    pub fn is_duplicate(&mut self, mpdu: &[u8]) -> bool {
+        if mpdu.len() < MAC_HEADER {
+            return false;
+        }
+        let retry = mpdu[1] & 0x08 != 0;
+        let mut from = [0u8; 6];
+        from.copy_from_slice(&mpdu[10..16]);
+        let sequence = u16::from_le_bytes([mpdu[22], mpdu[23]]);
+        for (who, last) in self.last.iter_mut().flatten() {
+            if *who == from {
+                if retry && *last == sequence {
+                    return true;
+                }
+                *last = sequence;
+                return false;
+            }
+        }
+        self.last[self.next] = Some((from, sequence));
+        self.next = (self.next + 1) % DUPLICATE_CACHE;
+        false
+    }
+}

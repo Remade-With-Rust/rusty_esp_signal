@@ -12,6 +12,14 @@ toolchain.
 | [`c6-ble-provision`](c6-ble-provision/) | ESP32-C6 | B | BLE GATT (provisioning, manifest, telemetry); the provisioning service carries the setup session, the settings and the device key in NVS | **builds** 2026-10-02 on the setup session, 1 145 896 B ELF (2026-09-02 on the plaintext TLV: 932 836 B) |
 | [`xiao-s3-sense-idf-ble-provision`](xiao-s3-sense-idf-ble-provision/) | XIAO ESP32-S3 Sense | **A** (`std`, ESP-IDF, Bluedroid) | BLE GATT provisioning (the same contract, `idf::ble`: the setup session), then Wi-Fi station with the network the session applied | **builds** 2026-10-02 on the setup session, 1 948 948 B ELF (2026-09-04 on the plaintext TLV: 1 829 716 B ELF, app image 1 240 928 B) |
 | [`xiao-s3-sense-hal-ble-provision`](xiao-s3-sense-hal-ble-provision/) | XIAO ESP32-S3 Sense | B (`no_std`, trouble-host) | the same, with no ESP-IDF: the setup session, the join, a restart into station mode | **builds** 2026-10-02 on the setup session, 1 311 316 B ELF |
+| [`c6-s1-link`](c6-s1-link/) | ESP32-C6 (also the S3 and the plain ESP32, by feature) | B | ESP-NOW on esp-radio: S1's two halves of the authenticated link, one source; `JANUS_S1_REARM_S` restarts it after its verdict (a board with no reset line) | **builds** |
+| [`xiao-s3-open-link`](xiao-s3-open-link/) | XIAO ESP32-S3 | B, **open MAC** | the same link on raw ESP-NOW frames it builds itself (`rusty_esp_signal-open::raw_link`): no esp-radio, no `libespnow`; S1's two roles. Not Wi-Fi certified | **builds** 2026-10-04, app image 192 080 B (the blob's S1 for the S3: 471 776 B) |
+| [`espnow-relay`](espnow-relay/) | ESP32-C6, the S3, the plain ESP32 | B | ESP-NOW on esp-radio, passed to and from the serial port as text lines: a bench relay that holds no key (E4); `JANUS_RELAY_BAUD` sets the line's speed | **builds** 2026-10-04; on an ESP32-CAM at 460800 baud it carried E4's kill test: a 540 512 B signed update in 46.9 s, no datagram lost |
+
+A plain ESP32 older than revision 3.0 (the ESP32-CAM on the bench is 1.0)
+needs `ESP_HAL_CONFIG_MIN_CHIP_REVISION=100` in the build's environment:
+esp-hal builds for 3.0 unless told, and both the flasher and the loader
+refuse the image otherwise.
 
 The provisioning firmwares take a session only once a setup code's verifier
 (`setup.v`) is in the board's settings (`nvs`, namespace `janus`), which the

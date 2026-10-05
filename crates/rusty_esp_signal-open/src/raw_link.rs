@@ -64,6 +64,7 @@ static HEARD: AtomicU32 = AtomicU32::new(0);
 static TAKEN: AtomicU32 = AtomicU32::new(0);
 static INBOX_DROPPED: AtomicU32 = AtomicU32::new(0);
 static FOREIGN: AtomicU32 = AtomicU32::new(0);
+static DUPLICATES: AtomicU32 = AtomicU32::new(0);
 
 /// One received ESP-NOW datagram, copied out of the radio's buffer.
 #[derive(Clone, Copy)]
@@ -92,6 +93,9 @@ pub struct RawLink<E: Sha256Blocks = SoftSha> {
     inbox: Receiver<'static, NoopRawMutex, Datagram, INBOX>,
     me: [u8; 6],
     peer: [u8; 6],
+    /// Whether `peer` was learned at a handshake (and may be forgotten at a
+    /// failed one) rather than named by the firmware.
+    learned: bool,
     learn: bool,
     last_from: [u8; 6],
     rx_buf: FrameBuf,
@@ -163,6 +167,7 @@ pub fn attach(
             inbox: inbox.receiver(),
             me,
             peer,
+            learned: false,
             learn: true,
             last_from: BROADCAST,
             rx_buf: FrameBuf::new(),
@@ -185,12 +190,20 @@ pub async fn mac_task(mut runner: FoARunner<'static>) {
 /// The link's receive side, for the life of the firmware: every frame the
 /// interface passes is read as ESP-NOW; one for this radio is copied into
 /// the queue (dropped, and counted, when the queue is full) and the radio's
-/// buffer goes back before the next.
+/// buffer goes back before the next. A retransmission of a frame already
+/// taken (its acknowledgement was lost on the way back) is dropped here, as
+/// any 802.11 receiver drops it: the session above would refuse it as a
+/// replay, and count one.
 #[embassy_executor::task]
 pub async fn rx_task(mut runner: RawRunner) -> ! {
+    let mut seen = espnow_frame::Duplicates::new();
     loop {
         let received = runner.rx.receive().await;
         HEARD.fetch_add(1, Ordering::Relaxed);
+        if seen.is_duplicate(received.mpdu_buffer()) {
+            DUPLICATES.fetch_add(1, Ordering::Relaxed);
+            continue;
+        }
         let datagram = espnow_frame::parse(received.mpdu_buffer()).and_then(|frame| {
             if frame.to != runner.me && frame.to != BROADCAST {
                 return None;
@@ -233,6 +246,7 @@ impl<E: Sha256Blocks> RawLink<E> {
             inbox: self.inbox,
             me: self.me,
             peer: self.peer,
+            learned: self.learned,
             learn: self.learn,
             last_from: self.last_from,
             rx_buf: self.rx_buf,
@@ -255,11 +269,15 @@ impl<E: Sha256Blocks> RawLink<E> {
     /// Point the link at `peer` ([`BROADCAST`] to discover again).
     pub fn set_peer(&mut self, peer: [u8; 6]) {
         self.peer = peer;
+        self.learned = false;
     }
 
     /// Whether a handshake's peer address is kept (the default): frames
     /// then go to it alone, acknowledged and retried, and frames from
-    /// anyone else are dropped. Off, the link stays on broadcast, as a
+    /// anyone else are dropped. A learned address is forgotten when a later
+    /// handshake with it fails -- the peer's radio may have been replaced
+    /// -- and the next hello is a broadcast again; an address the firmware
+    /// named is never forgotten. Off, the link stays on broadcast, as a
     /// blob's link built on the broadcast address does.
     pub fn learn_peer(&mut self, learn: bool) {
         self.learn = learn;
@@ -269,6 +287,24 @@ impl<E: Sha256Blocks> RawLink<E> {
     /// within `patience`, send `Confirm`, return the [`Session`]. `allow`
     /// decides whether the responder's DID is acceptable.
     pub async fn handshake_initiator(
+        &mut self,
+        me: &DeviceKey,
+        rng: &mut impl Rng,
+        allow: impl FnOnce(&Did) -> bool,
+        now: Micros,
+        patience: Duration,
+    ) -> Result<Session> {
+        let session = self.initiate(me, rng, allow, now, patience).await;
+        if session.is_err() && self.learned {
+            // the address learned last time did not answer (or answered
+            // wrong): discover again
+            self.peer = BROADCAST;
+            self.learned = false;
+        }
+        session
+    }
+
+    async fn initiate(
         &mut self,
         me: &DeviceKey,
         rng: &mut impl Rng,
@@ -286,6 +322,7 @@ impl<E: Sha256Blocks> RawLink<E> {
         // the accept verified: its sender is the peer
         if self.learn && self.peer == BROADCAST {
             self.peer = self.last_from;
+            self.learned = true;
         }
         self.send_raw(&confirm).await?;
         Ok(session)
@@ -302,11 +339,28 @@ impl<E: Sha256Blocks> RawLink<E> {
         now: Micros,
         patience: Duration,
     ) -> Result<Session> {
+        let session = self.respond(me, rng, allow, now, patience).await;
+        if session.is_err() && self.learned {
+            self.peer = BROADCAST;
+            self.learned = false;
+        }
+        session
+    }
+
+    async fn respond(
+        &mut self,
+        me: &DeviceKey,
+        rng: &mut impl Rng,
+        allow: impl FnOnce(&Did) -> bool,
+        now: Micros,
+        patience: Duration,
+    ) -> Result<Session> {
         let n = self.recv_raw(patience).await?;
         let (pending, accept) =
             Handshake::respond(me, rng, &self.rx_buf.0[..n], allow, now, DEFAULT_LIFETIME)?;
         if self.learn && self.peer == BROADCAST {
             self.peer = self.last_from;
+            self.learned = true;
         }
         self.send_raw(&accept).await?;
         let n = self.recv_raw(patience).await?;
@@ -423,6 +477,8 @@ pub struct Stats {
     pub inbox_dropped: u32,
     /// Datagrams from another address than the peer's, dropped.
     pub foreign: u32,
+    /// Retransmissions of a frame already taken, dropped.
+    pub duplicates: u32,
 }
 
 /// The counters now.
@@ -436,5 +492,6 @@ pub fn stats() -> Stats {
         taken: r(&TAKEN),
         inbox_dropped: r(&INBOX_DROPPED),
         foreign: r(&FOREIGN),
+        duplicates: r(&DUPLICATES),
     }
 }

@@ -221,3 +221,9 @@ runs what upstream's `run-rust-tests.sh` runs for the S3, against these
 sources: the C reference's regressions, the Rust MAC initialization
 against that reference, four of the crate's own test modules, the DMA
 list. All pass on the port (2026-10-03).
+- `espnow_frame::Duplicates` (ours, E4 P4): the receiver's duplicate
+  detection (a frame with the Retry bit and the sequence control last taken
+  from its transmitter is a retransmission already received), found missing
+  on the board: a retried frame whose acknowledgement was lost reached the
+  link twice and the session refused the copy as a replay. Host-tested in
+  `espnow.rs`; one caught in the passing run.

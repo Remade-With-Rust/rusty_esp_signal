@@ -202,3 +202,47 @@ fn no_input_panics_the_parser() {
     }
     assert!(read_ok > 0, "some mutated frames still read");
 }
+
+/// A frame from `from` with `sequence` in its sequence control, the Retry
+/// bit set or clear.
+fn sequenced(from: &[u8; 6], sequence: u16, retry: bool) -> Vec<u8> {
+    let mut out = vec![0u8; MAX_FRAME];
+    let n = write(&mut out, &NODE, from, RANDOM, b"x").expect("fits");
+    out.truncate(n);
+    if retry {
+        out[1] |= 0x08;
+    }
+    out[22..24].copy_from_slice(&sequence.to_le_bytes());
+    out
+}
+
+#[test]
+fn a_retransmission_already_taken_is_a_duplicate_and_nothing_else_is() {
+    use espnow_frame::{DUPLICATE_CACHE, Duplicates};
+    let mut seen = Duplicates::new();
+    // the first copy, then its retry: the acknowledgement was lost
+    assert!(!seen.is_duplicate(&sequenced(&PEER, 0x0120, false)));
+    assert!(seen.is_duplicate(&sequenced(&PEER, 0x0120, true)));
+    assert!(seen.is_duplicate(&sequenced(&PEER, 0x0120, true)));
+    // the next frame, sent twice because the first copy was lost on the
+    // way here: its retry is the first this receiver has seen
+    assert!(!seen.is_duplicate(&sequenced(&PEER, 0x0130, true)));
+    assert!(seen.is_duplicate(&sequenced(&PEER, 0x0130, true)));
+    // the same sequence control without the Retry bit is a new frame (a
+    // counter that wrapped, a transmitter that restarted)
+    assert!(!seen.is_duplicate(&sequenced(&PEER, 0x0130, false)));
+    // another transmitter's numbers are its own
+    let other = [0x02, 0x00, 0x5e, 0x10, 0x00, 0x02];
+    assert!(!seen.is_duplicate(&sequenced(&other, 0x0130, true)));
+    assert!(seen.is_duplicate(&sequenced(&other, 0x0130, true)));
+    assert!(seen.is_duplicate(&sequenced(&PEER, 0x0130, true)));
+    // more transmitters than the cache holds: the oldest is forgotten, and
+    // forgetting only ever lets a copy through, never drops a new frame
+    for i in 0..DUPLICATE_CACHE as u8 {
+        assert!(!seen.is_duplicate(&sequenced(&[2, 0, 0, 0, 0, i], 7, true)));
+    }
+    assert!(!seen.is_duplicate(&sequenced(&PEER, 0x0130, true)));
+    // too short to carry a sequence control
+    assert!(!seen.is_duplicate(&[0xd0, 0x08, 0, 0]));
+    assert!(!seen.is_duplicate(&[]));
+}

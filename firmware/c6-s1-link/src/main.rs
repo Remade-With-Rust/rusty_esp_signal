@@ -82,8 +82,14 @@ async fn main(_spawner: embassy_executor::Spawner) {
     // the main stack and the link fails with "Main stack is smaller than
     // 8192 bytes", which reads like a stack setting and is really a heap
     // one. The harness needs nowhere near 96 KB.
+    // The radio's own allocations (some 53 KB at start on esp-radio) do not
+    // fit in those 32 KB: the ESP32 also gets the DRAM its ROM loader used,
+    // free once the application runs and otherwise unused (`dram2_seg`).
     #[cfg(feature = "chip-esp32")]
-    esp_alloc::heap_allocator!(size: 32 * 1024);
+    {
+        esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 98_768);
+        esp_alloc::heap_allocator!(size: 32 * 1024);
+    }
     #[cfg(not(feature = "chip-esp32"))]
     esp_alloc::heap_allocator!(size: 96 * 1024);
     let timg0 = TimerGroup::new(peripherals.TIMG0);
@@ -129,6 +135,16 @@ async fn main(_spawner: embassy_executor::Spawner) {
     responder(&mut link, &me, &mut rng).await;
     #[cfg(feature = "role-initiator")]
     initiator(&mut link, &me, &mut rng).await;
+
+    // A bench knob: built with JANUS_S1_REARM_S, the firmware restarts that
+    // many seconds after its verdict, so a responder on a board with no
+    // reset line (the ESP32-CAM's base) takes the next pair with no hand
+    // on it. The link's code is the same either way.
+    if let Some(after) = option_env!("JANUS_S1_REARM_S").and_then(|s| s.parse::<u64>().ok()) {
+        println!("S1 restarting in {after} s (JANUS_S1_REARM_S)");
+        Timer::after(Duration::from_secs(after)).await;
+        esp_hal::system::software_reset();
+    }
 
     loop {
         Timer::after(Duration::from_secs(60)).await;

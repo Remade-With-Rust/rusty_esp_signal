@@ -23,6 +23,7 @@ mod tsf;
 use core::net::Ipv4Addr;
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use crate::raw_link::{RawLink, RawRunner};
 use ap_core::frames::{self, Bss};
 use ap_core::handshake::{self, Authenticator};
 use ap_core::hold::Held;
@@ -1256,6 +1257,39 @@ pub fn hosted_stack<const SOCK: usize>(
     resources: &'static mut StackResources<SOCK>,
     seed: u64,
 ) -> OpenAccessPoint {
+    bring_up(wifi, config, resources, seed, None).0
+}
+
+/// [`hosted_stack`], and the mID link on raw ESP-NOW frames beside it (the
+/// experiments plan's E4): the access point on the radio's first virtual
+/// interface, the raw link on its second, on the station's address and the
+/// access point's channel -- as ESP-NOW rides beside a soft-AP on the blob.
+/// `peer` is the link's other end, or `raw_link::BROADCAST` to learn it at
+/// the handshake. Spawn `raw_link::rx_task` with the runner besides the
+/// access point's tasks (the one [`mac_task`] serves both).
+///
+/// # Panics
+///
+/// As [`hosted_stack`].
+pub fn hosted_stack_with_raw_link<const SOCK: usize>(
+    wifi: esp_hal::peripherals::WIFI<'static>,
+    config: AccessPointConfig,
+    resources: &'static mut StackResources<SOCK>,
+    seed: u64,
+    peer: [u8; 6],
+) -> (OpenAccessPoint, RawLink, RawRunner) {
+    let (ap, raw) = bring_up(wifi, config, resources, seed, Some(peer));
+    let (link, runner) = raw.expect("asked for above");
+    (ap, link, runner)
+}
+
+fn bring_up<const SOCK: usize>(
+    wifi: esp_hal::peripherals::WIFI<'static>,
+    config: AccessPointConfig,
+    resources: &'static mut StackResources<SOCK>,
+    seed: u64,
+    raw_peer: Option<[u8; 6]>,
+) -> (OpenAccessPoint, Option<(RawLink, RawRunner)>) {
     assert!(
         (8..=63).contains(&config.passphrase.len()),
         "WPA2-PSK's passphrase is 8 to 63 bytes"
@@ -1269,8 +1303,12 @@ pub fn hosted_stack<const SOCK: usize>(
 
     static FOA: StaticCell<FoAResources> = StaticCell::new();
     static VIF: StaticCell<VirtualInterface<'static>> = StaticCell::new();
-    let ([vif, ..], mac) = foa::init(FOA.init(FoAResources::new()), wifi);
+    static VIF_RAW: StaticCell<VirtualInterface<'static>> = StaticCell::new();
+    let ([vif, vif_raw, ..], mac) = foa::init(FOA.init(FoAResources::new()), wifi);
     let vif = VIF.init(vif);
+    // the raw link (E4) on the second interface, when asked for
+    let raw =
+        raw_peer.map(|peer| crate::raw_link::attach(VIF_RAW.init(vif_raw), config.channel, peer));
     let (control, rx, tx) = vif.split();
     let control: &'static LMacInterfaceControl<'static> = control;
 
@@ -1354,13 +1392,16 @@ pub fn hosted_stack<const SOCK: usize>(
         inactivity_us: config.inactivity.as_micros(),
         held: HELD_FRAMES.take(),
     };
-    OpenAccessPoint {
-        stack,
-        bssid,
-        mac,
-        ap: ApRunner { ap, rx, up, down },
-        net,
-    }
+    (
+        OpenAccessPoint {
+            stack,
+            bssid,
+            mac,
+            ap: ApRunner { ap, rx, up, down },
+            net,
+        },
+        raw,
+    )
 }
 
 /// What [`hosted_stack`] gives a firmware: the stack, the BSSID, and the

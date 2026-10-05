@@ -129,6 +129,8 @@ jobs:
           - c6-mesh-node
           - c6-lora-p2p
           - c6-ble-provision
+          # E4's bench relay (the blob's ESP-NOW <-> serial): crates.io only
+          - espnow-relay
     steps:
       - uses: actions/checkout@v4
       - name: Authorise private sibling fetches

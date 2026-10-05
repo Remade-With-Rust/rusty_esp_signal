@@ -89,13 +89,14 @@ fn now() -> Micros {
 fn raw_line() {
     let r = raw_link::stats();
     println!(
-        "S1 raw sent={} unacked={} heard={} taken={} inbox_dropped={} foreign={} heap_used={}",
+        "S1 raw sent={} unacked={} heard={} taken={} inbox_dropped={} foreign={} duplicates={} heap_used={}",
         r.sent,
         r.unacked,
         r.heard,
         r.taken,
         r.inbox_dropped,
         r.foreign,
+        r.duplicates,
         esp_alloc::HEAP.used()
     );
 }
