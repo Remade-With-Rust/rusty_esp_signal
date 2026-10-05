@@ -46,7 +46,7 @@ use foa::esp_wifi_hal::prelude::{
     RxFilterBank, TxMacParameters, TxPlcpParameters,
 };
 use foa::esp_wifi_hal::rates::{HrDsssRate, HtRate, OfdmRate, TxPhyRate};
-use foa::{FoAResources, FoARunner, KeySlot, RetryBehaviour, TxEndpoint, VirtualInterface};
+use foa::{FoARunner, KeySlot, RetryBehaviour, TxEndpoint, VirtualInterface};
 
 /// The library says nothing; the counters say it.
 macro_rules! note {
@@ -110,13 +110,6 @@ static HANDSHAKE_REFUSED: AtomicU32 = AtomicU32::new(0);
 static HANDSHAKE_TIMEOUTS: AtomicU32 = AtomicU32::new(0);
 static PLAINTEXT_DROPPED: AtomicU32 = AtomicU32::new(0);
 static REPLAYS: AtomicU32 = AtomicU32::new(0);
-
-macro_rules! mk_static {
-    ($t:ty, $val:expr) => {{
-        static CELL: StaticCell<$t> = StaticCell::new();
-        CELL.init_with(|| $val)
-    }};
-}
 
 /// FoA's lower-MAC runner, for the life of the firmware.
 #[embassy_executor::task]
@@ -1453,10 +1446,9 @@ fn bring_up<const SOCK: usize>(
         ieee80211::crypto::map_passphrase_to_psk(config.passphrase, config.ssid, &mut pmk);
     }
 
-    static FOA: StaticCell<FoAResources> = StaticCell::new();
     static VIF: StaticCell<VirtualInterface<'static>> = StaticCell::new();
     static VIF_RAW: StaticCell<VirtualInterface<'static>> = StaticCell::new();
-    let ([vif, vif_raw, ..], mac) = foa::init(FOA.init(FoAResources::new()), wifi);
+    let ([vif, vif_raw, ..], mac) = foa::init(crate::FOA.take(), wifi);
     let vif = VIF.init(vif);
     // the raw link (E4) on the second interface, when asked for
     let raw =
@@ -1504,7 +1496,9 @@ fn bring_up<const SOCK: usize>(
     // 8 frames each way: a bridge's 16-chunk window does not fit, and its
     // go-back-N carries the loss; 16 cost 12 KB of .bss, which on the S3 is
     // the main stack's (E3's C16, run 6: the stack guard tripped at boot)
-    let state = mk_static!(ch::State<MTU, 8, 8>, ch::State::new());
+    // built in place: 24 KB, which as a temporary was main stack too
+    static STATE: ConstStaticCell<ch::State<MTU, 8, 8>> = ConstStaticCell::new(ch::State::new());
+    let state = STATE.take();
     let (net_runner, device) = ch::new(state, HardwareAddress::Ethernet(bssid));
     let (state_runner, up, down) = net_runner.split();
     state_runner.set_link_state(LinkState::Up);

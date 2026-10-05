@@ -155,7 +155,7 @@ impl FoAResources {
     ///
     /// This has to be in internal RAM, since the DMA descriptors and buffers for the Wi-Fi driver
     /// have to be in internal RAM.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             wifi_resources: WiFiResources::new(),
             #[cfg(feature = "arc_buffers")]
@@ -171,6 +171,44 @@ impl FoAResources {
     }
 }
 impl Default for FoAResources {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// One [FoAResources] for a firmware, built at compile time where it lives
+/// (a `static` of this type is in `.bss`), and handed out once.
+///
+/// [FoAResources::new] returns the whole block by value, so a
+/// `StaticCell::init` of it holds the block on the caller's stack first: on
+/// the ESP32-S3 that is the main stack, and the block is tens of kilobytes.
+pub struct StaticFoAResources {
+    taken: core::sync::atomic::AtomicBool,
+    resources: core::cell::UnsafeCell<FoAResources>,
+}
+// SAFETY: the resources are reachable only through `take`, which hands out
+// the one `&mut` once and panics on any later call.
+unsafe impl Sync for StaticFoAResources {}
+impl StaticFoAResources {
+    /// The block, unused.
+    pub const fn new() -> Self {
+        Self {
+            taken: core::sync::atomic::AtomicBool::new(false),
+            resources: core::cell::UnsafeCell::new(FoAResources::new()),
+        }
+    }
+    /// The block, once. Panics if it was taken before.
+    pub fn take(&'static self) -> &'static mut FoAResources {
+        assert!(
+            !self.taken.swap(true, Ordering::AcqRel),
+            "FoA's resources are taken once per firmware"
+        );
+        // SAFETY: the flag above lets exactly one caller here, so this is
+        // the only reference to the block for the program's life.
+        unsafe { &mut *self.resources.get() }
+    }
+}
+impl Default for StaticFoAResources {
     fn default() -> Self {
         Self::new()
     }

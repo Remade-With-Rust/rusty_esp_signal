@@ -5,7 +5,7 @@ use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 use embassy_net::{Config, DhcpConfig, Runner, Stack, StackResources};
 use embassy_time::{Duration, Timer, with_timeout};
-use foa::{FoAResources, FoARunner, VirtualInterface};
+use foa::{FoARunner, VirtualInterface};
 /// FoA's station control: [`Station::control`]'s type, which a firmware
 /// names to hand it to its own task over [`run_station`].
 pub use foa_sta::StaControl;
@@ -506,10 +506,9 @@ pub fn stack<const SOCK: usize>(
     resources: &'static mut StackResources<SOCK>,
     seed: u64,
 ) -> OpenStation {
-    static FOA: StaticCell<FoAResources> = StaticCell::new();
     static VIF: StaticCell<VirtualInterface<'static>> = StaticCell::new();
     static STA: StaticCell<StaResources<'static>> = StaticCell::new();
-    let ([vif, ..], mac) = foa::init(FOA.init(FoAResources::new()), wifi);
+    let ([vif, ..], mac) = foa::init(crate::FOA.take(), wifi);
     let (mut control, sta, device) =
         foa_sta::new_sta_interface(VIF.init(vif), STA.init(StaResources::default()));
     let base = esp_hal::efuse::base_mac_address();

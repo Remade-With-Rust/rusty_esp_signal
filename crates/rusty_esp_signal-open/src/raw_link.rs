@@ -38,7 +38,7 @@ use esp_hal::rng::Rng as HardwareRng;
 use foa::esp_wifi_hal::ll::EdcaAccessCategory;
 use foa::esp_wifi_hal::prelude::{RxFilterBank, TxMacParameters, TxPlcpParameters};
 use foa::esp_wifi_hal::rates::{HrDsssRate, TxPhyRate};
-use foa::{FoAResources, FoARunner, RetryBehaviour, RxEndpoint, TxEndpoint, VirtualInterface};
+use foa::{FoARunner, RetryBehaviour, RxEndpoint, TxEndpoint, VirtualInterface};
 use rusty_esp_signal_core::esp_core::error::Result;
 use rusty_esp_signal_core::esp_core::{Error, Micros, Rng};
 use rusty_esp_signal_core::link::{
@@ -126,9 +126,8 @@ pub fn raw_link(
     channel: u8,
     peer: [u8; 6],
 ) -> OpenRawLink {
-    static FOA: StaticCell<FoAResources> = StaticCell::new();
     static VIF: StaticCell<VirtualInterface<'static>> = StaticCell::new();
-    let ([vif, ..], mac) = foa::init(FOA.init(FoAResources::new()), wifi);
+    let ([vif, ..], mac) = foa::init(crate::FOA.take(), wifi);
     let (link, rx) = attach(VIF.init(vif), channel, peer);
     let address = link.me;
     OpenRawLink {

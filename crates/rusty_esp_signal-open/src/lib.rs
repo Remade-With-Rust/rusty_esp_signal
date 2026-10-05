@@ -35,6 +35,17 @@ pub mod raw_link;
 #[cfg(feature = "esp32s3")]
 pub use station::*;
 
+/// FoA's resources, one block for the firmware: the station, the access
+/// point and the bare raw link each bring the MAC up from it, and a firmware
+/// brings up one of them per boot (a second bring-up panics, as it did with
+/// a block each). A cell with a setup boot that hosts and a station boot
+/// that joins (espino's C18) had two blocks of 29.7 KB in `.bss`, which on
+/// the S3 is the main stack's. Built in place (`foa::StaticFoAResources`):
+/// moved into a `StaticCell` from a temporary, it was also 28 KB of main
+/// stack at bring-up, which tripped C18's stack guard inside `hosted_stack`.
+#[cfg(feature = "esp32s3")]
+pub(crate) static FOA: foa::StaticFoAResources = foa::StaticFoAResources::new();
+
 #[cfg(feature = "esp32s3")]
 pub use rusty_esp_signal_core::wifi::{PolicyConfig, StationPolicy};
 

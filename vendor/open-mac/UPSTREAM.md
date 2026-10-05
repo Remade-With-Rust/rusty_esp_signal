@@ -198,6 +198,13 @@ esp-hal 1.1, esp-phy 0.2.0, esp-wifi-sys 0.2.0):
   C16's config set the queue to 32 (a bridge's window of 16 chunks does not
   fit a queue of two).
 
+- `foa/src/lib.rs` (E7): `FoAResources::new` is a `const fn` (every field's
+  constructor already was), and `StaticFoAResources` holds one block built
+  at compile time in a `static` and hands it out once, so
+  `rusty_esp_signal-open` (which denies `unsafe`) no longer moves 28 KB in
+  from the main stack at bring-up: `StaticCell::init` and `init_with` both
+  did, which tripped C18's stack guard inside `hosted_stack`.
+
 ## Added for E4 (the link on raw frames)
 
 - `espnow_frame/` (ours, E4 P1): ESP-NOW's vendor action frame laid out and
