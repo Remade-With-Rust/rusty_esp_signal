@@ -158,6 +158,8 @@ async fn main(spawner: embassy_executor::Spawner) {
         peripherals.WIFI,
         open_ap::AccessPointConfig {
             address: ADDRESS,
+            // `JANUS_HT=0` at build time: WMM and HT off (E3's round-trip A/B)
+            ht: option_env!("JANUS_HT") != Some("0"),
             ..open_ap::AccessPointConfig::open(SSID, tsf_seed_us)
         },
         NET.init(StackResources::new()),
@@ -190,14 +192,24 @@ async fn watch_task() {
         Timer::after(Duration::from_secs(10)).await;
         let a = open_ap::stats();
         println!(
-            "SETUP watch up_s={} stations={} joins={} up={} down={} beacons={} plaintext_dropped={}",
+            "SETUP watch up_s={} stations={} joins={} up={} down={} beacons={} plaintext_dropped={} dozing={} held={} released={} wakes={} ps_polls={} qos_sent={} ht_sent={} data_unacked={} ladder_up={} ladder_down={}",
             started.elapsed().as_secs(),
             a.stations,
             a.joins,
             a.up,
             a.down,
             a.beacons,
-            a.plaintext_dropped
+            a.plaintext_dropped,
+            a.dozing,
+            a.held,
+            a.released,
+            a.wakes,
+            a.ps_polls,
+            a.qos_sent,
+            a.ht_sent,
+            a.data_unacked,
+            a.ladder_up,
+            a.ladder_down
         );
     }
 }
