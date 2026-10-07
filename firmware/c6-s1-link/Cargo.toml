@@ -38,15 +38,15 @@ role-responder = []
 # only per-chip surface is this block.
 chip-esp32c6 = [
   "esp-hal/esp32c6", "esp-radio/esp32c6", "esp-rtos/esp32c6",
-  "esp-bootloader-esp-idf/esp32c6", "esp-println/esp32c6", "esp-backtrace/esp32c6",
+  "esp-bootloader-esp-idf/esp32c6", "esp-println/esp32c6", "esp-println/uart", "esp-backtrace/esp32c6",
 ]
 chip-esp32s3 = [
   "esp-hal/esp32s3", "esp-radio/esp32s3", "esp-rtos/esp32s3",
-  "esp-bootloader-esp-idf/esp32s3", "esp-println/esp32s3", "esp-backtrace/esp32s3",
+  "esp-bootloader-esp-idf/esp32s3", "esp-println/esp32s3", "esp-println/auto", "esp-backtrace/esp32s3",
 ]
 chip-esp32 = [
   "esp-hal/esp32", "esp-radio/esp32", "esp-rtos/esp32",
-  "esp-bootloader-esp-idf/esp32", "esp-println/esp32", "esp-backtrace/esp32",
+  "esp-bootloader-esp-idf/esp32", "esp-println/esp32", "esp-println/uart", "esp-backtrace/esp32",
 ]
 
 [dependencies]
@@ -58,9 +58,18 @@ esp-radio = { version = "=1.0.0-beta.1", features = ["wifi", "esp-now", "unstabl
 esp-rtos = { version = "=0.4.0", features = ["esp-radio", "embassy"] }
 esp-alloc = "=0.11.0"
 esp-bootloader-esp-idf = "=0.6.0"
-esp-println = "=0.18.0"
+# The console per chip (the chip features above): UART on the C6 -- its
+# DevKitC's UART socket is the bench's, and `auto` there sent prints to the
+# unattached native USB part-way through (2026-10-07) -- and on the ESP32;
+# `auto` on the S3, whose XIAO has only its native USB.
+# No critical section around a print (as espnow-relay): a line at 115200
+# holds the UART for ~3 ms, and with interrupts off for every line the MAC
+# snapshot's ~190 lines reset the C6 part-way through (2026-10-07).
+esp-println = { version = "=0.18.0", default-features = false, features = ["colors"] }
 esp-backtrace = { version = "=0.20.0", features = ["panic-handler", "println"] }
 embassy-executor = "0.10"
+# the verdict kept to be said again (VERDICT in main.rs)
+critical-section = "1"
 embassy-time = "0.5"
 
 # The Janus core and the Track B backends. Depend on the local crates by path

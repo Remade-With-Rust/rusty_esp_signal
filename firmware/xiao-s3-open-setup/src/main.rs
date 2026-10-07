@@ -43,7 +43,17 @@ use static_cell::StaticCell;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-const SSID: &str = "janus-setup";
+/// The network: `janus-setup`, open, unless the build names others --
+/// `JANUS_AP_SSID`, and `JANUS_AP_PASS` for WPA2 (E3's four stations; the
+/// passphrase is the run's, in its environment only, never printed).
+const SSID: &str = match option_env!("JANUS_AP_SSID") {
+    Some(s) => s,
+    None => "janus-setup",
+};
+const PASS: &str = match option_env!("JANUS_AP_PASS") {
+    Some(s) => s,
+    None => "",
+};
 const ADDRESS: Ipv4Cidr = Ipv4Cidr::new(Ipv4Address::new(192, 168, 71, 1), 24);
 const NAMESPACE: &str = "janus";
 const SETTINGS_PARTITION: &str = "nvs";
@@ -160,7 +170,11 @@ async fn main(spawner: embassy_executor::Spawner) {
             address: ADDRESS,
             // `JANUS_HT=0` at build time: WMM and HT off (E3's round-trip A/B)
             ht: option_env!("JANUS_HT") != Some("0"),
-            ..open_ap::AccessPointConfig::open(SSID, tsf_seed_us)
+            ..if PASS.is_empty() {
+                open_ap::AccessPointConfig::open(SSID, tsf_seed_us)
+            } else {
+                open_ap::AccessPointConfig::new(SSID, PASS, tsf_seed_us)
+            }
         },
         NET.init(StackResources::new()),
         seed,
@@ -178,7 +192,10 @@ async fn main(spawner: embassy_executor::Spawner) {
     for n in 0..SERVERS {
         spawner.spawn(server_task(stack, shared, n).expect("server task"));
     }
-    println!("SETUP hosting {SSID} (open) on the open MAC, page http://192.168.71.1/setup");
+    println!(
+        "SETUP hosting {SSID} ({}) on the open MAC, page http://192.168.71.1/setup",
+        if PASS.is_empty() { "open" } else { "wpa2" }
+    );
     loop {
         Timer::after(Duration::from_secs(3600)).await;
     }
@@ -192,7 +209,7 @@ async fn watch_task() {
         Timer::after(Duration::from_secs(10)).await;
         let a = open_ap::stats();
         println!(
-            "SETUP watch up_s={} stations={} joins={} up={} down={} beacons={} plaintext_dropped={} dozing={} held={} released={} wakes={} ps_polls={} qos_sent={} ht_sent={} data_unacked={} ladder_up={} ladder_down={}",
+            "SETUP watch up_s={} stations={} joins={} up={} down={} beacons={} plaintext_dropped={} dozing={} held={} released={} wakes={} ps_polls={} dropped_inactive={} held_dropped={} qos_sent={} ht_sent={} data_unacked={} ladder_up={} ladder_down={}",
             started.elapsed().as_secs(),
             a.stations,
             a.joins,
@@ -205,6 +222,8 @@ async fn watch_task() {
             a.released,
             a.wakes,
             a.ps_polls,
+            a.dropped_inactive,
+            a.held_dropped,
             a.qos_sent,
             a.ht_sent,
             a.data_unacked,

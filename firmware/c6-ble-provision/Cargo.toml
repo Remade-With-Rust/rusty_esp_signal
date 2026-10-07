@@ -19,7 +19,8 @@ esp-radio = { version = "=1.0.0-beta.1", features = ["esp32c6", "ble", "unstable
 esp-rtos = { version = "=0.4.0", features = ["esp32c6", "esp-radio", "embassy"] }
 esp-alloc = "=0.11.0"
 esp-bootloader-esp-idf = { version = "=0.6.0", features = ["esp32c6"] }
-esp-println = { version = "=0.18.0", features = ["esp32c6"] }
+# UART: the C6 DevKitC's UART socket is the bench's console (as c6-s1-link)
+esp-println = { version = "=0.18.0", default-features = false, features = ["esp32c6", "uart", "colors", "critical-section"] }
 esp-backtrace = { version = "=0.20.0", features = ["esp32c6", "panic-handler", "println"] }
 embassy-executor = "0.10"
 embassy-time = "0.5"

@@ -133,6 +133,10 @@ jobs:
           - espnow-relay
           # S1, the link's kill test (its default image is the C6 responder)
           - c6-s1-link
+          # E3's four stations: a C6 station on esp-radio (network at build)
+          - c6-sta-probe
+          # E5's P2/P3: the C6 MAC without libpp, receiving
+          - c6-open-rx
     steps:
       - uses: actions/checkout@v4
       - name: Authorise private sibling fetches
@@ -143,8 +147,16 @@ jobs:
         with:
           targets: riscv32imac-unknown-none-elf
       # Track B on a RISC-V part builds on stable; espup is only for Xtensa.
-      - run: cargo build --release
+      - if: ${{ matrix.project != 'c6-sta-probe' }}
+        run: cargo build --release
         working-directory: firmware/${{ matrix.project }}
+      # the station takes its network at build time: placeholders, no secret
+      - if: ${{ matrix.project == 'c6-sta-probe' }}
+        run: cargo build --release
+        working-directory: firmware/${{ matrix.project }}
+        env:
+          JANUS_WIFI_SSID: ci-placeholder
+          JANUS_WIFI_PASS: ci-placeholder-not-a-secret
       # S1's other half, from the same source
       - if: ${{ matrix.project == 'c6-s1-link' }}
         run: cargo build --release --no-default-features --features role-initiator,chip-esp32c6

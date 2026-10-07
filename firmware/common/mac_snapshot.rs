@@ -81,18 +81,34 @@ pub fn window(stage: &str, base: u32, len: u32, skip: (u32, u32)) {
 
 /// The listed registers.
 pub fn list(stage: &str, addresses: &[u32]) {
+    print(stage, addresses, &take(addresses));
+}
+
+/// The listed registers read, all of them before any is printed: interleaved
+/// with the prints the reads spread over most of a second beside the radio's
+/// driver, and the C6 reset part-way through (2026-10-07).
+pub fn take(addresses: &[u32]) -> [u32; 256] {
+    let mut values = [0u32; 256];
+    for (v, &a) in values.iter_mut().zip(addresses) {
+        *v = read(a);
+    }
+    values
+}
+
+/// A reading from [`take`] printed: one `MACSNAP` line per nonzero register,
+/// then `done`. Printed again later by a firmware whose serial reader may join
+/// after boot (the C6 DevKitC's bridge loses what is printed between
+/// sessions), the same reading each time.
+pub fn print(stage: &str, addresses: &[u32], values: &[u32; 256]) {
+    let n = addresses.len().min(values.len());
     let mut nonzero = 0u32;
-    for &a in addresses {
-        let v = read(a);
+    for (&a, &v) in addresses[..n].iter().zip(&values[..n]) {
         if v != 0 {
             nonzero += 1;
             println!("MACSNAP {stage} 0x{a:08x} 0x{v:08x}");
         }
     }
-    println!(
-        "MACSNAP {stage} done read={} nonzero={nonzero}",
-        addresses.len()
-    );
+    println!("MACSNAP {stage} done read={n} nonzero={nonzero}");
 }
 
 /// Whether this build takes snapshots (`JANUS_MAC_SNAPSHOT` set at build time).

@@ -1,0 +1,34 @@
+[package]
+name = "c6-open-rx"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "E5's P2 and P3 on an ESP32-C6: the Wi-Fi MAC brought up without the vendor's MAC library (clocks from esp-radio's open code, the PHY by esp-phy, the MAC's configuration as observed on silicon), its registers read back for comparison with the blob's, and a receive ring of this firmware's own polled for the first frames. NOT Wi-Fi certified."
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "c6-open-rx"
+path = "src/main.rs"
+test = false
+bench = false
+doctest = false
+
+[dependencies]
+esp-hal = { version = "=1.2.0", features = ["esp32c6", "unstable", "rt"] }
+# the family's esp-phy (E1, E6): the PHY library's bring-up and calibration
+esp-phy = { path = "../../vendor/open-mac/esp-phy", features = ["esp32c6"] }
+esp-alloc = { version = "=0.11.0", features = ["esp32c6"] }
+esp-bootloader-esp-idf = { version = "=0.6.0", features = ["esp32c6"] }
+# UART: the C6 DevKitC's UART socket is the bench's console (as c6-s1-link)
+esp-println = { version = "=0.18.0", default-features = false, features = ["esp32c6", "uart"] }
+esp-backtrace = { version = "=0.20.0", features = ["esp32c6", "panic-handler", "println"] }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = 2
+
+[workspace]

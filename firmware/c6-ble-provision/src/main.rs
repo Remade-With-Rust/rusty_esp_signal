@@ -31,7 +31,6 @@
 
 extern crate alloc;
 
-
 use core::cell::RefCell;
 
 use embassy_futures::join::join;
@@ -45,13 +44,13 @@ use esp_println::println;
 use esp_storage::FlashStorage;
 use rusty_esp_mid_core::key::DeviceKey;
 use rusty_esp_mid_esp::hal::EspHalRng;
+use rusty_esp_mid_esp::hal::{SharedFlash, Store, open_shared};
 use rusty_esp_signal_core::esp_core::Micros;
 use rusty_esp_signal_core::provision::{Env, Provisioner};
 use rusty_esp_signal_core::setup::Reset;
 use rusty_esp_signal_core::wifi::StationPolicy;
-use rusty_esp_signal_esp::ble::{JanusServer, Served, assert_uuids, serve};
+use rusty_esp_signal_esp::ble::{JanusServer, Served, assert_uuids, serve, setup_address};
 use static_cell::StaticCell;
-use rusty_esp_mid_esp::hal::{SharedFlash, Store, open_shared};
 use trouble_host::prelude::*;
 
 /// The namespace the settings and the identity live in, on every track.
@@ -86,7 +85,10 @@ fn now() -> Micros {
 
 #[esp_rtos::main]
 async fn main(_spawner: embassy_executor::Spawner) {
-    let peripherals = esp_hal::init(esp_hal::Config::default());
+    // 160 MHz: esp-radio tells the C6's BLE controller `cpu_freq_mhz: 160`,
+    // and esp-hal's default here is 80
+    let peripherals =
+        esp_hal::init(esp_hal::Config::default().with_cpu_clock(esp_hal::clock::CpuClock::max()));
     esp_alloc::heap_allocator!(size: 96 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
@@ -132,13 +134,26 @@ async fn main(_spawner: embassy_executor::Spawner) {
 
     let connector = esp_radio::ble::controller::BleConnector::new(
         peripherals.BT,
-        esp_radio::ble::Config::default(),
+        // +20 dBm, the C6's top setting, not the controller's +9: at +9 a
+        // DevKitC on the bench reached the laptop at -75 to -82 dBm, under
+        // the laptop's cliff (about -77), and setup crawled -- connect 4-37 s,
+        // unlock 20 s -- where the XIAO at +9 arrived at -74 (E7's P8,
+        // 2026-10-07). Setup is short and the phone may be anywhere.
+        esp_radio::ble::Config::default().with_default_tx_power(esp_radio::ble::TxPower::P20),
     )
     .expect("ble controller");
     let controller: Controller = ExternalController::new(connector);
 
     let resources = RESOURCES.init(Resources::new());
-    let stack = trouble_host::new(controller, resources).build();
+    // a new random static address each boot, not the public one (see
+    // setup_address: a central's per-address state outlives a lost session)
+    let mut own = [0u8; 6];
+    Trng::try_new()
+        .expect("TRNG entropy source enabled")
+        .read(&mut own);
+    let stack = trouble_host::new(controller, resources)
+        .set_random_address(setup_address(own))
+        .build();
     let mut runner = stack.runner();
     let mut peripheral = stack.peripheral();
 

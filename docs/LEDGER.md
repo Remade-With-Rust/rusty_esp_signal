@@ -137,7 +137,8 @@ Four things this cost, worth writing down:
 ## Not yet measured
 
 - **Anything on a radio.** The three firmwares above build but **none has
-  been flashed**: S1's C6 ↔ C6 ESP-NOW link (1000 frames each way with loss,
+  been flashed** (2026-09-02; S1 and S3's BLE route have since run on C6
+  boards: "The C6s on the bench", 2026-10-07): S1's C6 ↔ C6 ESP-NOW link (1000 frames each way with loss,
   replay-rejected and bad-tag counters), S2's presence in a room against our
   own hand-labelled recording, S3's BLE provisioning from a phone, S4's LoRa
   range/RSSI/PER table, S5's LD2410 against the module's own serial tool,
@@ -1966,3 +1967,53 @@ Also from the bench: `c6-s1-link` on a plain ESP32 needs the DRAM its ROM loader
 **What the device spends.** Discover 8.4 ms; Start to Reply 459 ms (the SPAKE2+ response and the Reply's signature); Settings to Result 4-5 ms. The board was put back as it was, image and settings, after each session of runs.
 
 **The cell, 2026-10-05.** espino's C18 (the camera page as the open MAC's station, with a setup boot that hosts the open setup network and serves `docs/setup-page.html` from `setup::page::SETUP_PAGE_GZ`) passed the BLE cell's kill test over the page on the XIAO: the setup page served byte for byte, the session's rows over HTTP, the owner set it up from a laptop's browser with the code and their phone's hotspot, and the device restarted as the station, joined in 1.1 s and served its camera page and stream on its token; a second boot kept the network. Its C: 33,507 B, libphy alone, against 419,444 B for the BLE cell on the blob. Building it found the open MAC's resources twice in `.bss` and FoA's 29.7 KB block built on the main stack at bring-up: one block per firmware now, built at compile time (`foa::StaticFoAResources`). NOT Wi-Fi certified.
+
+## The C6s on the bench (2026-10-07)
+
+Three ESP32-C6-DevKitC-1 boards on their UART sockets (a WCH CH343 bridge;
+`tools/board_reset.py` in the umbrella starts them, verified by the ROM's
+own banner) beside the XIAO. NOT Wi-Fi certified.
+
+**S1 as written, C6 to C6** (`c6-s1-link`, responder and initiator, both
+on esp-radio): **912 of 1,000** frames echoed on broadcast (88 lost, none
+with a bad tag), and the third identity's session refused. The harness
+gained what the bench taught it: the verdict repeated every 2 s (a reader
+that joins late still hears it), retried handshakes on both sides, the
+initiator started only once (two boots broke the responder's session).
+**The mixed fleet**, the C6 on the blob as responder and the XIAO's open
+MAC as initiator: **PASS, 1,000 of 1,000** echoed by the C6, the
+unadopted identity refused; 867 of 1,000 heard back on the XIAO's side.
+
+**S3's BLE route on a C6** (`c6-ble-provision`, E7's P8): provisioned from
+Chrome over Web Bluetooth with a setup code, first attempt; a wrong code
+refused at Confirm for one attempt. Four fixes, each from the bench:
+`ble::serve` now answers for `ANSWER_GRACE` (10 s) after settings apply
+(the page's last read had been cut off, so it said "failed" for settings
+applied); `ble::setup_address`, a random static address at each boot,
+used by `c6-ble-provision` and `xiao-s3-sense-hal-ble-provision` (a laptop
+whose per-address state outlived lost sessions saw 2 of 5 services until
+the board came back under a new address); +20 dBm on the C6 (at +9 it sat
+on the laptop's reception cliff, about -77 dBm); 160 MHz, which esp-radio
+tells the C6's controller. Scripted (`tools/setup_central.py`, which now
+says why a retry found nothing): 9-11 s from finding the board to settings
+applied.
+
+**The C6's MAC without libpp** (`c6-open-rx`, E5's P2 and P3): clocks
+from esp-radio's open code, the PHY by esp-phy, the MAC's configuration as
+observed on two boards (104 registers; none per-board), a ring of this
+firmware's own. 174 of the 191 registers the blob's bring-up leaves
+nonzero read the same after this one; about 220 frames a second received
+on channel 6, every beacon's first address the broadcast address at byte
+92 + 4. Linked C: the PHY library and its printf, 33,068 B (the blob link
+node: 420,033 B). The C6's receive hardware, as found: the owner bit stays
+set on a filled descriptor, a list that ends stops reception for good (so
+the ring is circular), and 92 bytes of the MAC's own precede each frame.
+
+**A C6 station for the access point's tests** (`c6-sta-probe`, esp-radio):
+joins the network named at build, fetches the gateway's page every second;
+`JANUS_POWER_SAVE` and `JANUS_STA_QUIET` for the power-save checks. Three
+of them and the laptop on `xiao-s3-open-setup`'s WPA2 network at once: the
+access point held 4 stations; about 500 page loads from the C6s, none
+failed; the laptop's pings 54 of 60, 3 ms median. One C6's loads each ended
+on its 4 s timeout rather than the server's close (its page was read in
+full; the close never reached it): open.

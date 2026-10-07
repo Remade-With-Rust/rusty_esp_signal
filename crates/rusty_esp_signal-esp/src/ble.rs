@@ -447,7 +447,8 @@ where
 }
 
 /// [`accept`] one peer and [`Session::serve`] it: one connection, served
-/// until it provisions or leaves, then dropped. `Ok(None)` when the window
+/// until it provisions or leaves, then dropped (after a provision, once
+/// [`ANSWER_GRACE`] has let the peer read the answer). `Ok(None)` when the window
 /// is closed. For a firmware with nothing to join (the C6 has no Wi-Fi
 /// stack); one that joins keeps the [`Session`] and reports through it.
 pub async fn serve<'stack, C, E: SetupEnv, const N: usize>(
@@ -467,12 +468,38 @@ where
     let Some(session) = accept(peripheral, server, name, provisioner, now()).await? else {
         return Ok(None);
     };
-    session
+    let served = session
         .serve(server, provisioner, now)
         .await
-        .map(Some)
-        .map_err(BleHostError::from)
+        .map_err(BleHostError::from)?;
+    if let Served::Provisioned(_) = served {
+        // The peer reads the Settings answer after its header's
+        // notification: dropped at once, the link took that read with it,
+        // and the page said "provisioning failed" for settings the device
+        // had applied (E7's P8 on a C6, 2026-10-07). Held a moment, still
+        // answering, or until the peer leaves.
+        let _ = session.attend(Timer::after(ANSWER_GRACE)).await;
+    }
+    Ok(Some(served))
 }
+
+/// The address a setup firmware advertises from: random static (the two top
+/// bits set, Core spec Vol 6 Part B 1.3.2.1), from six random bytes drawn
+/// at each boot, for `trouble_host::new(..).set_random_address(..)`.
+///
+/// Not the chip's public address: a central keeps per-address state, and a
+/// laptop that had lost a session to a C6 went on discovering 2 of its 5
+/// services, from every image, until the board came back under a new
+/// address (E7's P8, 2026-10-07). Setup bonds nothing, so nothing needs the
+/// address to stay.
+pub fn setup_address(mut random: [u8; 6]) -> Address {
+    random[5] |= 0xc0;
+    Address::random(random)
+}
+
+/// How long the one-shot [`serve`] keeps answering after settings are
+/// applied, before it drops the link.
+pub const ANSWER_GRACE: Duration = Duration::from_secs(10);
 
 /// Check that the literal UUIDs above still match the core's table, so a
 /// change to the core's base UUID cannot silently diverge from the server.

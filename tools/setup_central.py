@@ -123,17 +123,24 @@ async def connected(args):
     before it is raised: Windows otherwise keeps the link open, and a device
     that holds one peer at a time stops advertising (seen on C13, M6). One
     retry, since Windows' first service discovery can come back short."""
+    first = None
     for attempt in (1, 2):
         device = await find(args.name)
         if device is None:
-            raise SystemExit(json.dumps({"verdict": "not found", "note": "nothing advertising the provisioning service"}))
-        client = BleakClient(device)
+            # after a failed first attempt this is usually Windows still
+            # holding that link, so the device is not advertising: say why
+            raise SystemExit(json.dumps({"verdict": "not found", "note": "nothing advertising the provisioning service",
+                                         "first_attempt": first}))
+        # bleak's 10 s is short for a C6 DevKitC on the bench: connect and
+        # discovery took 4-31 s from this laptop (E7 P8, 2026-10-07)
+        client = BleakClient(device, timeout=45, winrt={"use_cached_services": False})
         await client.connect()
         link = Link(client)
         try:
             await link.open()
             return device, client, link
-        except Exception:
+        except Exception as e:
+            first = f"{type(e).__name__}: {e}"[:300]
             await client.disconnect()
             if attempt == 2:
                 raise

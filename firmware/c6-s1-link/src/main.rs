@@ -42,6 +42,8 @@
 //! this firmware's own tallies, so `bad_tag` and `replayed` are the core's
 //! judgement rather than a restatement of it.
 
+extern crate alloc;
+
 use embassy_time::{Duration, Timer, with_timeout};
 use esp_backtrace as _;
 use esp_hal::rng::{Trng, TrngSource};
@@ -58,6 +60,20 @@ use rusty_esp_signal_esp::hal::rng::EspTrng;
 #[allow(dead_code)]
 #[path = "../../common/mac_snapshot.rs"]
 mod mac_snapshot;
+
+/// The run's `RESULT:` line, kept to be said again: a reader that joins after
+/// the run (the C6-DevKitC's bridge loses what is printed while the port is
+/// closed or after its reset lines move, 2026-10-07) still hears it.
+static VERDICT: critical_section::Mutex<core::cell::RefCell<Option<alloc::string::String>>> =
+    critical_section::Mutex::new(core::cell::RefCell::new(None));
+
+macro_rules! verdict {
+    ($($arg:tt)*) => {{
+        let line = alloc::format!($($arg)*);
+        println!("{}", line);
+        critical_section::with(|cs| *VERDICT.borrow_ref_mut(cs) = Some(line));
+    }};
+}
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -186,9 +202,21 @@ async fn main(_spawner: embassy_executor::Spawner) {
             mac_snapshot::S3_SKIP,
         );
         #[cfg(feature = "chip-esp32c6")]
-        mac_snapshot::list("blob", &mac_snapshot::C6_REGISTERS);
+        let taken = mac_snapshot::take(&mac_snapshot::C6_REGISTERS);
+        #[cfg(feature = "chip-esp32c6")]
+        mac_snapshot::print("blob", &mac_snapshot::C6_REGISTERS, &taken);
+        // a heartbeat: a capture that goes quiet tells a reset (a new boot
+        // banner) from a stalled line (beats resuming); the C6's reading
+        // again every 15 s for a reader that joined after boot
+        let mut beat = 0u32;
         loop {
-            Timer::after(Duration::from_secs(60)).await;
+            Timer::after(Duration::from_secs(1)).await;
+            beat += 1;
+            println!("MACSNAP alive {beat}");
+            #[cfg(feature = "chip-esp32c6")]
+            if beat % 15 == 0 {
+                mac_snapshot::print("blob", &mac_snapshot::C6_REGISTERS, &taken);
+            }
         }
     }
     if let Some((count, gap_us, length)) = beacon_plan() {
@@ -212,14 +240,20 @@ async fn main(_spawner: embassy_executor::Spawner) {
     // many seconds after its verdict, so a responder on a board with no
     // reset line (the ESP32-CAM's base) takes the next pair with no hand
     // on it. The link's code is the same either way.
-    if let Some(after) = option_env!("JANUS_S1_REARM_S").and_then(|s| s.parse::<u64>().ok()) {
+    let rearm = option_env!("JANUS_S1_REARM_S").and_then(|s| s.parse::<u64>().ok());
+    if let Some(after) = rearm {
         println!("S1 restarting in {after} s (JANUS_S1_REARM_S)");
-        Timer::after(Duration::from_secs(after)).await;
-        esp_hal::system::software_reset();
     }
-
+    // the verdict again every 2 s for a reader that joins late (VERDICT)
+    let finished = embassy_time::Instant::now();
     loop {
-        Timer::after(Duration::from_secs(60)).await;
+        Timer::after(Duration::from_secs(2)).await;
+        if let Some(line) = critical_section::with(|cs| VERDICT.borrow_ref(cs).clone()) {
+            println!("{line} (again)");
+        }
+        if rearm.is_some_and(|after| finished.elapsed().as_secs() >= after) {
+            esp_hal::system::software_reset();
+        }
     }
 }
 
@@ -235,20 +269,39 @@ async fn responder(link: &mut EspNowLink, me: &DeviceKey, rng: &mut EspTrng) {
     let mut adopted = [0u8; 64];
     let mut adopted_len = 0usize;
 
-    let mut session = match link
-        .handshake_responder(me, rng, |peer| {
-            if let Ok(s) = peer.write(&mut adopted) {
-                adopted_len = s.len();
+    // A failed handshake starts over rather than ending the run: a stranger's
+    // ESP-NOW frame on the channel failed S1 "no session" (InvalidFormat)
+    // before its initiator had spoken, and the initiator now sends its hello
+    // again when unanswered (2026-10-07). Bounded, so a channel full of
+    // strangers still ends in a verdict.
+    let mut foreign = 0u32;
+    let mut session = loop {
+        match link
+            .handshake_responder(
+                me,
+                rng,
+                |peer| {
+                    if let Ok(s) = peer.write(&mut adopted) {
+                        adopted_len = s.len();
+                    }
+                    true
+                },
+                now(),
+            )
+            .await
+        {
+            Ok(s) => break s,
+            // a stranger's frame, or the initiator's retried hello arriving
+            // where this side waited for its confirm: start over, bounded
+            Err(e) if foreign < 50 => {
+                foreign += 1;
+                println!("S1 handshake attempt {foreign} failed={e:?}; waiting again");
             }
-            true
-        }, now())
-        .await
-    {
-        Ok(s) => s,
-        Err(e) => {
-            println!("S1 handshake_failed={e:?}");
-            println!("RESULT: FAIL -- no session");
-            return;
+            Err(e) => {
+                println!("S1 handshake_failed={e:?}");
+                verdict!("RESULT: FAIL -- no session");
+                return;
+            }
         }
     };
     let peer_did = core::str::from_utf8(&adopted[..adopted_len]).unwrap_or("?");
@@ -289,19 +342,24 @@ async fn responder(link: &mut EspNowLink, me: &DeviceKey, rng: &mut EspTrng) {
     println!("S1 now refusing any DID but the adopted one");
     let refused = match with_timeout(
         JOIN_TIMEOUT,
-        link.handshake_responder(me, rng, |peer| {
-            let mut other = [0u8; 64];
-            match peer.write(&mut other) {
-                Ok(s) => s.as_bytes() == &adopted[..adopted_len],
-                Err(_) => false,
-            }
-        }, now()),
+        link.handshake_responder(
+            me,
+            rng,
+            |peer| {
+                let mut other = [0u8; 64];
+                match peer.write(&mut other) {
+                    Ok(s) => s.as_bytes() == &adopted[..adopted_len],
+                    Err(_) => false,
+                }
+            },
+            now(),
+        ),
     )
     .await
     {
-        Ok(Ok(_)) => false,      // a session with an unadopted DID: a failure
-        Ok(Err(_)) => true,      // refused outright
-        Err(_) => true,          // nothing completed: also not joined
+        Ok(Ok(_)) => false, // a session with an unadopted DID: a failure
+        Ok(Err(_)) => true, // refused outright
+        Err(_) => true,     // nothing completed: also not joined
     };
     println!(
         "S1 reject_unadopted={}",
@@ -310,9 +368,16 @@ async fn responder(link: &mut EspNowLink, me: &DeviceKey, rng: &mut EspTrng) {
 
     let ok = echoed >= FRAMES && refused && c.bad_tag == 0;
     if ok {
-        println!("RESULT: PASS -- {echoed} frames echoed, unadopted identity refused");
+        verdict!(
+            "RESULT: PASS -- {echoed} frames echoed, unadopted identity refused; peer {peer_did}"
+        );
     } else {
-        println!("RESULT: FAIL");
+        // the counts and the peer in the verdict itself: it is said again
+        // for a reader that joined late, and the lines before it are lost
+        verdict!(
+            "RESULT: FAIL -- echoed={echoed}/{FRAMES} refused={refused} bad_tag={}; peer {peer_did}",
+            c.bad_tag
+        );
     }
 }
 
@@ -322,13 +387,28 @@ async fn responder(link: &mut EspNowLink, me: &DeviceKey, rng: &mut EspTrng) {
 #[cfg(feature = "role-initiator")]
 async fn initiator(link: &mut EspNowLink, me: &DeviceKey, rng: &mut EspTrng) {
     println!("S1 handshaking");
-    let mut session = match link.handshake_initiator(me, rng, |_peer| true, now()).await {
-        Ok(s) => s,
-        Err(e) => {
-            println!("S1 handshake_failed={e:?}");
-            println!("RESULT: FAIL -- no session");
-            return;
+    // One hello, then a wait with no end: a responder still bringing its
+    // radio up missed it and the run hung "handshaking" (2026-10-07, C6 to
+    // C6). A hello again every JOIN_TIMEOUT, ten times at most.
+    let mut session = None;
+    for attempt in 1..=10u32 {
+        match with_timeout(
+            JOIN_TIMEOUT,
+            link.handshake_initiator(me, rng, |_peer| true, now()),
+        )
+        .await
+        {
+            Ok(Ok(s)) => {
+                session = Some(s);
+                break;
+            }
+            Ok(Err(e)) => println!("S1 handshake attempt {attempt} failed={e:?}"),
+            Err(_) => println!("S1 handshake attempt {attempt}: no answer"),
         }
+    }
+    let Some(mut session) = session else {
+        verdict!("RESULT: FAIL -- no session");
+        return;
     };
     println!("S1 session={}", session.id());
 
@@ -382,7 +462,7 @@ async fn initiator(link: &mut EspNowLink, me: &DeviceKey, rng: &mut EspTrng) {
     let rogue = match DeviceKey::generate(rng, "janus-c6-rogue") {
         Ok(k) => k,
         Err(_) => {
-            println!("RESULT: FAIL -- could not mint the rogue key");
+            verdict!("RESULT: FAIL -- could not mint the rogue key");
             return;
         }
     };
@@ -405,11 +485,14 @@ async fn initiator(link: &mut EspNowLink, me: &DeviceKey, rng: &mut EspTrng) {
 
     let pass = ok >= FRAMES && !admitted && c.bad_tag == 0;
     if pass {
-        println!(
+        verdict!(
             "RESULT: PASS -- {ok}/{FRAMES} round-trips, lost={lost}, \
              bad_tag=0, unadopted identity refused"
         );
     } else {
-        println!("RESULT: FAIL -- ok={ok} lost={lost} bad_tag={} admitted={admitted}", c.bad_tag);
+        verdict!(
+            "RESULT: FAIL -- ok={ok} lost={lost} bad_tag={} admitted={admitted}",
+            c.bad_tag
+        );
     }
 }

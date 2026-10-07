@@ -70,7 +70,7 @@ use rusty_esp_signal_core::esp_core::Micros;
 use rusty_esp_signal_core::provision::{Env, Provisioner};
 use rusty_esp_signal_core::setup::Reset;
 use rusty_esp_signal_core::wifi::{Action, Credentials, Event, PolicyConfig, StationPolicy};
-use rusty_esp_signal_esp::ble::{JanusServer, Served, accept, assert_uuids};
+use rusty_esp_signal_esp::ble::{JanusServer, Served, accept, assert_uuids, setup_address};
 use rusty_esp_signal_esp::hal::netstack::{self, SOCKETS};
 use static_cell::StaticCell;
 use rusty_esp_mid_esp::hal::{SharedFlash, Store, open_shared};
@@ -249,7 +249,13 @@ async fn main(spawner: embassy_executor::Spawner) {
     let connector =
         BleConnector::new(peripherals.BT, esp_radio::ble::Config::default()).expect("ble");
     let controller: Controller = ExternalController::new(connector);
-    let stack = trouble_host::new(controller, RESOURCES.init(Resources::new())).build();
+    // a new random static address each boot, not the public one (see
+    // setup_address: a central's per-address state outlives a lost session)
+    let mut own = [0u8; 6];
+    Trng::try_new().expect("TRNG entropy source enabled").read(&mut own);
+    let stack = trouble_host::new(controller, RESOURCES.init(Resources::new()))
+        .set_random_address(setup_address(own))
+        .build();
     let mut runner = stack.runner();
     let mut peripheral = stack.peripheral();
     let server = JanusServer::new_default(NAME).expect("gatt server");
