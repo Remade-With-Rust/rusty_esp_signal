@@ -72,6 +72,10 @@ const EAPOL: [u8; 2] = [0x88, 0x8e];
 
 static BEACONS: AtomicU32 = AtomicU32::new(0);
 static BEACON_FAILURES: AtomicU32 = AtomicU32::new(0);
+static BEACONS_LATE: AtomicU32 = AtomicU32::new(0);
+static TBTTS_SKIPPED: AtomicU32 = AtomicU32::new(0);
+static BEACON_LATE_MAX_US: AtomicU32 = AtomicU32::new(0);
+static STAMP_SYNCS: AtomicU32 = AtomicU32::new(0);
 static MANAGEMENT_REPLIES: AtomicU32 = AtomicU32::new(0);
 static MANAGEMENT_UNACKED: AtomicU32 = AtomicU32::new(0);
 static UP_FRAMES: AtomicU32 = AtomicU32::new(0);
@@ -202,10 +206,13 @@ fn ccmp_packet_number(header: &[u8]) -> u64 {
     ])
 }
 
-/// A station's place on the rate ladder: 6, 12, 24, 36, 54 Mbit/s, then
-/// MCS 0-7 as far as the station receives (the short guard interval if it
-/// does). Down one on a frame it never acknowledged, up one after eight
-/// acknowledged in a row.
+/// A station's place on the rate ladder: 1 and 2 Mbit/s (DSSS, long
+/// preamble), 6, 12, 24, 36, 54 Mbit/s, then MCS 0-7 as far as the station
+/// receives (the short guard interval if it does). Down one on a frame it
+/// never acknowledged, up one after eight acknowledged in a row. The DSSS
+/// rungs are for a station at the edge of the cap's range: a C6 that lost
+/// 52 % of its frames at 6 Mbit/s, the ladder's floor until then (E3,
+/// 2026-10-07); both are basic rates every station takes.
 #[derive(Clone, Copy, Debug)]
 struct Ladder {
     rung: u8,
@@ -222,12 +229,15 @@ impl Ladder {
         OfdmRate::Mbits36,
         OfdmRate::Mbits54,
     ];
-    const START: u8 = 2; // 24 Mbit/s, as before P7
+    /// The DSSS rungs below the OFDM ones.
+    const DSSS: u8 = 2;
+    const START: u8 = Self::DSSS + 2; // 24 Mbit/s, as before P7
 
     fn new(ht: Option<HtCapabilities>) -> Self {
+        let legacy = Self::DSSS + Self::LEGACY.len() as u8;
         let (top, short_gi) = match ht.and_then(|h| h.highest_mcs().map(|m| (m, h.short_gi_20))) {
-            Some((mcs, sgi)) => (Self::LEGACY.len() as u8 + mcs, sgi),
-            None => (Self::LEGACY.len() as u8 - 1, false),
+            Some((mcs, sgi)) => (legacy + mcs, sgi),
+            None => (legacy - 1, false),
         };
         Self {
             rung: Self::START.min(top),
@@ -238,9 +248,14 @@ impl Ladder {
     }
 
     fn rate(&self) -> TxPhyRate {
-        let legacy = Self::LEGACY.len() as u8;
-        if self.rung < legacy {
-            TxPhyRate::Ofdm(Self::LEGACY[usize::from(self.rung)])
+        let legacy = Self::DSSS + Self::LEGACY.len() as u8;
+        if self.rung < Self::DSSS {
+            match HrDsssRate::new(self.rung, false) {
+                Some(dsss) => TxPhyRate::HrDsss(dsss),
+                None => TxPhyRate::Ofdm(OfdmRate::Mbits6),
+            }
+        } else if self.rung < legacy {
+            TxPhyRate::Ofdm(Self::LEGACY[usize::from(self.rung - Self::DSSS)])
         } else {
             match HtRate::new(self.rung - legacy, self.short_gi, false) {
                 Some(ht) => TxPhyRate::Ht(ht),
@@ -1583,12 +1598,32 @@ pub async fn ap_task(runner: ApRunner) -> ! {
     // at 1 Mbit/s)
     const LEAD_US: u64 = 40;
     const TO_TIMESTAMP_US: u64 = 192 + 24 * 8;
-    let mut beacon_index: u32 = 0;
+    // a beacon later than this after its TBTT is not sent: the next TBTT's
+    // is nearer
+    const LATE_LIMIT_US: u64 = 51_200;
+    // a beacon later than this is counted late
+    const LATE_US: u64 = 2_000;
     let mut frame = [0u8; 1600];
+    // the beacon's own buffer: one from the TX pool waited on frames being
+    // retried to dozing or distant stations, and beacons went out 50-82 ms
+    // after their TBTTs (E3, the C6 sniffer, 2026-10-07)
+    let mut beacon_buf = [0u8; 512];
     let mut sweep = Instant::now();
+    // the TBTT the next beacon is for, kept across the loop's other work: a
+    // frame handled across a TBTT makes its beacon late, not skipped
+    let mut next_tbtt = (tsf::access_point() / interval_us + 1) * interval_us;
+    // beacons are stamped by another counter than the one they are
+    // scheduled by: the two set equal now the MAC is up, and checked every
+    // sweep (a dozing station wakes by the stamped time)
+    tsf::sync_stamp();
+    STAMP_SYNCS.fetch_add(1, Ordering::Relaxed);
     loop {
         let now = tsf::access_point();
-        let next_tbtt = (now / interval_us + 1) * interval_us;
+        if now > next_tbtt + LATE_LIMIT_US {
+            let to = (now / interval_us + 1) * interval_us;
+            TBTTS_SKIPPED.fetch_add(((to - next_tbtt) / interval_us) as u32, Ordering::Relaxed);
+            next_tbtt = to;
+        }
         let wait = next_tbtt.saturating_sub(now).saturating_sub(LEAD_US);
         match select3(
             Timer::after(Duration::from_micros(wait)),
@@ -1598,26 +1633,37 @@ pub async fn ap_task(runner: ApRunner) -> ! {
         .await
         {
             Either3::First(()) => {
-                let dtim_count = (beacon_index % u32::from(DTIM_PERIOD)) as u8;
-                beacon_index = beacon_index.wrapping_add(1);
+                // the DTIM count from the TBTT's number, as a station
+                // predicts the DTIM from the TSF: counted per beacon sent,
+                // every skipped beacon moved the DTIM (120 times in one run)
+                let tbtt = next_tbtt / interval_us;
+                let period = u64::from(DTIM_PERIOD);
+                let dtim_count = ((period - tbtt % period) % period) as u8;
+                let scheduled = next_tbtt;
+                next_tbtt += interval_us;
                 let group_buffered = ap.held.group_count() > 0;
                 let tim = ap.stations.tim(dtim_count, DTIM_PERIOD, group_buffered);
-                let mut buf = ap.tx.alloc_tx_buf().await;
-                let Some(beacon) = frames::beacon(&mut buf[..], &ap.bss, &tim) else {
+                let Some(beacon) = frames::beacon(&mut beacon_buf[..], &ap.bss, &tim) else {
                     continue;
                 };
                 let at = beacon.timestamp_at;
                 let sent = ap
                     .tx
                     .transmit_beacon_with_hook(
-                        &mut buf[..beacon.len],
+                        &mut beacon_buf[..beacon.len],
                         plcp(one_mbit()),
                         TxMacParameters {
                             override_seq_num: true,
                             ..Default::default()
                         },
                         |f| {
-                            let ts = tsf::access_point() + TO_TIMESTAMP_US;
+                            let hook = tsf::access_point();
+                            let late = hook.saturating_sub(scheduled);
+                            if late > LATE_US {
+                                BEACONS_LATE.fetch_add(1, Ordering::Relaxed);
+                            }
+                            BEACON_LATE_MAX_US.fetch_max(late as u32, Ordering::Relaxed);
+                            let ts = hook + TO_TIMESTAMP_US;
                             f[at..at + 8].copy_from_slice(&ts.to_le_bytes());
                         },
                     )
@@ -1663,6 +1709,10 @@ pub async fn ap_task(runner: ApRunner) -> ! {
         }
         if sweep.elapsed().as_secs() >= 10 {
             sweep = Instant::now();
+            if tsf::stamp().abs_diff(tsf::access_point()) > 100 {
+                tsf::sync_stamp();
+                STAMP_SYNCS.fetch_add(1, Ordering::Relaxed);
+            }
             let now_us = Instant::now().as_micros();
             while let Some(gone) = ap.stations.inactive(now_us, ap.inactivity_us) {
                 ap.forget(&gone);
@@ -1691,6 +1741,18 @@ pub struct Stats {
     pub beacons: u32,
     /// Beacons sent and beacon transmissions that failed.
     pub beacon_failures: u32,
+    /// Beacons sent more than 2 ms after their TBTT, TBTTs with no beacon
+    /// (more than half an interval late), and the latest beacon's delay.
+    pub beacons_late: u32,
+    /// Beacons sent more than 2 ms after their TBTT, TBTTs with no beacon
+    /// (more than half an interval late), and the latest beacon's delay.
+    pub tbtts_skipped: u32,
+    /// Beacons sent more than 2 ms after their TBTT, TBTTs with no beacon
+    /// (more than half an interval late), and the latest beacon's delay.
+    pub beacon_late_max_us: u32,
+    /// Times the stamping clock was set to the access point's (once at the
+    /// start; again only if they drifted 100 us apart).
+    pub stamp_syncs: u32,
     /// Management replies sent, and those never acknowledged (probe
     /// responses to scanners that left the channel, mostly).
     pub replies: u32,
@@ -1782,6 +1844,14 @@ pub struct Stats {
     pub ladder_down: u32,
 }
 
+/// The MAC's two clocks now: (the soft access point's, which beacons are
+/// scheduled by; the one they are stamped with). Loaded together at start
+/// they read within microseconds of each other (E3's beacon timing).
+#[must_use]
+pub fn clocks() -> (u64, u64) {
+    (tsf::access_point(), tsf::stamp())
+}
+
 /// The counters now.
 #[must_use]
 pub fn stats() -> Stats {
@@ -1791,6 +1861,10 @@ pub fn stats() -> Stats {
         dozing: r(&DOZING_NOW),
         beacons: r(&BEACONS),
         beacon_failures: r(&BEACON_FAILURES),
+        beacons_late: r(&BEACONS_LATE),
+        tbtts_skipped: r(&TBTTS_SKIPPED),
+        beacon_late_max_us: r(&BEACON_LATE_MAX_US),
+        stamp_syncs: r(&STAMP_SYNCS),
         replies: r(&MANAGEMENT_REPLIES),
         replies_unacked: r(&MANAGEMENT_UNACKED),
         joins: r(&JOINS),

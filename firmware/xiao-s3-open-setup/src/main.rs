@@ -208,8 +208,9 @@ async fn watch_task() {
     loop {
         Timer::after(Duration::from_secs(10)).await;
         let a = open_ap::stats();
+        let (ap_tsf, stamp_tsf) = open_ap::clocks();
         println!(
-            "SETUP watch up_s={} stations={} joins={} up={} down={} beacons={} plaintext_dropped={} dozing={} held={} released={} wakes={} ps_polls={} dropped_inactive={} held_dropped={} qos_sent={} ht_sent={} data_unacked={} ladder_up={} ladder_down={}",
+            "SETUP watch up_s={} stations={} joins={} up={} down={} beacons={} plaintext_dropped={} dozing={} held={} released={} wakes={} ps_polls={} dropped_inactive={} held_dropped={} beacons_late={} tbtts_skipped={} beacon_late_max_us={} stamp_offset_us={} stamp_syncs={} qos_sent={} ht_sent={} data_unacked={} ladder_up={} ladder_down={}",
             started.elapsed().as_secs(),
             a.stations,
             a.joins,
@@ -224,6 +225,11 @@ async fn watch_task() {
             a.ps_polls,
             a.dropped_inactive,
             a.held_dropped,
+            a.beacons_late,
+            a.tbtts_skipped,
+            a.beacon_late_max_us,
+            stamp_tsf as i64 - ap_tsf as i64,
+            a.stamp_syncs,
             a.qos_sent,
             a.ht_sent,
             a.data_unacked,

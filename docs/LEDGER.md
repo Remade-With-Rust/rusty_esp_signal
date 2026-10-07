@@ -2017,3 +2017,19 @@ access point held 4 stations; about 500 page loads from the C6s, none
 failed; the laptop's pings 54 of 60, 3 ms median. One C6's loads each ended
 on its 4 s timeout rather than the server's close (its page was read in
 full; the close never reached it): open.
+
+## The access point's beacons, timed right (2026-10-07)
+
+`c6-open-rx` as a sniffer (`JANUS_SNIFF_SSID`) on the library access
+point's beacons found why dozing stations lost page loads: the MAC stamps
+beacons with the counter latch bit 0 reads, not the soft-AP clock they are
+scheduled by (65-82 ms of phase apart on the air; `CTRL` bit 4 loads it,
+`tsf::sync_stamp` once the access point runs); the DTIM count was counted
+per beacon sent, so skipped beacons moved the DTIM (now from the TBTT's
+number; late beacons sent rather than skipped; the beacon's own buffer);
+and the rate ladder bottomed out at 6 Mbit/s (now 2 and 1 Mbit/s DSSS
+below it). Two dozing C6s after: 249 of 250 and 186 of 186 loads (before 0
+of 61 and ~95 %); 86 % of beacons within 0.5 ms of their TBTT, DTIM phase
+fixed. New watch counters: beacons_late, tbtts_skipped,
+beacon_late_max_us, stamp_offset_us, stamp_syncs, dropped_inactive,
+held_dropped. NOT Wi-Fi certified.

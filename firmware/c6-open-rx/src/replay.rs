@@ -17,7 +17,13 @@
 //! - `0x600a43b4`: receive record (the hardware's)
 //! - `0x600ad000`: the MAC timer (a counter)
 
-/// (address, value), in ascending address order.
+/// (address, value), in ascending address order. One of them does not hold:
+/// `0x600a4ddc` reads 0 straight after 1 is written (and after the channel
+/// and the ring), where the blob's bring-up leaves 1 -- a status bit, most
+/// likely set while the coexistence arbiter runs, which this firmware never
+/// starts; reception does not need it (2026-10-07). P2's other difference,
+/// one bit of `0x600af81c`, is the analog I2C master's `ANA_CONF1` (below its
+/// documented fields): which analog block it last addressed, not a setting.
 pub const MAC_CONFIG: [(u32, u32); 104] = [
     (0x600a400c, 0x40000000),
     (0x600a4020, 0x1801fe00),

@@ -39,6 +39,16 @@ pub fn latched(bit: u32) -> (u32, u32) {
     (high, low)
 }
 
+/// The counter the MAC stamps beacons with (latch `CTRL` bit 0, "a counter
+/// from boot" in P3) is loaded from the load words by `CTRL` bit 4 (found on
+/// the XIAO, 2026-10-07; bit 3 does nothing). Beacons are scheduled by the
+/// soft access point's clock but go out with this one's time: left at its
+/// boot value it sat 75 ms of phase away, so a dozing station woke for each
+/// beacon 75 ms early, and a rebooted access point's beacons still ran
+/// backwards whatever the soft-AP clock was loaded with (E3, the C6
+/// sniffer).
+pub const LOAD_STAMP: u32 = 0x10;
+
 /// The soft access point's TSF (latch `CTRL` bit 1, found on the board).
 pub fn access_point() -> u64 {
     let (high, low) = latched(2);
@@ -49,11 +59,7 @@ pub fn access_point() -> u64 {
 /// `hal_mac_tsf_reset(0)` does: enable off, the load words 0, the load
 /// bit (`CTRL` bit 5), enable on.
 pub fn start_access_point_clock() {
-    write(AP_CFG, read(AP_CFG) & 0x3fff_ffff);
-    write(LOAD_LOW, 0);
-    write(LOAD_HIGH, 0);
-    write(CTRL, read(CTRL) | 0x20);
-    write(AP_CFG, read(AP_CFG) | 0xc000_0000);
+    start_access_point_clock_at(0);
 }
 
 /// Start the soft access point's TSF at `start_us` (E3's R1: from a clock
@@ -65,4 +71,22 @@ pub fn start_access_point_clock_at(start_us: u64) {
     write(LOAD_HIGH, (start_us >> 32) as u32);
     write(CTRL, read(CTRL) | 0x20);
     write(AP_CFG, read(AP_CFG) | 0xc000_0000);
+}
+
+/// The counter beacons are stamped with (latch bit 0).
+pub fn stamp() -> u64 {
+    let (high, low) = latched(1);
+    (u64::from(high) << 32) | u64::from(low)
+}
+
+/// The stamping clock set to the soft access point's: loaded at the clock's
+/// start it did not hold (34,556 s apart a minute later: the MAC's bring-up
+/// comes after), loaded once the access point runs it does, to within the
+/// reads' 10 us (2026-10-07).
+pub fn sync_stamp() {
+    let now = access_point();
+    write(LOAD_LOW, now as u32);
+    write(LOAD_HIGH, (now >> 32) as u32);
+    write(CTRL, read(CTRL) | LOAD_STAMP);
+    write(CTRL, read(CTRL) & !LOAD_STAMP);
 }

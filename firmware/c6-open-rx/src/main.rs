@@ -30,6 +30,7 @@
 #[path = "../../common/mac_snapshot.rs"]
 mod mac_snapshot;
 mod replay;
+mod sniff;
 
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
@@ -59,6 +60,7 @@ struct Descriptor {
 const META_LEN: usize = 92;
 const META_RSSI: usize = 0;
 const META_FRAME_LEN: usize = 84;
+const META_LOCAL_US: usize = 12;
 
 const OWNER_DMA: u32 = 1 << 31;
 const EOF: u32 = 1 << 30;
@@ -216,6 +218,8 @@ fn main() -> ! {
     let mut walking = fixed.is_none();
     // one frame's raw start every ten seconds, for a reader that joined late
     let mut dump = false;
+    let sniff_ssid = option_env!("JANUS_SNIFF_SSID").map(str::as_bytes);
+    let mut sniffer = sniff::Sniffer::default();
     loop {
         // the C6's MAC leaves the owner bit set: a descriptor it has filled
         // shows a length and the end of a frame (first run, 2026-10-07)
@@ -244,6 +248,16 @@ fn main() -> ! {
                         kinds.beacons_broadcast += 1;
                     }
                     kinds.rssi_sum += i32::from(buffer[META_RSSI] as i8);
+                    if let Some(ssid) = sniff_ssid {
+                        let end = (META_LEN + frame_len.saturating_sub(4)).min(BUFFER_SIZE);
+                        let local_us = u32::from_le_bytes([
+                            buffer[META_LOCAL_US],
+                            buffer[META_LOCAL_US + 1],
+                            buffer[META_LOCAL_US + 2],
+                            buffer[META_LOCAL_US + 3],
+                        ]);
+                        sniffer.beacon(&buffer[META_LEN..end], ssid, local_us);
+                    }
                 }
             }
             if frames <= 6 || core::mem::take(&mut dump) {
@@ -274,7 +288,10 @@ fn main() -> ! {
                 unsafe { (*(&raw const RING))[0].flags }
             );
             if beat % 5 == 0 {
-                dump = true;
+                dump = sniff_ssid.is_none();
+                if sniff_ssid.is_some() {
+                    sniffer.report();
+                }
                 println!(
                     "P3 kinds management={} control={} data={} other={} beacons={} beacons_to_broadcast={} beacon_rssi_avg={}",
                     kinds.management,
