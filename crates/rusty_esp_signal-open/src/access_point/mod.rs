@@ -31,7 +31,7 @@ use ap_core::hold::Held;
 use ap_core::qos::{self, HtCapabilities};
 use ap_core::request::{self, Request};
 use ap_core::stations::{MAX_STATIONS, State, Stations};
-use ap_core::{Address, reason, status};
+use ap_core::{Address, BROADCAST, reason, status};
 use embassy_futures::select::{Either3, select3};
 use embassy_net::{Ipv4Cidr, Runner, Stack, StackResources, StaticConfigV4};
 use embassy_net_driver::{HardwareAddress, LinkState};
@@ -46,7 +46,7 @@ use foa::esp_wifi_hal::prelude::{
     RxFilterBank, TxMacParameters, TxPlcpParameters,
 };
 use foa::esp_wifi_hal::rates::{HrDsssRate, HtRate, OfdmRate, TxPhyRate};
-use foa::{FoARunner, KeySlot, RetryBehaviour, TxEndpoint, VirtualInterface};
+use foa::{FoARunner, KeySlot, RetryBehaviour, TxBuffer, TxEndpoint, VirtualInterface};
 
 /// The library says nothing; the counters say it.
 macro_rules! note {
@@ -206,6 +206,9 @@ fn ccmp_packet_number(header: &[u8]) -> u64 {
     ])
 }
 
+/// The longest frame forwarded between stations, as Ethernet.
+const FORWARD_BYTES: usize = 1600;
+
 /// A station's place on the rate ladder: 1 and 2 Mbit/s (DSSS, long
 /// preamble), 6, 12, 24, 36, 54 Mbit/s, then MCS 0-7 as far as the station
 /// receives (the short guard interval if it does). Down one on a frame it
@@ -330,6 +333,18 @@ struct AccessPoint {
     rekey_interval_us: u64,
     inactivity_us: u64,
     held: &'static mut Held,
+    /// The EAPOL writes' scratch, kept: zeroed per reply, it cost every
+    /// management reply 1 KB of stores whether it used it or not.
+    scratch: [u8; 1024],
+    /// The probe response, laid out once: the same for every station but
+    /// the receiver (and the timestamp, written as it goes).
+    probe: [u8; 256],
+    probe_len: usize,
+    /// A frame's copy while it is sent: a held frame's (the pool is
+    /// borrowed until the next pop) or one forwarded between stations, laid
+    /// out as Ethernet. Kept, where a zeroed 1.5-1.6 KB array per frame was
+    /// not.
+    release_buf: Option<&'static mut [u8; FORWARD_BYTES]>,
 }
 
 impl AccessPoint {
@@ -409,8 +424,11 @@ impl AccessPoint {
             self.transmit_group_message_1(station).await;
             return;
         }
-        let mut copy = [0u8; ap_core::hold::HELD_FRAME_BYTES];
+        let Some(copy) = self.release_buf.take() else {
+            return;
+        };
         let Some((taken, more)) = self.held.pop(&station) else {
+            self.release_buf = Some(copy);
             return;
         };
         let n = taken.frame.len();
@@ -418,6 +436,7 @@ impl AccessPoint {
         RELEASED.fetch_add(1, Ordering::Relaxed);
         self.refresh_queued(&station);
         self.transmit(&copy[..n], more).await;
+        self.release_buf = Some(copy);
     }
 
     /// Every held frame to a station that woke (the Power Management bit
@@ -620,23 +639,31 @@ impl AccessPoint {
 
     /// The group frames held, after the DTIM beacon.
     async fn release_group(&mut self) {
-        let mut copy = [0u8; ap_core::hold::HELD_FRAME_BYTES];
+        let Some(copy) = self.release_buf.take() else {
+            return;
+        };
         while let Some((taken, more)) = self.held.pop_group() {
             let n = taken.frame.len();
             copy[..n].copy_from_slice(taken.frame);
             RELEASED.fetch_add(1, Ordering::Relaxed);
             self.transmit(&copy[..n], more).await;
         }
+        self.release_buf = Some(copy);
     }
 
     /// A frame the access point lays out with `write`, sent unprotected
     /// with ACKs and retries; counted.
     async fn reply(&mut self, write: impl FnOnce(&mut [u8], &mut [u8]) -> Option<usize>) {
         let mut buf = self.tx.alloc_tx_buf().await;
-        let mut scratch = [0u8; 1024];
-        let Some(n) = write(&mut buf[..], &mut scratch) else {
+        let Some(n) = write(&mut buf[..], &mut self.scratch) else {
             return;
         };
+        self.send_reply(buf, n).await;
+    }
+
+    /// A management frame laid out in `buf`, sent unprotected with ACKs and
+    /// retries; counted.
+    async fn send_reply(&mut self, buf: TxBuffer<'static>, n: usize) {
         let done = self
             .tx
             .transmit_edca(
@@ -1076,13 +1103,16 @@ impl AccessPoint {
         let bss = self.bss;
         match request::parse(f, &bss.bssid) {
             Some(Request::Probe { from, ssid }) if ssid.is_none() || ssid == Some(bss.ssid) => {
-                let ts = tsf::access_point();
-                self.reply(|out, _| {
-                    let n = frames::probe_response(out, &bss, from)?;
-                    out[24..32].copy_from_slice(&ts.to_le_bytes());
-                    Some(n)
-                })
-                .await;
+                // the template, its receiver and timestamp set
+                let mut buf = self.tx.alloc_tx_buf().await;
+                let n = self.probe_len;
+                let Some(out) = buf.get_mut(..n) else {
+                    return;
+                };
+                out.copy_from_slice(&self.probe[..n]);
+                let _ = frames::set_receiver(out, from);
+                out[24..32].copy_from_slice(&tsf::access_point().to_le_bytes());
+                self.send_reply(buf, n).await;
             }
             Some(Request::Authentication {
                 from,
@@ -1179,13 +1209,12 @@ impl AccessPoint {
             return;
         }
         let power_save = fc1 & 0x10 != 0;
-        let (state, was_dozing) = match self.stations.get(&station) {
-            Some(s) => (Some(s.state), s.power_save),
+        // heard, and what the table held before, in one walk
+        let (state, was_dozing) = match self.stations.heard_was(&station, now, power_save) {
+            Some((state, was)) => (Some(state), was),
             None => (None, false),
         };
-        if !self.stations.heard(&station, now, power_save)
-            || !matches!(state, Some(State::Associated | State::Connected))
-        {
+        if !matches!(state, Some(State::Associated | State::Connected)) {
             STRANGERS.fetch_add(1, Ordering::Relaxed);
             let b = self.bss.bssid;
             self.reply(|out, _| {
@@ -1303,13 +1332,16 @@ impl AccessPoint {
         if !for_us {
             FORWARDED.fetch_add(1, Ordering::Relaxed);
             // as an Ethernet frame: the destination, the station, the type
-            let mut eth = [0u8; 1600];
+            let Some(eth) = self.release_buf.take() else {
+                return;
+            };
             let len = f.len() - payload_at;
             eth[..6].copy_from_slice(&destination);
             eth[6..12].copy_from_slice(&station);
             eth[12..14].copy_from_slice(&ether_type);
             eth[14..14 + len].copy_from_slice(&f[payload_at..]);
             self.deliver(&eth[..14 + len]).await;
+            self.release_buf = Some(eth);
         }
     }
 }
@@ -1525,6 +1557,8 @@ fn bring_up<const SOCK: usize>(
     let (stack, net) = embassy_net::new(device, ip, resources, seed);
 
     static HELD_FRAMES: ConstStaticCell<Held> = ConstStaticCell::new(Held::new());
+    static RELEASE_BUF: ConstStaticCell<[u8; FORWARD_BYTES]> =
+        ConstStaticCell::new([0; FORWARD_BYTES]);
     static SSID: StaticCell<[u8; 32]> = StaticCell::new();
     let ssid_bytes = SSID.init([0u8; 32]);
     ssid_bytes[..config.ssid.len()].copy_from_slice(config.ssid.as_bytes());
@@ -1552,7 +1586,13 @@ fn bring_up<const SOCK: usize>(
         rekey_interval_us: config.rekey_interval.as_micros(),
         inactivity_us: config.inactivity.as_micros(),
         held: HELD_FRAMES.take(),
+        scratch: [0; 1024],
+        probe: [0; 256],
+        probe_len: 0,
+        release_buf: Some(RELEASE_BUF.take()),
     };
+    let mut ap = ap;
+    ap.probe_len = frames::probe_response(&mut ap.probe, &ap.bss, BROADCAST).unwrap_or(0);
     (
         OpenAccessPoint {
             stack,
@@ -1612,6 +1652,9 @@ pub async fn ap_task(runner: ApRunner) -> ! {
     // the TBTT the next beacon is for, kept across the loop's other work: a
     // frame handled across a TBTT makes its beacon late, not skipped
     let mut next_tbtt = (tsf::access_point() / interval_us + 1) * interval_us;
+    // the beacon laid out once; per TBTT only its TIM is rewritten (and the
+    // timestamp, by the hook)
+    let template = frames::beacon(&mut beacon_buf[..], &ap.bss, &frames::Tim::default());
     // beacons are stamped by another counter than the one they are
     // scheduled by: the two set equal now the MAC is up, and checked every
     // sweep (a dozing station wakes by the stamped time)
@@ -1643,9 +1686,12 @@ pub async fn ap_task(runner: ApRunner) -> ! {
                 next_tbtt += interval_us;
                 let group_buffered = ap.held.group_count() > 0;
                 let tim = ap.stations.tim(dtim_count, DTIM_PERIOD, group_buffered);
-                let Some(beacon) = frames::beacon(&mut beacon_buf[..], &ap.bss, &tim) else {
+                let Some(beacon) = template else {
                     continue;
                 };
+                if frames::set_tim(&mut beacon_buf[..], beacon.tim_at, &tim).is_none() {
+                    continue;
+                }
                 let at = beacon.timestamp_at;
                 let sent = ap
                     .tx
@@ -1697,14 +1743,13 @@ pub async fn ap_task(runner: ApRunner) -> ! {
                 }
             }
             Either3::Third(eth) => {
-                let n = eth.len();
-                if n >= 14 {
-                    frame[..n].copy_from_slice(eth);
+                // delivered from the stack's own buffer, which is released
+                // after: a copy into `frame` first was a whole frame's
+                // copy more per frame
+                if eth.len() >= 14 {
+                    ap.deliver(eth).await;
                 }
                 down.tx_done();
-                if n >= 14 {
-                    ap.deliver(&frame[..n]).await;
-                }
             }
         }
         if sweep.elapsed().as_secs() >= 10 {

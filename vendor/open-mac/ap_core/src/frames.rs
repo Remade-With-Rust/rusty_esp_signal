@@ -55,29 +55,55 @@ impl Writer<'_> {
     fn u16(&mut self, v: u16) -> Option<()> {
         self.bytes(&v.to_le_bytes())
     }
+    /// A beacon's or probe response's fixed fields: the timestamp (zero:
+    /// the transmit hook writes it), the beacon interval, the capability
+    /// information; one room check where three writes were three.
+    fn fixed_fields(&mut self, beacon_interval_tu: u16, capabilities: u16) -> Option<()> {
+        let out = self.out.get_mut(self.at..self.at + 12)?;
+        out[..8].fill(0);
+        out[8..10].copy_from_slice(&beacon_interval_tu.to_le_bytes());
+        out[10..12].copy_from_slice(&capabilities.to_le_bytes());
+        self.at += 12;
+        Some(())
+    }
     fn element(&mut self, id: u8, body: &[u8]) -> Option<()> {
         let len = u8::try_from(body.len()).ok()?;
-        self.bytes(&[id, len])?;
-        self.bytes(body)
+        // the whole element's room checked once (two checks before: the
+        // header's, then the body's)
+        let out = self.out.get_mut(self.at..self.at + 2 + body.len())?;
+        out[0] = id;
+        out[1] = len;
+        out[2..].copy_from_slice(body);
+        self.at += 2 + body.len();
+        Some(())
     }
     /// HT Capabilities, HT Operation and the WMM parameter element, when
     /// the network offers them (the vendor element last, as 802.11 orders).
     fn ht(&mut self, bss: &Bss<'_>) -> Option<()> {
         if bss.ht {
-            self.bytes(&crate::qos::HT_CAPABILITIES_ELEMENT)?;
-            self.bytes(&crate::qos::ht_operation_element(bss.channel))?;
-            self.bytes(&crate::qos::WMM_PARAMETER_ELEMENT)?;
+            use crate::qos::{HT_CAPABILITIES_ELEMENT as CAP, WMM_PARAMETER_ELEMENT as WMM};
+            const OP: usize = 24;
+            // the three elements' room checked once (three checks before)
+            let out = self.out.get_mut(self.at..self.at + CAP.len() + OP + WMM.len())?;
+            out[..CAP.len()].copy_from_slice(&CAP);
+            out[CAP.len()..CAP.len() + OP].copy_from_slice(&crate::qos::ht_operation_element(bss.channel));
+            out[CAP.len() + OP..].copy_from_slice(&WMM);
+            self.at += CAP.len() + OP + WMM.len();
         }
         Some(())
     }
     /// The 24-byte management header: frame control, duration, the
     /// receiver, the transmitter (the access point), the BSSID, sequence.
     fn header(&mut self, subtype: u8, to: Address, bssid: Address) -> Option<()> {
-        self.bytes(&[management(subtype), 0, 0, 0])?;
-        self.bytes(&to)?;
-        self.bytes(&bssid)?;
-        self.bytes(&bssid)?;
-        self.u16(0)
+        // one room check, the fields written in place (five checks before)
+        let out = self.out.get_mut(self.at..self.at + 24)?;
+        out[..4].copy_from_slice(&[management(subtype), 0, 0, 0]);
+        out[4..10].copy_from_slice(&to);
+        out[10..16].copy_from_slice(&bssid);
+        out[16..22].copy_from_slice(&bssid);
+        out[22..24].fill(0);
+        self.at += 24;
+        Some(())
     }
 }
 
@@ -145,9 +171,7 @@ pub fn beacon(out: &mut [u8], bss: &Bss<'_>, tim: &Tim) -> Option<Beacon> {
     let mut w = Writer { out, at: 0 };
     w.header(8, BROADCAST, bss.bssid)?;
     let timestamp_at = w.at;
-    w.bytes(&[0; 8])?;
-    w.u16(bss.beacon_interval_tu)?;
-    w.u16(capabilities(bss.protected))?;
+    w.fixed_fields(bss.beacon_interval_tu, capabilities(bss.protected))?;
     w.element(id::SSID, bss.ssid)?;
     w.element(id::SUPPORTED_RATES, &SUPPORTED_RATES)?;
     w.element(id::DSSS, &[bss.channel])?;
@@ -177,14 +201,36 @@ pub fn beacon(out: &mut [u8], bss: &Bss<'_>, tim: &Tim) -> Option<Beacon> {
     })
 }
 
+/// A beacon from [`beacon`] made the next TBTT's: its TIM rewritten in
+/// place (the element always has the same length), every other byte being
+/// the same from one beacon to the next while the network is (only the
+/// timestamp moves, and the transmit hook writes that). Building the whole
+/// beacon every 102.4 ms was the work of a template (2026-10-07).
+pub fn set_tim(frame: &mut [u8], tim_at: usize, tim: &Tim) -> Option<()> {
+    let [low, high] = (tim.buffered_aids & !1).to_le_bytes();
+    frame.get_mut(tim_at + 2..tim_at + 7)?.copy_from_slice(&[
+        tim.dtim_count,
+        tim.dtim_period,
+        u8::from(tim.group_buffered),
+        low,
+        high,
+    ]);
+    Some(())
+}
+
+/// A frame from this module sent to `to` instead: its receiver address
+/// rewritten (a probe response is the same for every station but that).
+pub fn set_receiver(frame: &mut [u8], to: Address) -> Option<()> {
+    frame.get_mut(4..10)?.copy_from_slice(&to);
+    Some(())
+}
+
 /// A probe response to `to` (9.3.3.10): a beacon's body without the TIM.
 #[must_use]
 pub fn probe_response(out: &mut [u8], bss: &Bss<'_>, to: Address) -> Option<usize> {
     let mut w = Writer { out, at: 0 };
     w.header(5, to, bss.bssid)?;
-    w.bytes(&[0; 8])?;
-    w.u16(bss.beacon_interval_tu)?;
-    w.u16(capabilities(bss.protected))?;
+    w.fixed_fields(bss.beacon_interval_tu, capabilities(bss.protected))?;
     w.element(id::SSID, bss.ssid)?;
     w.element(id::SUPPORTED_RATES, &SUPPORTED_RATES)?;
     w.element(id::DSSS, &[bss.channel])?;

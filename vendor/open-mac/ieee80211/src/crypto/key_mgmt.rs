@@ -67,19 +67,19 @@ where
     // The output size of SHA1.
     const SHA1_OUTPUT_SIZE: usize = 160 / 8;
 
-    let data_iter = data.into_iter();
+    // Every block hashes the same key, label and data, and only its counter
+    // byte differs: key the HMAC and absorb that prefix once, then clone the
+    // state per block (Janus, 2026-10-07: the per-block re-keying and
+    // re-hashing was most of a PTK's derivation; the bytes hashed are the
+    // same, so is every output).
+    let mut prefix = <HSha1 as Mac>::new_from_slice(key).unwrap();
+    prefix.update(label.as_bytes());
+    prefix.update(&[0x00u8]);
+    data.into_iter()
+        .for_each(|data_chunk| prefix.update(data_chunk));
     // chunks_mut handles the clamping for us
     for (i, output_chunk) in output.chunks_mut(SHA1_OUTPUT_SIZE).enumerate() {
-        // We initialize HSHA1 with the key and update it with every piece of data.
-        let mut h_sha_1 = <HSha1 as Mac>::new_from_slice(key).unwrap();
-        h_sha_1.update(label.as_bytes());
-        h_sha_1.update(&[0x00u8]);
-
-        // Here we update it with the data chunks
-        data_iter
-            .clone()
-            .for_each(|data_chunk| h_sha_1.update(data_chunk));
-
+        let mut h_sha_1 = prefix.clone();
         h_sha_1.update(&[i as u8]);
         // If the chunk is as big as SHA1's output, we can output the data directly into the output
         // buffer. Otherwise we have to put it in a variable first.

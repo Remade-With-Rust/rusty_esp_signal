@@ -141,8 +141,10 @@ impl Stations {
         rsn_element: Option<&[u8]>,
         protected: bool,
     ) -> Result<u16, u16> {
+        // borrowed: `map_or` on the `Option<Station>` copied each whole
+        // station (its 64-byte RSN element with it) to read two bytes
         let in_use: [u16; MAX_STATIONS] =
-            core::array::from_fn(|i| self.slots[i].map_or(0, |s| s.aid));
+            core::array::from_fn(|i| self.slots[i].as_ref().map_or(0, |s| s.aid));
         let station = self.get_mut(&address).ok_or(status::UNSPECIFIED)?;
         if !ssid_matches {
             return Err(status::UNSPECIFIED);
@@ -215,6 +217,18 @@ impl Stations {
             }
             None => false,
         }
+    }
+
+    /// [`heard`](Self::heard), and what the table held for the station
+    /// before it: its state and whether it dozed. One walk where a data
+    /// frame's `get` then `heard` were two (2026-10-07); `None` for a
+    /// station not held.
+    pub fn heard_was(&mut self, address: &Address, now_us: u64, power_save: bool) -> Option<(State, bool)> {
+        let station = self.get_mut(address)?;
+        let was = (station.state, station.power_save);
+        station.last_heard_us = now_us;
+        station.power_save = power_save;
+        Some(was)
     }
 
     /// The frames held for a dozing station, as the driver's queue changes.

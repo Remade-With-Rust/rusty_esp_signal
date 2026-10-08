@@ -20,13 +20,17 @@ pub const HELD_FRAME_BYTES: usize = 1514;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Full;
 
+/// The frame first, at the slot's start: left to Rust's field order it sat
+/// at an odd offset behind the small fields, so every frame copied in or out
+/// was copied a byte at a time (2026-10-07).
 #[derive(Clone, Copy)]
+#[repr(C)]
 struct Slot {
+    bytes: [u8; HELD_FRAME_BYTES],
+    len: u16,
+    group: bool,
     /// The order the frame arrived in; 0 is an empty slot.
     sequence: u32,
-    group: bool,
-    len: u16,
-    bytes: [u8; HELD_FRAME_BYTES],
 }
 
 impl Slot {
@@ -82,28 +86,33 @@ impl Held {
         Ok(())
     }
 
-    fn oldest(&self, pick: impl Fn(&Slot) -> bool) -> Option<usize> {
-        self.slots
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| s.sequence != 0 && pick(s))
-            .min_by_key(|(_, s)| s.sequence)
-            .map(|(i, _)| i)
+    /// The oldest held slot `pick` takes, and how many it takes: one walk
+    /// (the oldest and the More Data count were two walks of the same slots).
+    fn oldest(&self, pick: impl Fn(&Slot) -> bool) -> Option<(usize, u16)> {
+        let mut best: Option<(usize, u32)> = None;
+        let mut n = 0u16;
+        for (i, s) in self.slots.iter().enumerate() {
+            if s.sequence != 0 && pick(s) {
+                n += 1;
+                if best.is_none_or(|(_, seq)| s.sequence < seq) {
+                    best = Some((i, s.sequence));
+                }
+            }
+        }
+        best.map(|(i, _)| (i, n))
     }
 
     /// The oldest frame held for `station`, taken out; `more` whether any
     /// remain for it (the More Data bit).
     pub fn pop(&mut self, station: &Address) -> Option<(Taken<'_>, bool)> {
-        let i = self.oldest(|s| !s.group && s.destination() == *station)?;
-        let more = self.count(station) > 1;
-        Some((self.take(i), more))
+        let (i, n) = self.oldest(|s| !s.group && s.destination() == *station)?;
+        Some((self.take(i), n > 1))
     }
 
     /// The oldest group frame held, taken out; `more` whether any remain.
     pub fn pop_group(&mut self) -> Option<(Taken<'_>, bool)> {
-        let i = self.oldest(|s| s.group)?;
-        let more = self.group_count() > 1;
-        Some((self.take(i), more))
+        let (i, n) = self.oldest(|s| s.group)?;
+        Some((self.take(i), n > 1))
     }
 
     fn take(&mut self, i: usize) -> Taken<'_> {
