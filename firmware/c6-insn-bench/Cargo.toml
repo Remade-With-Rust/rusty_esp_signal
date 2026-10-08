@@ -25,6 +25,10 @@ ap_core = { path = "../../vendor/open-mac/ap_core" }
 ieee80211 = { path = "../../vendor/open-mac/ieee80211", default-features = false, features = ["crypto"] }
 sta_handshake = { path = "../../vendor/open-mac/sta_handshake" }
 espnow_frame = { path = "../../vendor/open-mac/espnow_frame" }
+# the soft crypto the handshake ships, for the hardware comparison
+sha1 = { version = "=0.10.7", default-features = false }
+aes = { version = "=0.8.4", default-features = false }
+aes-kw = { version = "=0.2.1", default-features = false }
 
 [profile.release]
 opt-level = "s"

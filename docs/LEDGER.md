@@ -2203,3 +2203,46 @@ and the link-margin investigation. The mID `oracle` test does not compile
 (`kms_client::InMemoryDeviceSigner` has no `sign_prehash`/`device_id`) --
 a stale cross-crate test, so the on-device-signer-equals-reference-signer
 equivalence is unchecked in CI; the identity fuzzer itself passes.
+
+## Our code against its alternative, measured (2026-10-08)
+
+**What can be compared at all.** The blob is monolithic: libnet80211's frame
+builders and libpp's station table are not callable on their own, so for
+`ap_core`'s frames, the station table and the hold pool the instruction
+counts are absolute, with no counterpart. Two things CAN be compared
+fairly, and were.
+
+**Software crypto against the chip's engines** (`c6-insn-bench`, same
+input, same chip, each pair gated on identical output). The instruction
+counter is the wrong instrument here -- an engine retires almost no
+instructions and spends real time in the peripheral -- so this is in
+CYCLES. The performance counter's event select is a MASK (bit 0 cycles,
+bit 1 instructions); writing 0 selects nothing and reads 0, which is how
+the first run came back impossible. Validity: CPI > 1 everywhere, and
+higher on the hardware arms (1.8-1.9) as waiting predicts.
+
+| operation | software | hardware | hardware wins |
+|---|---:|---:|---|
+| SHA-1, 64 bytes | 7,945-7,997 cyc | 4,963-4,976 cyc | 1.60x |
+| AES-128 block, key per call | 10,774 cyc | 2,352 cyc | 4.58x |
+| AES-128 block, key hoisted | 4,850 cyc | -- (the API reloads it) | -- |
+| AES-KW wrap of 48 B (message 3's) | **171,870 cyc** | 84,672 projected | **2.03x** |
+
+The wrap's cost reconciles: 171,870 / 4,850 = **35.4 blocks** against
+AES-KW's 6 rounds x 6 semiblocks = 36. The hardware projection reloads the
+key every block (what esp-hal's block API does), so 2.03x is a FLOOR on the
+gain, not a ceiling.
+
+**And the conclusion is not to build it.** At 160 MHz the wrap is 1.07 ms
+and hardware would make it 0.53 ms: **~0.5 ms saved, once per join**. Every
+DATA frame's CCMP already runs in the MAC's hardware key slots
+(`key_slot_index`), so the handshake is the only software crypto we have,
+and it is sub-millisecond on a once-per-association path. Recorded as
+measured and **deliberately not taken** -- the earlier note calling the AES
+key wrap the next lever was right about the share and wrong about the
+prize.
+
+**Stack level, already measured elsewhere:** at equal power the open MAC
+lost 1.2 beacons per 1,000 against the blob's 23.7 (E6); the access point
+answers a round trip in 2 ms p50 (E3's P7); the ROM beat our code on 19 of
+21 routines and was adopted there (X10).

@@ -212,6 +212,74 @@ fn newline_oracle() -> bool {
     true
 }
 
+/// SHA-1 of `data`, the software implementation the handshake ships. The
+/// `Digest` trait is scoped here: in the same scope as esp-hal's SHA context
+/// its `finalize` shadows the context's inherent one.
+fn sha1_soft(data: &[u8]) -> [u8; 20] {
+    use sha1::Digest;
+    let mut h = sha1::Sha1::new();
+    h.update(data);
+    let mut out = [0u8; 20];
+    out.copy_from_slice(&h.finalize());
+    out
+}
+
+/// One AES-128 block, software, the key expanded on the call (the engine's
+/// API takes the key per call, so this is the like-for-like arm).
+fn aes_soft_with_key(key: &[u8; 16], block: &[u8; 16]) -> [u8; 16] {
+    use aes::cipher::{BlockEncrypt, KeyInit};
+    let cipher = aes::Aes128::new(key.into());
+    let mut out = *block;
+    cipher.encrypt_block((&mut out).into());
+    out
+}
+
+/// One AES-128 block, software, with the key expanded ONCE outside the
+/// call -- what `aes-kw` pays per block across a wrap's many blocks.
+fn aes_soft_hoisted(cipher: &aes::Aes128, block: &[u8; 16]) -> [u8; 16] {
+    use aes::cipher::BlockEncrypt;
+    let mut out = *block;
+    cipher.encrypt_block((&mut out).into());
+    out
+}
+
+/// Message 3's real key wrap: the access point's RSN element (22) and the
+/// GTK KDE (24), padded to 48, wrapped under the KEK -- the operation that
+/// dominates `handshake_write_3`.
+fn aes_kw_wrap_48(kek: &aes_kw::Kek<aes::Aes128>, data: &[u8; 48], out: &mut [u8; 56]) -> bool {
+    kek.wrap(data, out).is_ok()
+}
+
+/// Retired instructions and CPU CYCLES are different events of the same
+/// counter (`mpcer`: 2 instructions, 0 cycles). Software against a hardware
+/// engine must be judged in CYCLES -- the engine retires almost no
+/// instructions and spends real time in the peripheral (2026-10-08).
+fn count_cycles(name: &str, reps: u32, mut f: impl FnMut() -> u32) -> (u32, u32) {
+    let (cycles, hash) = critical_section::with(|_| {
+        let mut hash = 0;
+        unsafe {
+            // the event select is a MASK: bit 0 cycles, bit 1 instructions.
+            // Writing 0 selects nothing and the counter stays 0 (2026-10-08).
+            core::arch::asm!("csrw 0x7E0, {0}", in(reg) 1u32);
+            core::arch::asm!("csrw 0x7E1, {0}", in(reg) 1u32);
+            core::arch::asm!("csrw 0x7E2, zero");
+        }
+        let start: u32;
+        unsafe { core::arch::asm!("csrr {0}, 0x7E2", out(reg) start) };
+        for _ in 0..reps {
+            hash = black_box(f());
+        }
+        let end: u32;
+        unsafe { core::arch::asm!("csrr {0}, 0x7E2", out(reg) end) };
+        (end.wrapping_sub(start), hash)
+    });
+    println!(
+        "CYCLES {name} reps={reps} per_call={} total={cycles} fnv={hash:08x}",
+        cycles / reps
+    );
+    (cycles, hash)
+}
+
 fn bss(protected: bool, ht: bool) -> Bss<'static> {
     Bss {
         bssid: AP,
@@ -265,7 +333,7 @@ fn assoc_request(rsn: &[u8]) -> Vec<u8> {
 
 #[esp_hal::main]
 fn main() -> ! {
-    let _p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
+    let mut p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
     esp_alloc::heap_allocator!(size: 64 * 1024);
     println!("INSN boot c6-insn-bench");
     println!(
@@ -903,6 +971,114 @@ fn main() -> ! {
             air_frame[22..24].copy_from_slice(&seq.to_le_bytes());
             u32::from(dups.is_duplicate(black_box(&air_frame[..air_n])))
         });
+
+        // ---- our software crypto against the chip's engines ---------------
+        // The handshake's cost is SHA-1 (the PRF and every MIC) and AES-128
+        // (the key wrap of message 3, and CCMP). The C stack uses these
+        // engines; we ship software. Same input, same chip, judged in cycles,
+        // and each pair gated on identical output.
+        {
+            const KEY: [u8; 16] = [
+                0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf,
+                0x4f, 0x3c,
+            ];
+            const BLOCK: [u8; 16] = [
+                0x6b, 0xc1, 0xbe, 0xe2, 0x2e, 0x40, 0x9f, 0x96, 0xe9, 0x3d, 0x7e, 0x11, 0x73, 0x93,
+                0x17, 0x2a,
+            ];
+            let message: [u8; 64] =
+                core::array::from_fn(|i| (i as u8).wrapping_mul(7).wrapping_add(3));
+
+            // --- SHA-1 over 64 bytes ---
+            let mut soft_digest = [0u8; 20];
+            k += 1;
+            count_cycles("sha1_soft_64b", 500, || {
+                soft_digest = sha1_soft(black_box(&message));
+                fnv(FNV0, &soft_digest)
+            });
+            count("sha1_soft_64b", 500, || {
+                soft_digest = sha1_soft(black_box(&message));
+                fnv(FNV0, &soft_digest)
+            });
+            let mut sha = esp_hal::sha::ShaBackend::new(p.SHA.reborrow());
+            let _sha_running = sha.start();
+            let mut hw_digest = [0u8; 20];
+            k += 1;
+            count_cycles("sha1_hw_64b", 500, || {
+                let mut ctx = esp_hal::sha::Sha1Context::new();
+                ctx.update(black_box(&message)).wait_blocking();
+                ctx.finalize(&mut hw_digest).wait_blocking();
+                fnv(FNV0, &hw_digest)
+            });
+            count("sha1_hw_64b", 500, || {
+                let mut ctx = esp_hal::sha::Sha1Context::new();
+                ctx.update(black_box(&message)).wait_blocking();
+                ctx.finalize(&mut hw_digest).wait_blocking();
+                fnv(FNV0, &hw_digest)
+            });
+            println!(
+                "CRYPTO gate sha1 {}",
+                if soft_digest == hw_digest {
+                    "identical"
+                } else {
+                    "DIFFERS"
+                }
+            );
+
+            // --- AES-128, one block ---
+            let mut soft_ct = [0u8; 16];
+            k += 1;
+            count_cycles("aes128_soft_block_with_key", 500, || {
+                soft_ct = aes_soft_with_key(black_box(&KEY), black_box(&BLOCK));
+                fnv(FNV0, &soft_ct)
+            });
+            count("aes128_soft_block_with_key", 500, || {
+                soft_ct = aes_soft_with_key(black_box(&KEY), black_box(&BLOCK));
+                fnv(FNV0, &soft_ct)
+            });
+            // the per-block cost aes-kw actually pays (key expanded once)
+            let hoisted = {
+                use aes::cipher::KeyInit;
+                aes::Aes128::new((&KEY).into())
+            };
+            let mut hoist_ct = [0u8; 16];
+            k += 1;
+            count_cycles("aes128_soft_block_key_hoisted", 500, || {
+                hoist_ct = aes_soft_hoisted(&hoisted, black_box(&BLOCK));
+                fnv(FNV0, &hoist_ct)
+            });
+            // the real message-3 wrap, software
+            let kek = aes_kw::Kek::<aes::Aes128>::new(&KEY.into());
+            let key_data: [u8; 48] =
+                core::array::from_fn(|i| (i as u8).wrapping_mul(13).wrapping_add(5));
+            let mut wrapped = [0u8; 56];
+            k += 1;
+            count_cycles("aes_kw_wrap_48b_soft", 200, || {
+                let ok = aes_kw_wrap_48(&kek, black_box(&key_data), &mut wrapped);
+                fnv(FNV0, &wrapped[..if ok { 56 } else { 0 }])
+            });
+            let mut aes_hw = esp_hal::aes::Aes::new(p.AES.reborrow());
+            let mut hw_ct = [0u8; 16];
+            k += 1;
+            count_cycles("aes128_hw_block_with_key", 500, || {
+                hw_ct = black_box(BLOCK);
+                aes_hw.encrypt(&mut hw_ct, esp_hal::aes::Key::Key128(KEY));
+                fnv(FNV0, &hw_ct)
+            });
+            count("aes128_hw_block_with_key", 500, || {
+                hw_ct = black_box(BLOCK);
+                aes_hw.encrypt(&mut hw_ct, esp_hal::aes::Key::Key128(KEY));
+                fnv(FNV0, &hw_ct)
+            });
+            println!(
+                "CRYPTO gate aes128 {}",
+                if soft_ct == hw_ct {
+                    "identical"
+                } else {
+                    "DIFFERS"
+                }
+            );
+        }
 
         println!("INSN done kernels={k}");
         let t = esp_hal::time::Instant::now();
