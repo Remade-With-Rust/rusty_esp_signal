@@ -210,7 +210,7 @@ async fn watch_task() {
         let a = open_ap::stats();
         let (ap_tsf, stamp_tsf) = open_ap::clocks();
         println!(
-            "SETUP watch up_s={} stations={} joins={} up={} down={} beacons={} plaintext_dropped={} dozing={} held={} released={} wakes={} ps_polls={} dropped_inactive={} held_dropped={} beacons_late={} tbtts_skipped={} beacon_late_max_us={} stamp_offset_us={} stamp_syncs={} qos_sent={} ht_sent={} data_unacked={} ladder_up={} ladder_down={} strangers={} replays={} handshake_refused={} hs_m2={} hs_m4={} hs_group={} m2_frame={} m2_mic={} m2_keyinfo={} m2_replay={} m2_rsn={} handshake_timeouts={} up_dropped={}",
+            "SETUP watch up_s={} stations={} joins={} up={} down={} beacons={} plaintext_dropped={} dozing={} held={} released={} wakes={} ps_polls={} dropped_inactive={} held_dropped={} beacons_late={} tbtts_skipped={} beacon_late_max_us={} stamp_offset_us={} stamp_syncs={} qos_sent={} ht_sent={} data_unacked={} ladder_up={} ladder_down={} strangers={} replays={} handshake_refused={} hs_m2={} hs_m4={} hs_group={} m2_frame={} m2_mic={} m2_keyinfo={} m2_replay={} m2_rsn={} hs_begun={} hs_restarted={} handshake_timeouts={} up_dropped={}",
             started.elapsed().as_secs(),
             a.stations,
             a.joins,
@@ -246,6 +246,8 @@ async fn watch_task() {
             a.m2_keyinfo,
             a.m2_replay,
             a.m2_rsn,
+            a.handshakes_begun,
+            a.handshakes_restarted,
             a.handshake_timeouts,
             a.up_dropped
         );

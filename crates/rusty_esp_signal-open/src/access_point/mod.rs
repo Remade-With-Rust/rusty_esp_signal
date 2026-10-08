@@ -128,6 +128,11 @@ static M2_MIC: AtomicU32 = AtomicU32::new(0);
 static M2_KEYINFO: AtomicU32 = AtomicU32::new(0);
 static M2_REPLAY: AtomicU32 = AtomicU32::new(0);
 static M2_RSN: AtomicU32 = AtomicU32::new(0);
+/// 4-way handshakes begun, and those that THREW AWAY one already in flight
+/// (a re-association while the station's message 2 was on the air): the
+/// driver of the `m2_mic` refusals, since a new ANonce changes the PTK.
+static HANDSHAKES_BEGUN: AtomicU32 = AtomicU32::new(0);
+static HANDSHAKES_RESTARTED: AtomicU32 = AtomicU32::new(0);
 static HANDSHAKE_TIMEOUTS: AtomicU32 = AtomicU32::new(0);
 static PLAINTEXT_DROPPED: AtomicU32 = AtomicU32::new(0);
 static REPLAYS: AtomicU32 = AtomicU32::new(0);
@@ -777,6 +782,15 @@ impl AccessPoint {
                 station
             );
             return;
+        }
+        HANDSHAKES_BEGUN.fetch_add(1, Ordering::Relaxed);
+        if self
+            .peers
+            .iter()
+            .flatten()
+            .any(|p| p.address == station && p.stage != Stage::Done)
+        {
+            HANDSHAKES_RESTARTED.fetch_add(1, Ordering::Relaxed);
         }
         let mut anonce = [0u8; 32];
         Rng::new().read(&mut anonce);
@@ -1870,6 +1884,10 @@ pub struct Stats {
     pub m2_replay: u32,
     /// Message 2's refusals by reason.
     pub m2_rsn: u32,
+    /// 4-way handshakes begun, and those that discarded one in flight.
+    pub handshakes_begun: u32,
+    /// 4-way handshakes begun, and those that discarded one in flight.
+    pub handshakes_restarted: u32,
     /// EAPOL frames sent again, refused, and handshakes timed out.
     pub handshake_timeouts: u32,
     /// Data frames up from stations, down to them, and relayed between
@@ -1980,6 +1998,8 @@ pub fn stats() -> Stats {
         m2_keyinfo: r(&M2_KEYINFO),
         m2_replay: r(&M2_REPLAY),
         m2_rsn: r(&M2_RSN),
+        handshakes_begun: r(&HANDSHAKES_BEGUN),
+        handshakes_restarted: r(&HANDSHAKES_RESTARTED),
         handshake_timeouts: r(&HANDSHAKE_TIMEOUTS),
         up: r(&UP_FRAMES),
         down: r(&DOWN_FRAMES),

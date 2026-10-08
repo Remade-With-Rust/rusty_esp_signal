@@ -2142,7 +2142,37 @@ report an attack attempt. All five are on the watch line now, and message
 2's refusals are split by reason (`m2_frame`, `m2_mic`, `m2_keyinfo`,
 `m2_replay`, `m2_rsn`), which is what made Finding 2 visible at all.
 
-### Finding 2: a handshake that refuses its honest peer dozens of times
+### Finding 2, CORRECTED: that was the key check working, not a defect
+
+**The first write-up of this was wrong and is kept here with its
+correction.** It read `handshake_refused` at 36-84 per join, all `m2_mic`,
+and called it an availability defect caused by a superseded ANonce (a
+station re-associating while its message 2 was in flight). Two counters
+settled it instead:
+
+- a run with all three C6s restored to idle first: **`m2_mic=0`,
+  `hs_begun=1`, `joins=1`** -- a clean join, no refusals at all;
+- a controlled run with a station deliberately built on the WRONG
+  passphrase beside a correct one: **`hs_begun=5`, `m2_mic=12`,
+  `hs_restarted=0`, `stations=1`, `joins=1`**, and the correct station
+  unaffected (111 page loads, 0 failed).
+
+`hs_restarted=0` refutes the ANonce mechanism outright. What the earlier
+counts actually were: `c6-sta-probe` images left running on the other two
+boards from a previous fleet run, each built with THAT run's random
+passphrase, retrying forever against the new one. **A station that does not
+know the pre-shared key fails at message 2's MIC and never joins** -- the
+defense doing its job, on a band where the honest station is undisturbed.
+
+So there is no defect here, and the lasting value is Finding 1: this is now
+VISIBLE, and it is a usable attack signature -- `m2_mic` climbing while
+`joins` stays flat is a station guessing the key. Bounded observation, not a
+measured defect: the table holds `MAX_STATIONS` 4, and a wrong-key station
+occupies a slot until its handshake times out (3 resends, ~3 s), so slot
+pressure under many such stations is worth sizing before a field
+deployment; this run never exceeded one station.
+
+### The original (wrong) finding, kept as written
 
 With ONE station joining and nothing attacking, `handshake_refused` read
 36-84 per join. Split by reason it is **entirely `m2_mic`** -- never the
@@ -2158,8 +2188,8 @@ induce modest loss makes joining expensive. It also means the refusal
 counter is dominated by benign churn, which is why the per-reason split
 matters for using it as an attack signal.
 
-**Fixed on the way, by inspection not by symptom:** every resend advanced
-the replay counter (`send_message_1`, `send_message_3`,
+**Fixed on the way, by inspection and on 802.11 grounds -- NOT a fix for
+the symptom above:** every resend advanced the replay counter (`send_message_1`, `send_message_3`,
 `transmit_group_message_1` all called `next_replay_counter()`), which
 invalidates the honest reply in flight. 802.11-2020 12.7.6.2 wants a
 retransmission to carry the counter already sent, so resends now reuse it
