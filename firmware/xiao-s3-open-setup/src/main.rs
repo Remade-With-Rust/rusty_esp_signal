@@ -210,7 +210,7 @@ async fn watch_task() {
         let a = open_ap::stats();
         let (ap_tsf, stamp_tsf) = open_ap::clocks();
         println!(
-            "SETUP watch up_s={} stations={} joins={} up={} down={} beacons={} plaintext_dropped={} dozing={} held={} released={} wakes={} ps_polls={} dropped_inactive={} held_dropped={} beacons_late={} tbtts_skipped={} beacon_late_max_us={} stamp_offset_us={} stamp_syncs={} qos_sent={} ht_sent={} data_unacked={} ladder_up={} ladder_down={}",
+            "SETUP watch up_s={} stations={} joins={} up={} down={} beacons={} plaintext_dropped={} dozing={} held={} released={} wakes={} ps_polls={} dropped_inactive={} held_dropped={} beacons_late={} tbtts_skipped={} beacon_late_max_us={} stamp_offset_us={} stamp_syncs={} qos_sent={} ht_sent={} data_unacked={} ladder_up={} ladder_down={} strangers={} replays={} handshake_refused={} hs_m2={} hs_m4={} hs_group={} m2_frame={} m2_mic={} m2_keyinfo={} m2_replay={} m2_rsn={} handshake_timeouts={} up_dropped={}",
             started.elapsed().as_secs(),
             a.stations,
             a.joins,
@@ -234,7 +234,20 @@ async fn watch_task() {
             a.ht_sent,
             a.data_unacked,
             a.ladder_up,
-            a.ladder_down
+            a.ladder_down,
+            a.strangers,
+            a.replays,
+            a.handshake_refused,
+            a.handshake_refused_m2,
+            a.handshake_refused_m4,
+            a.handshake_refused_group,
+            a.m2_frame,
+            a.m2_mic,
+            a.m2_keyinfo,
+            a.m2_replay,
+            a.m2_rsn,
+            a.handshake_timeouts,
+            a.up_dropped
         );
     }
 }

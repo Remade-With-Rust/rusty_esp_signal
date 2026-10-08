@@ -86,6 +86,17 @@ impl Authenticator {
         self.replay_counter += 1;
         self.replay_counter
     }
+
+    /// The counter to send with: the next one for a new exchange, the one
+    /// already sent for a retransmission (802.11-2020 12.7.6.2). A resend
+    /// that advances it refuses the honest reply already in flight.
+    pub fn replay(&mut self, fresh: bool) -> u64 {
+        if fresh {
+            self.next_replay_counter()
+        } else {
+            self.replay_counter
+        }
+    }
 }
 
 /// The GTK KDE (802.11-2020 Figure 12-35): key ID (Tx clear), a reserved

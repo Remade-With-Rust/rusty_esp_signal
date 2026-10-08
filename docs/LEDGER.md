@@ -2094,3 +2094,82 @@ patched crate refuses every hello (`InvalidFormat`); rebuilt together they
 join. The open-MAC link at the 5 dBm cap now loses ~half its frames
 unacknowledged at the bench's current positions (both before and after the
 round): a link margin to measure, not a regression of this round.
+
+## The full-cycle hammer (2026-10-08)
+
+Every new surface hit with hostile input, host first, then the fleet on
+silicon. No vulnerability found; two defects of a different kind were.
+
+**Host (no boards).** `E2_CORPUS_ROUNDS=2000000` on the open MAC's receive
+path and every refusal suite: signal-core **191 passed** (the setup
+session, seal, link envelope, page and code parsers under `no_panic` and
+`session_fuzz`), air **55 passed** (two million mutated frames, no panic),
+ieee80211 **49 passed**, mID identity `no_panic` **3 passed**. Nothing
+panicked, nothing malformed was accepted.
+
+**E7's setup session on a C6** (`tools/e7-adversarial.py`, the scripted
+central over Bluetooth, independent of the device Rust): all seven
+defended -- a central expecting another DID refused before any write, a
+wrong code refused at Confirm, the recorded session replayed refused, a
+second writer refused, and after the wrong codes the device **stopped
+advertising the service at all** (the window shut: brute force yields
+nothing and cannot continue without a power cycle). Both controls
+(Discover, a real session) worked.
+
+**S1 on the link, C6 to C6, three runs.** `reject_unadopted=REFUSED` and
+`admitted=false` every time, `bad_tag=0`, `replayed=0`, one foreign frame
+seen and not taken. The runs' `RESULT: FAIL` is the loss threshold only:
+633, 705 and (pre-round firmware) 767 of 1000 against 912 this morning on
+the same pair. The boards were moved in between; a single pre-round run
+sits inside the post-round spread, so **no regression is established**, and
+the round does not touch this firmware's radio path. Open: a link-margin
+investigation (positions, antennas, interference).
+
+**The fleet together.** The access point held **4 stations at once** (three
+C6s and the laptop), 4 joins, the C6s **231 / 145 / 156 page loads with 0
+failed each** (the beacon-clock and DSSS-ladder fixes earning their keep),
+the laptop 56 of 60 pings at 3 ms median; `plaintext_dropped=0`,
+`held_dropped=0`. Wi-Fi profiles, the owner's network and the shared XIAO
+all restored.
+
+### Finding 1: refusals were invisible, so an attack could not be reported
+
+The access point counted `strangers`, `replays`, `handshake_refused`,
+`handshake_timeouts` and `up_dropped` and **printed none of them**, and
+`note!` is a no-op macro (`=> {}`) that discards its arguments -- so the
+reason a frame was refused existed nowhere. A device in the field could not
+report an attack attempt. All five are on the watch line now, and message
+2's refusals are split by reason (`m2_frame`, `m2_mic`, `m2_keyinfo`,
+`m2_replay`, `m2_rsn`), which is what made Finding 2 visible at all.
+
+### Finding 2: a handshake that refuses its honest peer dozens of times
+
+With ONE station joining and nothing attacking, `handshake_refused` read
+36-84 per join. Split by reason it is **entirely `m2_mic`** -- never the
+replay counter, the key information or the RSN element. A MIC failure means
+the PTK differs, so those message 2s answer a **superseded handshake**: the
+station re-associates on a lossy link and the access point builds a fresh
+ANonce, which invalidates the reply already in flight.
+
+Nothing weaker is accepted -- the access point is being correct -- so this
+is not an authentication hole. It is an **availability** one: on a weak
+link a join costs dozens of failed exchanges, and an attacker who can
+induce modest loss makes joining expensive. It also means the refusal
+counter is dominated by benign churn, which is why the per-reason split
+matters for using it as an attack signal.
+
+**Fixed on the way, by inspection not by symptom:** every resend advanced
+the replay counter (`send_message_1`, `send_message_3`,
+`transmit_group_message_1` all called `next_replay_counter()`), which
+invalidates the honest reply in flight. 802.11-2020 12.7.6.2 wants a
+retransmission to carry the counter already sent, so resends now reuse it
+(`Authenticator::replay(fresh)`); new exchanges still advance it. This is a
+conformance fix and removes a second instance of the same race -- it was
+**not** the cause of the `m2_mic` symptom, and did not change its count.
+
+**Left for the next session:** the four kill tests re-run end to end
+(C16/C17 passed earlier today, C18/P8 needs the owner's browser), a soak,
+and the link-margin investigation. The mID `oracle` test does not compile
+(`kms_client::InMemoryDeviceSigner` has no `sign_prehash`/`device_id`) --
+a stale cross-crate test, so the on-device-signer-equals-reference-signer
+equivalence is unchecked in CI; the identity fuzzer itself passes.

@@ -111,6 +111,23 @@ static LADDER_DOWN: AtomicU32 = AtomicU32::new(0);
 static STRANGERS: AtomicU32 = AtomicU32::new(0);
 static HANDSHAKE_RESENT: AtomicU32 = AtomicU32::new(0);
 static HANDSHAKE_REFUSED: AtomicU32 = AtomicU32::new(0);
+/// `handshake_refused` split by which message was refused: message 2 (its
+/// MIC or replay counter did not verify), message 4, and a group-key
+/// message 2. A station retransmitting on a lossy link lands on a different
+/// site than a forged frame does, so the total alone cannot tell an attack
+/// from a retry (the hammer, 2026-10-08).
+static HANDSHAKE_REFUSED_M2: AtomicU32 = AtomicU32::new(0);
+static HANDSHAKE_REFUSED_M4: AtomicU32 = AtomicU32::new(0);
+static HANDSHAKE_REFUSED_GROUP: AtomicU32 = AtomicU32::new(0);
+/// Message 2's refusals by reason, so a retry on a lossy link (Replay) is
+/// told apart from a forged or mismatched frame (Mic, RsnMismatch,
+/// KeyInformation, Frame) -- `note!` discards its arguments, so the reason
+/// was invisible (the hammer, 2026-10-08).
+static M2_FRAME: AtomicU32 = AtomicU32::new(0);
+static M2_MIC: AtomicU32 = AtomicU32::new(0);
+static M2_KEYINFO: AtomicU32 = AtomicU32::new(0);
+static M2_REPLAY: AtomicU32 = AtomicU32::new(0);
+static M2_RSN: AtomicU32 = AtomicU32::new(0);
 static HANDSHAKE_TIMEOUTS: AtomicU32 = AtomicU32::new(0);
 static PLAINTEXT_DROPPED: AtomicU32 = AtomicU32::new(0);
 static REPLAYS: AtomicU32 = AtomicU32::new(0);
@@ -421,7 +438,8 @@ impl AccessPoint {
                 p.group_key_wanted = false;
             }
             self.refresh_queued(&station);
-            self.transmit_group_message_1(station).await;
+            // the deferred FIRST send for a station that was dozing
+            self.transmit_group_message_1(station, true).await;
             return;
         }
         let Some(copy) = self.release_buf.take() else {
@@ -490,7 +508,7 @@ impl AccessPoint {
             if let Some(p) = self.peer(&station) {
                 p.resends = 0;
             }
-            self.send_group_message_1(station).await;
+            self.send_group_message_1(station, true).await;
         }
         self.finish_rekey_if_done();
     }
@@ -521,7 +539,7 @@ impl AccessPoint {
     /// for a dozing one it waits, its AID in the TIM, and goes when the
     /// station wakes or polls (like any frame for it: P5), with no resend
     /// timer running meanwhile.
-    async fn send_group_message_1(&mut self, station: Address) {
+    async fn send_group_message_1(&mut self, station: Address, fresh: bool) {
         if self.stations.get(&station).is_some_and(|s| s.power_save) {
             if let Some(p) = self.peer(&station) {
                 p.stage = Stage::SentGroupMessage1;
@@ -531,12 +549,12 @@ impl AccessPoint {
             self.refresh_queued(&station);
             return;
         }
-        self.transmit_group_message_1(station).await;
+        self.transmit_group_message_1(station, fresh).await;
     }
 
     /// The group-key handshake's message 1 on the air: the pending key,
     /// protected under the station's pairwise key.
-    async fn transmit_group_message_1(&mut self, station: Address) {
+    async fn transmit_group_message_1(&mut self, station: Address, fresh: bool) {
         let bssid = self.bss.bssid;
         let Some(gtk) = self.pending_gtk else {
             if let Some(p) = self.peer(&station) {
@@ -557,7 +575,7 @@ impl AccessPoint {
         let Some(slot) = peer.key_slot.as_ref().map(KeySlot::key_slot) else {
             return;
         };
-        let replay = peer.authenticator.next_replay_counter();
+        let replay = peer.authenticator.replay(fresh);
         peer.tx_packet_number += 1;
         let packet_number = peer.tx_packet_number;
         peer.stage = Stage::SentGroupMessage1;
@@ -622,6 +640,7 @@ impl AccessPoint {
                 }
                 Err(_why) => {
                     HANDSHAKE_REFUSED.fetch_add(1, Ordering::Relaxed);
+                    HANDSHAKE_REFUSED_GROUP.fetch_add(1, Ordering::Relaxed);
                     note!(
                         "open-ap: group message 2 from {:02x?} refused: {:?}",
                         station,
@@ -686,12 +705,19 @@ impl AccessPoint {
         }
     }
 
-    async fn send_message_1(&mut self, station: Address) {
+    /// Message 1. `fresh` for a new exchange, which takes the next replay
+    /// counter; a RESEND reuses the one already sent (802.11-2020 12.7.6.2:
+    /// a retransmission carries the same counter). Advancing it on a resend
+    /// invalidated the honest message 2 already in flight, so on a lossy
+    /// link a station's reply was refused over and over -- 84 refusals for
+    /// one join, and a handshake that can time out between honest peers
+    /// (the hammer, 2026-10-08).
+    async fn send_message_1(&mut self, station: Address, fresh: bool) {
         let bssid = self.bss.bssid;
         let Some(peer) = self.peer(&station) else {
             return;
         };
-        let replay = peer.authenticator.next_replay_counter();
+        let replay = peer.authenticator.replay(fresh);
         let anonce = peer.authenticator.anonce;
         peer.stage = Stage::SentMessage1;
         peer.sent_at_us = Instant::now().as_micros();
@@ -701,7 +727,8 @@ impl AccessPoint {
         .await;
     }
 
-    async fn send_message_3(&mut self, station: Address) {
+    /// Message 3; `fresh` as [`Self::send_message_1`].
+    async fn send_message_3(&mut self, station: Address, fresh: bool) {
         let (bssid, gtk) = (self.bss.bssid, self.pending_gtk.unwrap_or(self.gtk));
         let Some(peer) = self.peer(&station) else {
             return;
@@ -709,7 +736,7 @@ impl AccessPoint {
         let Some(keys) = peer.authenticator.keys.clone() else {
             return;
         };
-        let replay = peer.authenticator.next_replay_counter();
+        let replay = peer.authenticator.replay(fresh);
         let anonce = peer.authenticator.anonce;
         peer.stage = Stage::SentMessage3;
         peer.sent_at_us = Instant::now().as_micros();
@@ -771,7 +798,7 @@ impl AccessPoint {
                 qos: false,
                 ladder: Ladder::new(None),
             });
-            self.send_message_1(station).await;
+            self.send_message_1(station, true).await;
         }
     }
 
@@ -801,10 +828,19 @@ impl AccessPoint {
                     Ok(keys) => {
                         peer.authenticator.keys = Some(keys);
                         peer.resends = 0;
-                        self.send_message_3(station).await;
+                        self.send_message_3(station, true).await;
                     }
-                    Err(_why) => {
+                    Err(why) => {
                         HANDSHAKE_REFUSED.fetch_add(1, Ordering::Relaxed);
+                        HANDSHAKE_REFUSED_M2.fetch_add(1, Ordering::Relaxed);
+                        match why {
+                            handshake::Refusal::Mic => &M2_MIC,
+                            handshake::Refusal::KeyInformation => &M2_KEYINFO,
+                            handshake::Refusal::Replay => &M2_REPLAY,
+                            handshake::Refusal::RsnMismatch => &M2_RSN,
+                            _ => &M2_FRAME,
+                        }
+                        .fetch_add(1, Ordering::Relaxed);
                         note!(
                             "open-ap: message 2 from {:02x?} refused: {:?}",
                             station,
@@ -820,6 +856,7 @@ impl AccessPoint {
                 };
                 if let Err(_why) = handshake::read_message_4(frame, &keys, replay) {
                     HANDSHAKE_REFUSED.fetch_add(1, Ordering::Relaxed);
+                    HANDSHAKE_REFUSED_M4.fetch_add(1, Ordering::Relaxed);
                     note!(
                         "open-ap: message 4 from {:02x?} refused: {:?}",
                         station,
@@ -890,9 +927,10 @@ impl AccessPoint {
         }
         HANDSHAKE_RESENT.fetch_add(1, Ordering::Relaxed);
         match stage {
-            Stage::SentMessage1 => self.send_message_1(station).await,
-            Stage::SentMessage3 => self.send_message_3(station).await,
-            Stage::SentGroupMessage1 => self.send_group_message_1(station).await,
+            // a resend: the same replay counter, so the reply in flight stays valid
+            Stage::SentMessage1 => self.send_message_1(station, false).await,
+            Stage::SentMessage3 => self.send_message_3(station, false).await,
+            Stage::SentGroupMessage1 => self.send_group_message_1(station, false).await,
             Stage::Done => {}
         }
     }
@@ -1816,6 +1854,22 @@ pub struct Stats {
     pub handshake_resent: u32,
     /// EAPOL frames sent again, refused, and handshakes timed out.
     pub handshake_refused: u32,
+    /// `handshake_refused` by message: 2, 4, and a group-key message 2.
+    pub handshake_refused_m2: u32,
+    /// `handshake_refused` by message: 2, 4, and a group-key message 2.
+    pub handshake_refused_m4: u32,
+    /// `handshake_refused` by message: 2, 4, and a group-key message 2.
+    pub handshake_refused_group: u32,
+    /// Message 2's refusals by reason.
+    pub m2_frame: u32,
+    /// Message 2's refusals by reason.
+    pub m2_mic: u32,
+    /// Message 2's refusals by reason.
+    pub m2_keyinfo: u32,
+    /// Message 2's refusals by reason.
+    pub m2_replay: u32,
+    /// Message 2's refusals by reason.
+    pub m2_rsn: u32,
     /// EAPOL frames sent again, refused, and handshakes timed out.
     pub handshake_timeouts: u32,
     /// Data frames up from stations, down to them, and relayed between
@@ -1918,6 +1972,14 @@ pub fn stats() -> Stats {
         up_dropped: r(&UP_DROPPED),
         handshake_resent: r(&HANDSHAKE_RESENT),
         handshake_refused: r(&HANDSHAKE_REFUSED),
+        handshake_refused_m2: r(&HANDSHAKE_REFUSED_M2),
+        handshake_refused_m4: r(&HANDSHAKE_REFUSED_M4),
+        handshake_refused_group: r(&HANDSHAKE_REFUSED_GROUP),
+        m2_frame: r(&M2_FRAME),
+        m2_mic: r(&M2_MIC),
+        m2_keyinfo: r(&M2_KEYINFO),
+        m2_replay: r(&M2_REPLAY),
+        m2_rsn: r(&M2_RSN),
         handshake_timeouts: r(&HANDSHAKE_TIMEOUTS),
         up: r(&UP_FRAMES),
         down: r(&DOWN_FRAMES),
