@@ -121,6 +121,7 @@ dependencies = [
  "esp-bootloader-esp-idf",
  "esp-hal",
  "esp-println",
+ "espnow_frame",
  "ieee80211",
  "sta_handshake",
 ]
@@ -844,6 +845,10 @@ dependencies = [
  "critical-section",
  "vcell",
 ]
+
+[[package]]
+name = "espnow_frame"
+version = "0.1.0"
 
 [[package]]
 name = "ether-type"
@@ -1780,14 +1785,6 @@ dependencies = [
 ]
 
 [[patch.unused]]
-name = "rusty_esp_mid-core"
-version = "0.1.2"
-
-[[patch.unused]]
-name = "rusty_esp_mid-esp"
-version = "0.1.2"
-
-[[patch.unused]]
 name = "rusty_esp_alloc"
 version = "0.1.2"
 
@@ -1798,3 +1795,11 @@ version = "0.1.2"
 [[patch.unused]]
 name = "rusty_esp_dsp"
 version = "0.1.1"
+
+[[patch.unused]]
+name = "rusty_esp_mid-core"
+version = "0.1.2"
+
+[[patch.unused]]
+name = "rusty_esp_mid-esp"
+version = "0.1.2"

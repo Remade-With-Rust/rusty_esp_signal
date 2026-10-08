@@ -198,6 +198,32 @@ pub enum EapolSerdeError {
     /// The ether type wasn't EAPOL.
     EtherTypeNotEapol,
 }
+/// The key a MIC is computed under: the KCK's bytes (the HMAC keyed on
+/// use), or an HMAC already keyed with them -- Janus, 2026-10-07: keying
+/// costs two SHA-1 blocks, and one association's KCK keyed every EAPOL-Key
+/// frame it wrote or read.
+#[derive(Clone, Copy)]
+pub enum MicKey<'a> {
+    /// The KCK.
+    Kck(&'a [u8; 16]),
+    /// An HMAC-SHA-1 keyed with the KCK ([`keyed_mic`]).
+    Keyed(&'a HSha1),
+}
+
+impl MicKey<'_> {
+    fn mac(self) -> HSha1 {
+        match self {
+            Self::Kck(kck) => <HSha1 as Mac>::new_from_slice(kck).unwrap(),
+            Self::Keyed(keyed) => keyed.clone(),
+        }
+    }
+}
+
+/// An HMAC-SHA-1 keyed with `kck`, for [`MicKey::Keyed`].
+pub fn keyed_mic(kck: &[u8; 16]) -> HSha1 {
+    <HSha1 as Mac>::new_from_slice(kck).unwrap()
+}
+
 /// Serialize the provided EAPOL Key frame.
 ///
 /// The temp_buffer needs to be at least as long as the key data field aligned to eight bytes, plus
@@ -207,6 +233,20 @@ pub fn serialize_eapol_data_frame<
     ElementContainer: TryIntoCtx<(), Error = scroll::Error>,
 >(
     kck: Option<&[u8; 16]>,
+    kek: Option<&[u8; 16]>,
+    eapol_data_frame: EapolDataFrame<'_, KeyMic, ElementContainer>,
+    buffer: &mut [u8],
+    temp_buffer: &mut [u8],
+) -> Result<usize, EapolSerdeError> {
+    serialize_eapol_data_frame_mic(kck.map(MicKey::Kck), kek, eapol_data_frame, buffer, temp_buffer)
+}
+
+/// [`serialize_eapol_data_frame`] with the MIC's key as a [`MicKey`].
+pub fn serialize_eapol_data_frame_mic<
+    KeyMic: AsRef<[u8]>,
+    ElementContainer: TryIntoCtx<(), Error = scroll::Error>,
+>(
+    mic: Option<MicKey<'_>>,
     kek: Option<&[u8; 16]>,
     eapol_data_frame: EapolDataFrame<'_, KeyMic, ElementContainer>,
     buffer: &mut [u8],
@@ -292,8 +332,7 @@ pub fn serialize_eapol_data_frame<
         );
     }
     if key_information.key_mic() {
-        let mut h_sha_1 =
-            <HSha1 as Mac>::new_from_slice(kck.ok_or(EapolSerdeError::MissingKey)?).unwrap();
+        let mut h_sha_1 = mic.ok_or(EapolSerdeError::MissingKey)?.mac();
         h_sha_1.update(&buffer[eapol_frame_start..written]);
         h_sha_1.finalize_into((&mut temp_buffer[..20]).into());
         buffer[mic_range].copy_from_slice(&temp_buffer[..16]);
@@ -312,6 +351,25 @@ pub fn serialize_eapol_data_frame<
 /// is an `Err`, never a panic.
 pub fn deserialize_eapol_data_frame<'a>(
     kck: Option<&[u8; 16]>,
+    kek: Option<&[u8; 16]>,
+    buffer: &'a mut [u8],
+    temp_buffer: &mut [u8],
+    akm_suite: IEEE80211AkmType,
+    with_fcs: bool,
+) -> Result<EapolKeyFrame<'a>, EapolSerdeError> {
+    deserialize_eapol_data_frame_mic(
+        kck.map(MicKey::Kck),
+        kek,
+        buffer,
+        temp_buffer,
+        akm_suite,
+        with_fcs,
+    )
+}
+
+/// [`deserialize_eapol_data_frame`] with the MIC's key as a [`MicKey`].
+pub fn deserialize_eapol_data_frame_mic<'a>(
+    mic: Option<MicKey<'_>>,
     kek: Option<&[u8; 16]>,
     mut buffer: &'a mut [u8],
     temp_buffer: &mut [u8],
@@ -359,8 +417,7 @@ pub fn deserialize_eapol_data_frame<'a>(
         return Err(EapolSerdeError::KeyFrameDeserializationFailure);
     }
     if eapol_key_information.key_mic() {
-        let mut h_sha_1 =
-            <HSha1 as Mac>::new_from_slice(kck.ok_or(EapolSerdeError::MissingKey)?).unwrap();
+        let mut h_sha_1 = mic.ok_or(EapolSerdeError::MissingKey)?.mac();
         h_sha_1.update(
             buffer
                 .get(eapol_key_frame_offset..eapol_key_frame_offset + 81)

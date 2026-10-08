@@ -73,10 +73,27 @@ pub fn write(
     random: [u8; 4],
     body: &[u8],
 ) -> Option<usize> {
-    if body.len() > MAX_BODY {
+    let total = write_header(out, to, from, random, body.len())?;
+    out[OVERHEAD..total].copy_from_slice(body);
+    Some(total)
+}
+
+/// The header of a frame whose `body_len`-octet body is already at
+/// `out[OVERHEAD..]`, laid there by its producer (a sealed datagram written
+/// in place: copying it in after puts it at an odd offset, a byte at a
+/// time on these cores): the frame's length, or `None` as for [`write`].
+#[must_use]
+pub fn write_header(
+    out: &mut [u8],
+    to: &Address,
+    from: &Address,
+    random: [u8; 4],
+    body_len: usize,
+) -> Option<usize> {
+    if body_len > MAX_BODY {
         return None;
     }
-    let total = OVERHEAD + body.len();
+    let total = OVERHEAD + body_len;
     let frame = out.get_mut(..total)?;
     frame[0] = FRAME_CONTROL_ACTION;
     frame[1] = 0;
@@ -89,12 +106,11 @@ pub fn write(
     frame[25..28].copy_from_slice(&ESPRESSIF_OUI);
     frame[28..32].copy_from_slice(&random);
     frame[32] = ELEMENT_VENDOR_SPECIFIC;
-    // the OUI, the type, the version, the body
-    frame[33] = (5 + body.len()) as u8;
+    // the OUI, the type, the version (the body is the caller's)
+    frame[33] = (5 + body_len) as u8;
     frame[34..37].copy_from_slice(&ESPRESSIF_OUI);
     frame[37] = TYPE_ESP_NOW;
     frame[38] = VERSION;
-    frame[OVERHEAD..].copy_from_slice(body);
     Some(total)
 }
 

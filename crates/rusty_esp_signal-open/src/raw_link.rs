@@ -368,9 +368,19 @@ impl<E: Sha256Blocks> RawLink<E> {
 
     /// Seal `payload` with `session` and send it as one frame.
     pub async fn send(&mut self, session: &mut Session, payload: &[u8]) -> Result<()> {
-        let mut buf = FrameBuf::new();
-        let n = session.seal_with(&mut self.engine, payload, &mut buf.0)?;
-        self.send_raw(&buf.0[..n]).await
+        // sealed straight into the frame's body: sealed into a zeroed
+        // buffer and copied in after, the datagram went to an odd offset a
+        // byte at a time (2026-10-07)
+        let mut buf = self.tx.alloc_tx_buf().await;
+        let window = espnow_frame::OVERHEAD..buf.len().min(espnow_frame::MAX_FRAME);
+        let body = buf.get_mut(window).ok_or(Error::BufferTooSmall {
+            needed: espnow_frame::MAX_FRAME,
+        })?;
+        let n = session.seal_with(&mut self.engine, payload, body)?;
+        let random = HardwareRng::new().random().to_le_bytes();
+        let total = espnow_frame::write_header(&mut buf[..], &self.peer, &self.me, random, n)
+            .ok_or(Error::BufferTooSmall { needed: n })?;
+        self.transmit_frame(buf, total).await
     }
 
     /// Send `bytes` as one ESP-NOW datagram outside any session, to the
@@ -415,6 +425,12 @@ impl<E: Sha256Blocks> RawLink<E> {
                 needed: bytes.len(),
             },
         )?;
+        self.transmit_frame(buf, n).await
+    }
+
+    /// A laid-out frame of `n` octets in `buf` on the air: acknowledged
+    /// and retried to the peer, once to broadcast; counted.
+    async fn transmit_frame(&mut self, buf: foa::TxBuffer<'static>, n: usize) -> Result<()> {
         let unicast = self.peer != BROADCAST;
         let done = self
             .tx

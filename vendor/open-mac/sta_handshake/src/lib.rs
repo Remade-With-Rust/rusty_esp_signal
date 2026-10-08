@@ -29,8 +29,8 @@ use core::marker::PhantomData;
 use ieee80211::common::{DataFrameSubtype, FCFFlags, SequenceControl};
 use ieee80211::crypto::eapol::{EapolKeyFrame, KeyDescriptorVersion, KeyInformation};
 use ieee80211::crypto::{
-    CryptoHeader, EapolSerdeError, derive_ptk, deserialize_eapol_data_frame,
-    serialize_eapol_data_frame,
+    CryptoHeader, EapolSerdeError, HSha1, MicKey, derive_ptk, deserialize_eapol_data_frame,
+    deserialize_eapol_data_frame_mic, keyed_mic, serialize_eapol_data_frame_mic,
 };
 use ieee80211::data_frame::DataFrame;
 use ieee80211::data_frame::header::DataFrameHeader;
@@ -188,11 +188,14 @@ impl From<EapolSerdeError> for Refusal {
     }
 }
 
-/// The pairwise transient key: KCK, KEK and TK in that order.
+/// The pairwise transient key: KCK, KEK and TK in that order, and the
+/// MIC's HMAC keyed with the KCK once (2026-10-07: each EAPOL-Key frame of
+/// an association keyed it again, two SHA-1 blocks a frame).
 #[derive(Clone)]
 pub struct PairwiseKeys {
     /// All 48 bytes.
     pub ptk: [u8; PTK_LENGTH],
+    mic: HSha1,
 }
 
 impl PairwiseKeys {
@@ -207,7 +210,18 @@ impl PairwiseKeys {
     ) -> Self {
         let mut ptk = [0u8; PTK_LENGTH];
         derive_ptk(pmk, authenticator, supplicant, anonce, snonce, &mut ptk);
-        Self { ptk }
+        Self::from_ptk(ptk)
+    }
+    /// From a PTK already derived (kept by the station between frames).
+    #[must_use]
+    pub fn from_ptk(ptk: [u8; PTK_LENGTH]) -> Self {
+        let mic = keyed_mic(ptk[..16].try_into().expect("16 of 48"));
+        Self { ptk, mic }
+    }
+    /// The MIC's key: the HMAC keyed with the KCK.
+    #[must_use]
+    pub fn mic(&self) -> MicKey<'_> {
+        MicKey::Keyed(&self.mic)
     }
     /// The key confirmation key: the MIC's.
     #[must_use]
@@ -324,8 +338,8 @@ pub fn read_message_3(
     scratch: &mut [u8],
     floor: Option<u64>,
 ) -> Result<GroupKey, Refusal> {
-    let frame = deserialize_eapol_data_frame(
-        Some(keys.kck()),
+    let frame = deserialize_eapol_data_frame_mic(
+        Some(keys.mic()),
         Some(keys.kek()),
         mpdu,
         scratch,
@@ -348,8 +362,8 @@ pub fn read_group_message_1(
     scratch: &mut [u8],
     floor: u64,
 ) -> Result<GroupKey, Refusal> {
-    let frame = deserialize_eapol_data_frame(
-        Some(keys.kck()),
+    let frame = deserialize_eapol_data_frame_mic(
+        Some(keys.mic()),
         Some(keys.kek()),
         mpdu,
         scratch,
@@ -375,7 +389,7 @@ fn write_key_frame<E: ieee80211::scroll::ctx::TryIntoCtx<(), Error = ieee80211::
     replay_counter: u64,
     nonce: [u8; 32],
     key_data: E,
-    kck: &[u8; 16],
+    mic: MicKey<'_>,
 ) -> Result<usize, Refusal> {
     let frame = DataFrame {
         header: DataFrameHeader {
@@ -405,7 +419,8 @@ fn write_key_frame<E: ieee80211::scroll::ctx::TryIntoCtx<(), Error = ieee80211::
         }),
         _phantom: PhantomData,
     };
-    serialize_eapol_data_frame(Some(kck), None, frame, out, scratch).map_err(|_| Refusal::Buffer)
+    serialize_eapol_data_frame_mic(Some(mic), None, frame, out, scratch)
+        .map_err(|_| Refusal::Buffer)
 }
 
 /// Message 2: the station's nonce and its RSN element, MIC'd.
@@ -430,7 +445,7 @@ pub fn write_message_2(
         replay_counter,
         *snonce,
         element_chain! { RsnElement::WPA2_PERSONAL },
-        keys.kck(),
+        keys.mic(),
     )
 }
 
@@ -456,7 +471,7 @@ pub fn write_message_4(
         replay_counter,
         [0u8; 32],
         element_chain! {},
-        keys.kck(),
+        keys.mic(),
     )
 }
 
@@ -497,7 +512,7 @@ pub fn write_group_message_2(
         replay_counter,
         [0u8; 32],
         element_chain! {},
-        keys.kck(),
+        keys.mic(),
     )?;
     // ...then the protected layout at the front: header, CCMP header, the
     // LLC and EAPOL bytes, room for CCMP's MIC

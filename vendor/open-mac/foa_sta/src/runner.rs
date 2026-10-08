@@ -396,9 +396,8 @@ impl RoutingRunner<'_, '_> {
             return;
         };
         let taken = self.sta_tx_rx.map_crypto_state(|crypto_state| {
-            let keys = sta_handshake::PairwiseKeys {
-                ptk: crypto_state.security_associations.ptksa.key,
-            };
+            let keys =
+                sta_handshake::PairwiseKeys::from_ptk(crypto_state.security_associations.ptksa.key);
             let floor = crypto_state.security_associations.eapol_replay_counter;
             match sta_handshake::read_group_message_1(&mut plain[..length], &keys, &mut scratch, floor) {
                 Ok(gtk) => match crypto_state.update_gtksa(&gtk, bssid) {
@@ -434,7 +433,7 @@ impl RoutingRunner<'_, '_> {
             self.sta_tx_rx.map_crypto_state(|crypto_state| {
                 let ptksa = &crypto_state.security_associations.ptksa;
                 (
-                    sta_handshake::PairwiseKeys { ptk: ptksa.key },
+                    sta_handshake::PairwiseKeys::from_ptk(ptksa.key),
                     ptksa.next_packet_number(),
                     ptksa.key_id,
                     crypto_state.ptk_key_slot.key_slot(),

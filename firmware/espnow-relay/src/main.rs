@@ -82,8 +82,6 @@ const CHANNEL: u8 = {
 const BOOT_BAUD: u32 = 115_200;
 /// `T `, an id, twelve hex digits, a space, 250 bytes in hex, the line's end.
 const LINE: usize = 2 + 3 + 12 + 1 + 500 + 2;
-/// The receive ring: seven full lines.
-const RING: usize = 4096;
 /// How long a new speed waits for the host to speak at it.
 const BAUD_PATIENCE: Duration = Duration::from_secs(3);
 
@@ -99,47 +97,8 @@ const fn parse_number(s: &str) -> u32 {
     n
 }
 
-/// Bytes the UART's interrupt took off the hardware queue, for the loop.
-struct Ring {
-    bytes: [u8; RING],
-    head: usize,
-    len: usize,
-    /// Bytes that found the ring full, and reads the UART reported in error
-    /// (its own queue overran): either way a line was damaged.
-    lost: u32,
-}
-
-impl Ring {
-    const fn new() -> Self {
-        Ring {
-            bytes: [0; RING],
-            head: 0,
-            len: 0,
-            lost: 0,
-        }
-    }
-
-    fn push(&mut self, data: &[u8]) {
-        for &b in data {
-            if self.len == RING {
-                self.lost += 1;
-                continue;
-            }
-            self.bytes[(self.head + self.len) % RING] = b;
-            self.len += 1;
-        }
-    }
-
-    fn pop(&mut self, out: &mut [u8]) -> usize {
-        let n = self.len.min(out.len());
-        for slot in &mut out[..n] {
-            *slot = self.bytes[self.head];
-            self.head = (self.head + 1) % RING;
-        }
-        self.len -= n;
-        n
-    }
-}
+mod ring;
+use ring::{Lines, Ring};
 
 static SERIAL: Mutex<RefCell<Option<Uart<'static, Blocking>>>> = Mutex::new(RefCell::new(None));
 static RX: Mutex<RefCell<Ring>> = Mutex::new(RefCell::new(Ring::new()));
@@ -188,60 +147,8 @@ fn set_baud(baud: u32) -> bool {
     })
 }
 
-const DIGITS: &[u8; 16] = b"0123456789abcdef";
-
-fn hex_into(bytes: &[u8], out: &mut [u8]) -> usize {
-    for (i, b) in bytes.iter().enumerate() {
-        out[2 * i] = DIGITS[usize::from(b >> 4)];
-        out[2 * i + 1] = DIGITS[usize::from(b & 0xf)];
-    }
-    bytes.len() * 2
-}
-
-/// `n` in decimal into `out`: the digits written.
-fn decimal_into(n: i32, out: &mut [u8]) -> usize {
-    let mut digits = [0u8; 11];
-    let mut len = 0;
-    let mut rest = n.unsigned_abs();
-    loop {
-        digits[len] = b'0' + (rest % 10) as u8;
-        len += 1;
-        rest /= 10;
-        if rest == 0 {
-            break;
-        }
-    }
-    let mut at = 0;
-    if n < 0 {
-        out[0] = b'-';
-        at = 1;
-    }
-    for i in 0..len {
-        out[at + i] = digits[len - 1 - i];
-    }
-    at + len
-}
-
-fn nibble(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
-    }
-}
-
-/// `text` as hex into `out`: the bytes written, or `None` on an odd length,
-/// a digit that is not one, or too many.
-fn unhex(text: &[u8], out: &mut [u8]) -> Option<usize> {
-    if text.len() % 2 != 0 || text.len() / 2 > out.len() {
-        return None;
-    }
-    for (i, pair) in text.chunks_exact(2).enumerate() {
-        out[i] = (nibble(pair[0])? << 4) | nibble(pair[1])?;
-    }
-    Some(text.len() / 2)
-}
+mod hex;
+use hex::{decimal_into, hex_into, unhex};
 
 /// A `T <id> <destination> <payload>` line: the id, the destination and
 /// the payload's length in `payload`.
@@ -440,9 +347,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
         }
     }
 
-    let mut line = [0u8; LINE];
-    let mut len = 0usize;
-    let mut overrun = false;
+    let mut lines = Lines::<LINE>::new();
     let mut payload = [0u8; 250];
     let mut chunk = [0u8; 128];
     // `R `, the source, the signal strength, the payload, the line's end
@@ -492,20 +397,18 @@ async fn main(_spawner: embassy_executor::Spawner) {
         } else {
             n
         };
-        for &byte in &chunk[..n] {
-            if byte != b'\n' {
-                if len < line.len() {
-                    line[len] = byte;
-                    len += 1;
-                } else {
-                    overrun = true;
-                }
-                continue;
+        let mut rest = &chunk[..n];
+        while !rest.is_empty() {
+            let (used, ended) = lines.take(rest);
+            rest = &rest[used..];
+            if !ended {
+                break;
             }
-            let text = line[..len].strip_suffix(b"\r").unwrap_or(&line[..len]);
-            let whole = !overrun;
-            len = 0;
-            overrun = false;
+            let len = core::mem::take(&mut lines.len);
+            let whole = !core::mem::take(&mut lines.overrun);
+            let text = lines.line[..len]
+                .strip_suffix(b"\r")
+                .unwrap_or(&lines.line[..len]);
             if text.is_empty() {
                 continue;
             }

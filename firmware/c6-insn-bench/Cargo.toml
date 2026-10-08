@@ -24,6 +24,7 @@ critical-section = "1"
 ap_core = { path = "../../vendor/open-mac/ap_core" }
 ieee80211 = { path = "../../vendor/open-mac/ieee80211", default-features = false, features = ["crypto"] }
 sta_handshake = { path = "../../vendor/open-mac/sta_handshake" }
+espnow_frame = { path = "../../vendor/open-mac/espnow_frame" }
 
 [profile.release]
 opt-level = "s"

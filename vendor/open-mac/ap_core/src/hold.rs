@@ -49,6 +49,9 @@ impl Slot {
 pub struct Held {
     slots: [Slot; HELD_FRAMES],
     next_sequence: u32,
+    /// The group frames held, kept as they come and go: the beacon asks
+    /// every TBTT, and a walk of the slots answered it (2026-10-07).
+    groups: u16,
 }
 
 impl Default for Held {
@@ -64,6 +67,7 @@ impl Held {
         Self {
             slots: [Slot::EMPTY; HELD_FRAMES],
             next_sequence: 1,
+            groups: 0,
         }
     }
 
@@ -81,6 +85,7 @@ impl Held {
         slot.sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.wrapping_add(1).max(1);
         slot.group = group;
+        self.groups += u16::from(group);
         slot.len = frame.len() as u16;
         slot.bytes[..frame.len()].copy_from_slice(frame);
         Ok(())
@@ -118,6 +123,7 @@ impl Held {
     fn take(&mut self, i: usize) -> Taken<'_> {
         let slot = &mut self.slots[i];
         slot.sequence = 0;
+        self.groups -= u16::from(slot.group);
         let len = usize::from(slot.len);
         Taken {
             frame: &slot.bytes[..len],
@@ -136,10 +142,7 @@ impl Held {
     /// How many group frames wait (the TIM's group-buffered bit).
     #[must_use]
     pub fn group_count(&self) -> u16 {
-        self.slots
-            .iter()
-            .filter(|s| s.sequence != 0 && s.group)
-            .count() as u16
+        self.groups
     }
 
     /// Frames held for a station that left: dropped; how many.

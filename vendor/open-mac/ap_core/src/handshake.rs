@@ -20,7 +20,7 @@ use core::marker::PhantomData;
 use ieee80211::common::{DataFrameSubtype, FCFFlags, SequenceControl};
 use ieee80211::crypto::eapol::{EapolKeyFrame, KeyDescriptorVersion, KeyInformation};
 use ieee80211::crypto::{
-    CryptoHeader, EapolSerdeError, deserialize_eapol_data_frame, serialize_eapol_data_frame,
+    CryptoHeader, EapolSerdeError, deserialize_eapol_data_frame_mic, serialize_eapol_data_frame_mic,
 };
 use ieee80211::data_frame::DataFrame;
 use ieee80211::data_frame::header::DataFrameHeader;
@@ -143,8 +143,8 @@ fn write_key_frame(
         }),
         _phantom: PhantomData,
     };
-    serialize_eapol_data_frame(
-        keys.map(PairwiseKeys::kck),
+    serialize_eapol_data_frame_mic(
+        keys.map(PairwiseKeys::mic),
         keys.map(PairwiseKeys::kek),
         frame,
         out,
@@ -230,7 +230,8 @@ pub fn read_message_2(
         return Err(Refusal::Replay);
     }
     let keys = PairwiseKeys::derive(pmk, bssid, station, anonce, &snonce);
-    let frame = deserialize_eapol_data_frame(Some(keys.kck()), None, mpdu, &mut [], AKM, false)?;
+    let frame =
+        deserialize_eapol_data_frame_mic(Some(keys.mic()), None, mpdu, &mut [], AKM, false)?;
     let offered = Elements::new(frame.key_data.bytes).first_whole(id::RSN);
     if offered != Some(station_rsn_element) {
         return Err(Refusal::RsnMismatch);
@@ -280,7 +281,8 @@ pub fn read_message_4(
     keys: &PairwiseKeys,
     replay_counter: u64,
 ) -> Result<(), Refusal> {
-    let frame = deserialize_eapol_data_frame(Some(keys.kck()), None, mpdu, &mut [], AKM, false)?;
+    let frame =
+        deserialize_eapol_data_frame_mic(Some(keys.mic()), None, mpdu, &mut [], AKM, false)?;
     let information = frame.key_information;
     if !(information.key_descriptor_version() == KeyDescriptorVersion::AesHmacSha1
         && information.is_pairwise()
@@ -358,7 +360,8 @@ pub fn read_group_message_2(
     keys: &PairwiseKeys,
     replay_counter: u64,
 ) -> Result<(), Refusal> {
-    let frame = deserialize_eapol_data_frame(Some(keys.kck()), None, mpdu, &mut [], AKM, false)?;
+    let frame =
+        deserialize_eapol_data_frame_mic(Some(keys.mic()), None, mpdu, &mut [], AKM, false)?;
     let information = frame.key_information;
     if !(information.key_descriptor_version() == KeyDescriptorVersion::AesHmacSha1
         && !information.is_pairwise()

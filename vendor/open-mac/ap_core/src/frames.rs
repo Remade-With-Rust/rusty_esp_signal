@@ -84,9 +84,12 @@ impl Writer<'_> {
             use crate::qos::{HT_CAPABILITIES_ELEMENT as CAP, WMM_PARAMETER_ELEMENT as WMM};
             const OP: usize = 24;
             // the three elements' room checked once (three checks before)
-            let out = self.out.get_mut(self.at..self.at + CAP.len() + OP + WMM.len())?;
+            let out = self
+                .out
+                .get_mut(self.at..self.at + CAP.len() + OP + WMM.len())?;
             out[..CAP.len()].copy_from_slice(&CAP);
-            out[CAP.len()..CAP.len() + OP].copy_from_slice(&crate::qos::ht_operation_element(bss.channel));
+            out[CAP.len()..CAP.len() + OP]
+                .copy_from_slice(&crate::qos::ht_operation_element(bss.channel));
             out[CAP.len() + OP..].copy_from_slice(&WMM);
             self.at += CAP.len() + OP + WMM.len();
         }

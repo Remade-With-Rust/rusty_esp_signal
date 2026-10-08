@@ -223,7 +223,12 @@ impl Stations {
     /// before it: its state and whether it dozed. One walk where a data
     /// frame's `get` then `heard` were two (2026-10-07); `None` for a
     /// station not held.
-    pub fn heard_was(&mut self, address: &Address, now_us: u64, power_save: bool) -> Option<(State, bool)> {
+    pub fn heard_was(
+        &mut self,
+        address: &Address,
+        now_us: u64,
+        power_save: bool,
+    ) -> Option<(State, bool)> {
         let station = self.get_mut(address)?;
         let was = (station.state, station.power_save);
         station.last_heard_us = now_us;

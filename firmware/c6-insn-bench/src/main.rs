@@ -15,6 +15,12 @@
 extern crate alloc;
 
 #[allow(dead_code)]
+#[path = "../../espnow-relay/src/hex.rs"]
+mod hex;
+#[allow(dead_code)]
+#[path = "../../espnow-relay/src/ring.rs"]
+mod ring;
+#[allow(dead_code)]
 #[path = "../../c6-open-rx/src/sniff.rs"]
 mod sniff;
 
@@ -83,6 +89,129 @@ fn count(name: &str, reps: u32, mut f: impl FnMut() -> u32) -> (u32, u32) {
     (insns, hash)
 }
 
+/// The relay's ring as it was before the optimisation round: the oracle the
+/// new one is checked against, byte for byte, overflow included.
+struct OracleRing {
+    bytes: [u8; ring::RING],
+    head: usize,
+    len: usize,
+    lost: u32,
+}
+
+impl OracleRing {
+    fn push(&mut self, data: &[u8]) {
+        for &b in data {
+            if self.len == ring::RING {
+                self.lost += 1;
+                continue;
+            }
+            self.bytes[(self.head + self.len) % ring::RING] = b;
+            self.len += 1;
+        }
+    }
+    fn pop(&mut self, out: &mut [u8]) -> usize {
+        let n = self.len.min(out.len());
+        for slot in &mut out[..n] {
+            *slot = self.bytes[self.head];
+            self.head = (self.head + 1) % ring::RING;
+        }
+        self.len -= n;
+        n
+    }
+}
+
+/// 20,000 pushes and pops of pseudo-random sizes (overflow and wrap
+/// included) through both rings: every byte out and the lost count equal.
+fn ring_oracle() -> bool {
+    let mut a = ring::Ring::new();
+    let mut b = OracleRing {
+        bytes: [0; ring::RING],
+        head: 0,
+        len: 0,
+        lost: 0,
+    };
+    let mut seed = 0x1234_5678u32;
+    let mut data = [0u8; 1500];
+    let (mut out_a, mut out_b) = ([0u8; 1500], [0u8; 1500]);
+    for (i, d) in data.iter_mut().enumerate() {
+        *d = (i as u8).wrapping_mul(29);
+    }
+    for _ in 0..20_000 {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        let n = (seed % 1500) as usize;
+        if seed & 0x8000_0000 != 0 {
+            a.push(&data[..n]);
+            b.push(&data[..n]);
+        } else {
+            let (x, y) = (a.pop(&mut out_a[..n]), b.pop(&mut out_b[..n]));
+            if x != y || out_a[..x] != out_b[..y] {
+                return false;
+            }
+        }
+    }
+    a.lost == b.lost
+}
+
+/// The relay's line assembly as it was before the optimisation round (a
+/// byte at a time): the oracle and the "before" arm.
+struct OracleLines {
+    line: [u8; 520],
+    len: usize,
+    overrun: bool,
+}
+
+impl OracleLines {
+    /// Every finished line to `done`: its text, the CR stripped, and whole.
+    fn feed(&mut self, bytes: &[u8], mut done: impl FnMut(&[u8], bool)) {
+        for &byte in bytes {
+            if byte != b'\n' {
+                if self.len < self.line.len() {
+                    self.line[self.len] = byte;
+                    self.len += 1;
+                } else {
+                    self.overrun = true;
+                }
+                continue;
+            }
+            let text = self.line[..self.len]
+                .strip_suffix(b"\r")
+                .unwrap_or(&self.line[..self.len]);
+            done(text, !self.overrun);
+            self.len = 0;
+            self.overrun = false;
+        }
+    }
+}
+
+/// The relay's word-at-a-time newline search against `position` on 20,000
+/// random buffers: random lengths and alignments, newlines anywhere or
+/// nowhere, bytes at and above 0x80 among them.
+fn newline_oracle() -> bool {
+    let mut buf = [0u8; 300];
+    let mut seed = 0x9e37_79b9u32;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+    for _ in 0..20_000 {
+        for b in buf.iter_mut() {
+            let r = next();
+            *b = if r % 97 == 0 { 10 } else { (r >> 8) as u8 };
+        }
+        let start = (next() % 8) as usize;
+        let len = (next() % 290) as usize;
+        let s = &buf[start..start + len];
+        if ring::newline(s) != s.iter().position(|&b| b == 10) {
+            return false;
+        }
+    }
+    true
+}
+
 fn bss(protected: bool, ht: bool) -> Bss<'static> {
     Bss {
         bssid: AP,
@@ -139,11 +268,29 @@ fn main() -> ! {
     let _p = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
     esp_alloc::heap_allocator!(size: 64 * 1024);
     println!("INSN boot c6-insn-bench");
+    println!(
+        "INSN oracle ring {}",
+        if ring_oracle() { "identical" } else { "FAIL" }
+    );
+    println!(
+        "INSN oracle newline {}",
+        if newline_oracle() {
+            "identical"
+        } else {
+            "FAIL"
+        }
+    );
 
     // the fixtures, outside every count
     let rsn = station_rsn_element();
     let assoc = assoc_request(&rsn);
-    let probe_wild = mgmt(4, STA, BROADCAST, BROADCAST, &[0, 0, 1, 4, 0x82, 0x84, 0x8b, 0x96]);
+    let probe_wild = mgmt(
+        4,
+        STA,
+        BROADCAST,
+        BROADCAST,
+        &[0, 0, 1, 4, 0x82, 0x84, 0x8b, 0x96],
+    );
     let probe_named = {
         let mut body = vec![0, SSID.len() as u8];
         body.extend_from_slice(SSID);
@@ -215,13 +362,21 @@ fn main() -> ! {
         let b_ht = bss(true, true);
         k += 1;
         count("beacon_wpa2_ht", 2000, || {
-            let b = frames::beacon(black_box(&mut buf), black_box(&b_ht), black_box(&beacon_tim));
+            let b = frames::beacon(
+                black_box(&mut buf),
+                black_box(&b_ht),
+                black_box(&beacon_tim),
+            );
             b.map_or(0, |b| fnv(FNV0, &buf[..b.len]))
         });
         let b_open = bss(false, false);
         k += 1;
         count("beacon_open", 2000, || {
-            let b = frames::beacon(black_box(&mut buf), black_box(&b_open), black_box(&beacon_tim));
+            let b = frames::beacon(
+                black_box(&mut buf),
+                black_box(&b_open),
+                black_box(&beacon_tim),
+            );
             b.map_or(0, |b| fnv(FNV0, &buf[..b.len]))
         });
         // the access point's per-TBTT work from a template: the TIM
@@ -272,7 +427,8 @@ fn main() -> ! {
         });
         k += 1;
         count("auth_and_deauth", 2000, || {
-            let a = frames::authentication(black_box(&mut buf), AP, black_box(STA), status::SUCCESS);
+            let a =
+                frames::authentication(black_box(&mut buf), AP, black_box(STA), status::SUCCESS);
             let h = a.map_or(0, |n| fnv(FNV0, &buf[..n]));
             let d = frames::deauthentication(black_box(&mut buf), AP, black_box(STA), 7);
             d.map_or(h, |n| fnv(h, &buf[..n]))
@@ -377,7 +533,14 @@ fn main() -> ! {
             }
             let tim = table.tim(1, 2, false);
             let gone = table.inactive(now, 300_000_000).map_or(0, |a| a[5]);
-            fnv(h, &[tim.buffered_aids as u8, (tim.buffered_aids >> 8) as u8, gone])
+            fnv(
+                h,
+                &[
+                    tim.buffered_aids as u8,
+                    (tim.buffered_aids >> 8) as u8,
+                    gone,
+                ],
+            )
         });
         // a data frame's lookups at the access point: `get` then `heard`
         // (before), `heard_was` (after); the same answers, hashed
@@ -393,7 +556,10 @@ fn main() -> ! {
                     None => (None, false),
                 };
                 let ok = t_old.heard(&a, now, n & 1 == 0);
-                h = fnv(h, &[u8::from(ok), state.map_or(9, |s| s as u8), u8::from(was)]);
+                h = fnv(
+                    h,
+                    &[u8::from(ok), state.map_or(9, |s| s as u8), u8::from(was)],
+                );
             }
             h
         });
@@ -410,9 +576,29 @@ fn main() -> ! {
                     Some((s, w)) => (true, Some(s), w),
                     None => (false, None, false),
                 };
-                h = fnv(h, &[u8::from(ok), state.map_or(9, |s| s as u8), u8::from(was)]);
+                h = fnv(
+                    h,
+                    &[u8::from(ok), state.map_or(9, |s| s as u8), u8::from(was)],
+                );
             }
             h
+        });
+        // the access point's per-TBTT work: the TIM from the table, whether
+        // group frames wait, the template's TIM rewritten (a group frame and
+        // two stations' frames held)
+        let mut tbtt_pool = Held::new();
+        let _ = tbtt_pool.push(&held_frames[0], false);
+        let _ = tbtt_pool.push(&held_frames[1], false);
+        let _ = tbtt_pool.push(&group_frame, true);
+        let mut tbtt_beacon = template;
+        let mut dtim = 0u8;
+        k += 1;
+        count("per_tbtt_work", 2000, || {
+            dtim ^= 1;
+            let group = black_box(&tbtt_pool).group_count() > 0;
+            let tim = table.tim(dtim, 2, group);
+            let ok = frames::set_tim(&mut tbtt_beacon, tim_at.0, &tim);
+            ok.map_or(0, |()| fnv(FNV0, &tbtt_beacon[tim_at.0..tim_at.0 + 7]))
         });
         k += 1;
         let mut pool = Held::new();
@@ -468,7 +654,8 @@ fn main() -> ! {
         k += 1;
         count("handshake_write_1", 300, || {
             let r = auth.next_replay_counter();
-            let n = handshake::write_message_1(&mut out, &mut scratch, AP, STA, &ANONCE, black_box(r));
+            let n =
+                handshake::write_message_1(&mut out, &mut scratch, AP, STA, &ANONCE, black_box(r));
             n.map_or(0, |n| fnv(FNV0, &out[..n]))
         });
         let mut m2 = msg2.clone();
@@ -530,12 +717,191 @@ fn main() -> ! {
         // ---- the sniffer -------------------------------------------------
         let mut sn = sniff::Sniffer::default();
         k += 1;
-        let air = &beacon_air[..beacon_len];
+        // one beacon per interval, as on the air: its timestamp advanced by
+        // 102,400 us each call
+        let mut air = beacon_air;
         let mut local = 0u32;
+        let mut tsf = 3_000_000_000u64;
         count("sniff_beacon", 2000, || {
             local = local.wrapping_add(102_400);
-            sn.beacon(black_box(air), SSID, local);
+            tsf += 102_400;
+            air[24..32].copy_from_slice(&tsf.to_le_bytes());
+            sn.beacon(black_box(&air[..beacon_len]), SSID, local);
             fnv(FNV0, &local.to_le_bytes())
+        });
+        // the sniffer's own verdicts, hashed: the gate for its arithmetic
+        k += 1;
+        count("sniff_report_state", 1, || {
+            let mut h = FNV0;
+            for _ in 0..1 {
+                h = fnv(h, &sn.digest());
+            }
+            h
+        });
+
+        // ---- the relay's line codec (E4), per frame -----------------------
+        let payload: [u8; 250] =
+            core::array::from_fn(|i| (i as u8).wrapping_mul(37).wrapping_add(11));
+        let mut line = [0u8; 600];
+        k += 1;
+        count("relay_hex_250b", 1000, || {
+            let n = hex::hex_into(black_box(&payload), &mut line);
+            fnv(FNV0, &line[..n])
+        });
+        let mut text = [0u8; 500];
+        let tn = hex::hex_into(&payload, &mut text);
+        let mut back = [0u8; 250];
+        k += 1;
+        count("relay_unhex_250b", 1000, || {
+            let n = hex::unhex(black_box(&text[..tn]), &mut back).unwrap_or(0);
+            fnv(FNV0, &back[..n])
+        });
+        k += 1;
+        count("relay_decimals", 1000, || {
+            let mut h = FNV0;
+            for v in [-61i32, 0, 7, 1_234_567, -2_147_483_648] {
+                let n = hex::decimal_into(black_box(v), &mut line);
+                h = fnv(h, &line[..n]);
+            }
+            h
+        });
+
+        // the relay's receive ring: 600 bytes in the UART's 64-byte pieces,
+        // out in the loop's 128-byte reads, wrapping round the ring
+        let mut rx_ring = ring::Ring::new();
+        let mut piece = [0u8; 128];
+        k += 1;
+        count("relay_ring_600b", 500, || {
+            let mut h = FNV0;
+            for chunk in line[..600].chunks(64) {
+                rx_ring.push(black_box(chunk));
+            }
+            loop {
+                let n = rx_ring.pop(&mut piece);
+                if n == 0 {
+                    break;
+                }
+                h = fnv(h, &piece[n - 1..n]);
+            }
+            h
+        });
+
+        // the relay's line assembly: a 'T' line of 519 bytes and a short
+        // command, fed in the UART's 128-byte pieces; before and after
+        let mut stream = [0u8; 560];
+        stream[..2].copy_from_slice(b"T ");
+        stream[2..517].fill(b'a');
+        stream[517] = 13;
+        stream[518] = 10;
+        stream[519..527].copy_from_slice(b"U 921600");
+        stream[527] = 13;
+        stream[528] = 10;
+        let stream = &stream[..529];
+        let mut old_lines = OracleLines {
+            line: [0; 520],
+            len: 0,
+            overrun: false,
+        };
+        k += 1;
+        count("relay_lines_before", 500, || {
+            let mut h = FNV0;
+            for piece in stream.chunks(128) {
+                old_lines.feed(black_box(piece), |text, whole| {
+                    h = fnv(fnv(h, text), &[u8::from(whole)]);
+                });
+            }
+            h
+        });
+        let mut new_lines = ring::Lines::<520>::new();
+        k += 1;
+        count("relay_lines_after", 500, || {
+            let mut h = FNV0;
+            for piece in stream.chunks(128) {
+                let mut rest = black_box(piece);
+                while !rest.is_empty() {
+                    let (used, ended) = new_lines.take(rest);
+                    rest = &rest[used..];
+                    if !ended {
+                        break;
+                    }
+                    let len = core::mem::take(&mut new_lines.len);
+                    let whole = !core::mem::take(&mut new_lines.overrun);
+                    let text = new_lines.line[..len]
+                        .strip_suffix(b"\r")
+                        .unwrap_or(&new_lines.line[..len]);
+                    h = fnv(fnv(h, text), &[u8::from(whole)]);
+                }
+            }
+            h
+        });
+
+        // E4's raw link: an ESP-NOW frame written, parsed, checked for a
+        // retransmission, per frame
+        let mut air_frame = [0u8; espnow_frame::MAX_FRAME];
+        k += 1;
+        count("espnow_write_250b", 1000, || {
+            let n = espnow_frame::write(
+                &mut air_frame,
+                black_box(&STA),
+                &AP,
+                [1, 2, 3, 4],
+                black_box(&payload),
+            );
+            n.map_or(0, |n| fnv(FNV0, &air_frame[n - 8..n]))
+        });
+        let air_n =
+            espnow_frame::write(&mut air_frame, &STA, &AP, [1, 2, 3, 4], &payload).unwrap_or(0);
+        k += 1;
+        count("espnow_parse_250b", 1000, || {
+            match espnow_frame::parse(black_box(&air_frame[..air_n])) {
+                Some(f) => fnv(
+                    fnv(fnv(FNV0, &f.to), &f.from),
+                    &[f.version, f.body.len() as u8, u8::from(f.more_data)],
+                ),
+                None => 1,
+            }
+        });
+        // E4's sealed send: before, sealed into a zeroed 250-byte buffer and
+        // copied into the frame (`write`); after, sealed in place and only
+        // the header laid (`write_header`). The seal itself is the same in
+        // both and left out; the frames are hashed whole.
+        let mut sealed = [0u8; 250];
+        sealed.copy_from_slice(&payload);
+        k += 1;
+        count("link_send_before", 1000, || {
+            let mut scratch = [0u8; 250];
+            scratch.copy_from_slice(black_box(&sealed));
+            let n = espnow_frame::write(&mut air_frame, &STA, &AP, [1, 2, 3, 4], &scratch);
+            n.map_or(0, |n| fnv(FNV0, &air_frame[n - 8..n]))
+        });
+        let mut in_place = [0u8; espnow_frame::MAX_FRAME];
+        in_place[espnow_frame::OVERHEAD..].copy_from_slice(&sealed);
+        k += 1;
+        count("link_send_after", 1000, || {
+            let n =
+                espnow_frame::write_header(black_box(&mut in_place), &STA, &AP, [1, 2, 3, 4], 250);
+            n.map_or(0, |n| fnv(FNV0, &in_place[n - 8..n]))
+        });
+        // the gate: the two frames, whole
+        let before =
+            espnow_frame::write(&mut air_frame, &STA, &AP, [1, 2, 3, 4], &sealed).unwrap_or(0);
+        let after =
+            espnow_frame::write_header(&mut in_place, &STA, &AP, [1, 2, 3, 4], 250).unwrap_or(1);
+        println!(
+            "INSN oracle link_send {}",
+            if before == after && air_frame[..before] == in_place[..after] {
+                "identical"
+            } else {
+                "FAIL"
+            }
+        );
+        let mut dups = espnow_frame::Duplicates::new();
+        let mut seq = 0u16;
+        k += 1;
+        count("espnow_is_duplicate", 1000, || {
+            seq = seq.wrapping_add(16);
+            air_frame[22..24].copy_from_slice(&seq.to_le_bytes());
+            u32::from(dups.is_duplicate(black_box(&air_frame[..air_n])))
         });
 
         println!("INSN done kernels={k}");

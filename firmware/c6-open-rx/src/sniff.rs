@@ -110,6 +110,30 @@ impl Sniffer {
         }
     }
 
+    /// Every statistic packed: the gate that the arithmetic agrees.
+    pub fn digest(&self) -> [u8; 52] {
+        let mut d = [0u8; 52];
+        let words = [
+            self.beacons,
+            self.late[0],
+            self.late[1],
+            self.late[2],
+            self.late[3],
+            self.late[4],
+            self.late[5],
+            self.late[6],
+            self.late_max,
+            self.skipped,
+            self.dtim_shifts,
+            self.tim_unicast,
+            self.window_min,
+        ];
+        for (i, w) in words.iter().enumerate() {
+            d[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        d
+    }
+
     pub fn report(&mut self) {
         // over the window: TSF advanced against the C6's clock (ppm)
         let drift_ppm = match (self.window_first, self.window_last) {

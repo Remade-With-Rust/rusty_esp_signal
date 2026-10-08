@@ -2033,3 +2033,64 @@ of 61 and ~95 %); 86 % of beacons within 0.5 ms of their TBTT, DTIM phase
 fixed. New watch counters: beacons_late, tbtts_skipped,
 beacon_late_max_us, stamp_offset_us, stamp_syncs, dropped_inactive,
 held_dropped. NOT Wi-Fi certified.
+
+## The optimisation round: 25 instruction-reducing wins (2026-10-07)
+
+The instrument: `firmware/c6-insn-bench` counts **retired instructions** on
+an ESP32-C6 (Espressif's performance counter, `mpcer`/`mpccr`, interrupts
+masked) per call of the experiments' portable code, each output folded into
+an FNV hash -- the byte-identity gate -- and every run read twice (the null
+arm: both passes equal to the instruction, or the run is void;
+`tools/insn-bench.py` in the umbrella). Oracles kept in the bench: the
+relay's old ring and its newline scan, checked against the new on 20,000
+random cases (the ring's oracle poisoned once to prove it can fail). The
+access point's changes (S3) are counted as the work they remove, with the
+same `ap_core` calls, and were run on the XIAO with two C6 stations dozing.
+
+| # | where | change | instructions |
+|---|---|---|---|
+| 1 | ap_core hold | oldest and count in one walk | hold cycle -8.3 % |
+| 2 | ap_core stations | AIDs read by borrow, not a station copied | -38 per four joins |
+| 3 | ieee80211 PRF | HMAC keyed once, the label and data absorbed once | message 2 read -27.2 % |
+| 4 | access point | beacon template, the TIM rewritten per TBTT | -965 per TBTT |
+| 5 | access point | probe-response template | -807 per probe |
+| 6 | access point | EAPOL scratch kept, not zeroed per reply | -406 per reply |
+| 7 | ap_core hold | the frame at an aligned offset in its slot | hold cycle -71 % |
+| 8 | access point | frames delivered from the stack's buffer | -441 per 600-byte frame |
+| 9 | access point | release buffer kept, not zeroed | -602 per held frame |
+| 10 | access point | forward buffer kept, not zeroed | -650 per forwarded frame |
+| 11 | ap_core stations | `heard_was`: one walk per data frame | -31 per frame |
+| 12 | ap_core frames | one room check per element | association response -9.1 % |
+| 13 | ap_core frames | one check for the HT elements | -43 to -47 per frame |
+| 14 | ap_core frames | the fixed fields in one write | -12 / -14 |
+| 15 | ap_core frames | the header written in place | auth+deauth -22 %, beacon -112 |
+| 16 | relay | hex from a pair table | -1,754 per 250-byte frame |
+| 17 | relay | hex decoded through a digit table | -877 per 250-byte line |
+| 18 | relay | decimals two digits a division | -12.5 % |
+| 19 | relay ring | pop as at most two copies | -24.8 % |
+| 20 | relay ring | push as at most two copies | -77 % (ring -83 % with 19) |
+| 21 | relay | line assembly: one search, one copy | -51 % |
+| 22 | relay | newline found four bytes a step | a further -20 % |
+| 23 | ieee80211 / sta_handshake / ap_core | the MIC's HMAC keyed once per association | message 4 read -37 %, message 3 and group message 1 -7,309 |
+| 24 | raw link + espnow_frame | sealed in place, `write_header` | -86 % per sealed send |
+| 25 | ap_core hold | a running group-frame count | per-TBTT work -31.6 % |
+
+Refuted, with numbers, so they are not tried again: destinations compared
+in place (unchanged: LLVM's copy was free); one walk for the association
+parse (-35 there, +25 on the probe path, the common one); the header built
+in a temporary array (+); one element walk in the sniffer (+15 to +128);
+the remainder from the quotient (unchanged); one length check in the parser
+(unchanged); `#[repr(C)]` stations (+251); three 16-bit fields in one write
+(-4, inside the allocator's band); the MIC's zeros in one update (+72);
+carrying the TBTT number between beacons (+6: the ROM division is cheap);
+`Elements::first` by hand (noise); the ESP-NOW header from a template (+11);
+OUIs compared as arrays (unchanged); authentication in one walk (+122).
+Not done, the next levers: the AES and SHA-1 behind the handshake on the
+chips' accelerators (AES key wrap is ~84 % of message 3); the station's
+rate tick computes each throughput three times (once a second).
+
+Found on the way: an S1 pair built from different states of a locally
+patched crate refuses every hello (`InvalidFormat`); rebuilt together they
+join. The open-MAC link at the 5 dBm cap now loses ~half its frames
+unacknowledged at the bench's current positions (both before and after the
+round): a link margin to measure, not a regression of this round.
