@@ -231,7 +231,7 @@ fn authentication_and_association_are_decided_as_802_11_says() {
     assert_eq!(s.get(&STA).unwrap().rsn_element(), &rsn[..]);
     // a re-association keeps the AID
     assert_eq!(s.associate(STA, true, Some(&rsn), true), Ok(1));
-    // the table holds four; the fifth is refused
+    // the table holds MAX_STATIONS; one more is refused
     for n in 2..=MAX_STATIONS as u8 {
         let a = [2, 0, 0, 0, 0, n];
         assert_eq!(s.authenticate(a, 0, 1), status::SUCCESS);

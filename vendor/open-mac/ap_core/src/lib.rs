@@ -9,11 +9,13 @@
 
 #![no_std]
 
+pub mod ccmp;
 pub mod elements;
 pub mod frames;
 pub mod handshake;
 pub mod hold;
 pub mod qos;
+pub mod replay;
 pub mod request;
 pub mod rsn;
 pub mod stations;
@@ -55,6 +57,8 @@ pub mod status {
 pub mod reason {
     /// Unspecified.
     pub const UNSPECIFIED: u16 = 1;
+    /// The previous authentication is no longer valid: join again.
+    pub const PREV_AUTH_NOT_VALID: u16 = 2;
     /// Disassociated for inactivity.
     pub const INACTIVITY: u16 = 4;
     /// The access point is leaving (or cannot serve the station).

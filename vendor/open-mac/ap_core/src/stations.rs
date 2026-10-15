@@ -12,8 +12,10 @@
 
 use crate::{Address, rsn, status};
 
-/// How many stations the access point serves at once.
-pub const MAX_STATIONS: usize = 4;
+/// How many stations the access point serves at once: eight. Each takes a pairwise key slot beside
+/// the two group-key slots, of the MAC's 25; the TIM's two-octet bitmap
+/// covers AIDs 1-15.
+pub const MAX_STATIONS: usize = 8;
 /// The longest RSN element kept from an association request (its two
 /// header octets included): message 2 must carry the same bytes.
 pub const MAX_RSN_ELEMENT: usize = 64;

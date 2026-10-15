@@ -26,6 +26,7 @@ dependencies = [
 name = "ap_core"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "ieee80211",
  "llc-rs",
  "sta_handshake",
