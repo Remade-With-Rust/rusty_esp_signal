@@ -58,8 +58,16 @@ pub use control::*;
 
 mod bss;
 pub use bss::*;
+/// The station's 802.11n (E8): association elements, the link granted,
+/// QoS data and A-MSDU, HT airtime.
+pub use sta_handshake::ht;
 mod runner;
-pub use runner::{SAMPLE_EVERY, StaRunner, air_stats, dropped_unprotected, null_frames, set_data_sample_rate};
+pub use runner::{
+    SAMPLE_EVERY, StaRunner, air_stats, ampdu_stats, ba_census, block_ack_stats, dropped_unprotected,
+    group_delivered, null_frames, relay_mark, relayed_as_background, set_relay_background,
+    qos_stats,
+    set_data_sample_rate,
+};
 use runner::{ConnectionRunner, RoutingRunner};
 mod operations;
 mod rx_router;
@@ -112,6 +120,45 @@ pub enum StaError {
 
 /// The MTU used by the STA interface.
 pub const MTU: usize = 1514;
+
+/// Whether the station asks for HT and WMM when it associates (E8, the
+/// family's change): building with `JANUS_OPEN_HT=on`. Upstream asked for
+/// neither, so it sent at most 54 Mbit/s and only non-QoS data frames;
+/// off keeps that, the A/B's control arm.
+pub(crate) fn ask_ht() -> bool {
+    option_env!("JANUS_OPEN_HT") == Some("on")
+}
+
+/// Whether the station asks for a block-ack agreement and sends its
+/// waiting packets as A-MPDUs on an HT link (E8): building with
+/// `JANUS_OPEN_AMPDU=on`; the subframes share one TX buffer, so
+/// `FOA_CONFIG_TX_BUFFER_SIZE` sets how many fit (4,500: three of 1,478).
+pub(crate) fn send_ampdu() -> bool {
+    ampdu_built() && AMPDU_ENABLED.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether the build has A-MPDUs at all (`JANUS_OPEN_AMPDU=on`): the
+/// block-ack agreement, TID 0's numbering and the block-ack filter follow
+/// this, so switching aggregation off at run time leaves the access
+/// point's window as it was.
+pub(crate) fn ampdu_built() -> bool {
+    option_env!("JANUS_OPEN_AMPDU") == Some("on")
+}
+
+static AMPDU_ENABLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+
+/// E8: aggregation on or off at run time, in a build that has it: the
+/// in-run A/B, so both arms of a pair share one channel. On by default.
+pub fn set_ampdu_enabled(on: bool) {
+    AMPDU_ENABLED.store(on, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether the station packs two waiting packets into one A-MSDU on an HT
+/// link (E8): building with `JANUS_OPEN_AMSDU=on`, and only with TX
+/// buffers that hold one (`FOA_CONFIG_TX_BUFFER_SIZE` 3885).
+pub(crate) fn send_amsdu() -> bool {
+    option_env!("JANUS_OPEN_AMSDU") == Some("on")
+}
 
 /// TX and RX resources for the interface control and runner.
 pub(crate) struct StaTxRx<'foa, 'vif> {

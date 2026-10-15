@@ -45,6 +45,8 @@ pub(crate) struct ConnectionInfo {
     pub aid: AssociationID,
     /// Configuration parameters for connection setup and management.
     pub connection_config: ConnectionConfig,
+    /// What the association granted: QoS data frames, HT rates (E8).
+    pub link: sta_handshake::ht::Link,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// The reason for a disconnection.

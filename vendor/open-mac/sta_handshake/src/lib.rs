@@ -24,6 +24,12 @@
 
 #![no_std]
 
+#[cfg(test)]
+extern crate std;
+
+/// 802.11n for the station (Janus E8): association, QoS data, A-MSDU.
+pub mod ht;
+
 use core::marker::PhantomData;
 
 use ieee80211::common::{DataFrameSubtype, FCFFlags, SequenceControl};

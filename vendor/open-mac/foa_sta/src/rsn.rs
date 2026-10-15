@@ -174,7 +174,11 @@ impl<'foa> CryptoState<'foa> {
                     key: MultiLengthKey::Short(key),
                     key_type,
                     mfp_enabled: false,
-                    spp_enabled: false,
+                    // E8: the register's meaning is reverse-engineered;
+                    // `JANUS_OPEN_SPP=on` tests the other reading (an
+                    // A-MSDU was acknowledged and then dropped by the
+                    // access point with it off)
+                    spp_enabled: option_env!("JANUS_OPEN_SPP") == Some("on"),
                 }),
             )
             .unwrap();

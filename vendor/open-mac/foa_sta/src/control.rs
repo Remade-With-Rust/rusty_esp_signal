@@ -119,7 +119,7 @@ impl<'foa, 'vif> StaControl<'foa, 'vif> {
         }
         self.sta_tx_rx.reset_phy_rate();
         let connection_config = connection_config.unwrap_or_default();
-        let aid = connect::connect(
+        let (aid, link) = connect::connect(
             self.sta_tx_rx,
             &mut self.rx_router_endpoint,
             &bss,
@@ -142,6 +142,7 @@ impl<'foa, 'vif> StaControl<'foa, 'vif> {
                 own_address: self.mac_address,
                 aid,
                 connection_config,
+                link,
             }));
         Ok(())
     }
@@ -205,5 +206,20 @@ impl<'foa, 'vif> StaControl<'foa, 'vif> {
     /// Override the PHY rate.
     pub fn override_phy_rate(&self, phy_rate: TxPhyRate) {
         self.sta_tx_rx.set_phy_rate(phy_rate);
+    }
+    /// The channel of the network joined (an access point beside the
+    /// station has to beacon on it). `None` while not
+    /// connected.
+    pub fn channel(&self) -> Option<u8> {
+        self.sta_tx_rx
+            .connection_state
+            .map_connection_info(|connection_info| connection_info.bss.channel)
+    }
+    /// What the current association granted (E8): QoS data frames, and
+    /// the HT rates the access point receives. `None` while not connected.
+    pub fn link(&self) -> Option<crate::ht::Link> {
+        self.sta_tx_rx
+            .connection_state
+            .map_connection_info(|connection_info| connection_info.link)
     }
 }

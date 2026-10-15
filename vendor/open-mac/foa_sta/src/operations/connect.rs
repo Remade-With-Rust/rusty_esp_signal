@@ -27,6 +27,7 @@ use ieee80211::{
 
 use crate::{
     ConnectionConfig, SecurityConfig, StaError, StaTxRx,
+    ht::{self, Link},
     bss::BSS,
     operations::{DEFAULT_SUPPORTED_RATES, DEFAULT_XRATES},
     rx_router::{StaRxRouterEndpoint, StaRxRouterOperation, StaRxRouterScopedOperation},
@@ -327,7 +328,7 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
         &self,
         router_operation: &mut StaRxRouterScopedOperation<'foa, 'vif, 'params>,
         bss: &BSS,
-    ) -> Result<AssociationID, StaError> {
+    ) -> Result<(AssociationID, Link), StaError> {
         router_operation.transition(
             StaRxRouterOperation::Associating {
                 own_address: self.connection_parameters.own_address
@@ -367,7 +368,15 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
                 .unwrap();
         }
 
-        let written = assoc_request_frame.finish(false).unwrap();
+        let mut written = assoc_request_frame.finish(false).unwrap();
+        // E8: an HT station is a QoS station, so both elements or neither
+        // (`ht::negotiated` grants HT only with WMM)
+        if crate::ask_ht() {
+            for element in [&ht::HT_CAPABILITIES_ELEMENT[..], &ht::WMM_INFORMATION_ELEMENT[..]] {
+                tx_buffer[written..written + element.len()].copy_from_slice(element);
+                written += element.len();
+            }
+        }
         // Transmit an association request and wait for the association response.
         let response = self
             .do_bidirectional_connection_step(router_operation, tx_buffer, written)
@@ -387,7 +396,17 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
                 "Successfully associated with {}, AID: {:?}.",
                 bss.bssid, aid
             );
-            return Ok(aid);
+            // what the access point granted, from its own elements; nothing
+            // when the station did not ask
+            let link = if crate::ask_ht() {
+                response
+                    .mpdu_buffer()
+                    .get(ht::ASSOCIATION_RESPONSE_ELEMENTS..)
+                    .map_or(Link::default(), ht::negotiated)
+            } else {
+                Link::default()
+            };
+            return Ok((aid, link));
         }
         debug!(
             "Failed to associate with {}, status: {:?}.",
@@ -406,12 +425,26 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
         self.sta_tx_rx
             .interface_control
             .set_filter(RxFilterBank::Bssid, *bss.bssid);
+        // Group frames other than broadcast already reach the stack with the
+        // filters as they are (P6, 2026-10-09: 56 in the first seconds).
+        // `set_filtered_address_types(true, false)` here took that away: 4
+        // broadcast frames, then none, ARP to the station unanswered.
+        // E8: the access point's block-acks reach the station, which reads
+        // their bitmaps to resend what an A-MPDU lost
+        if crate::ampdu_built() {
+            self.sta_tx_rx.interface_control.set_control_frame_filter(
+                &foa::esp_wifi_hal::ll::ControlFrameFilterConfig {
+                    block_ack: true,
+                    ..Default::default()
+                },
+            );
+        }
     }
     async fn run(
         self,
         rx_router_endpoint: &'params mut StaRxRouterEndpoint<'foa, 'vif>,
         bss: &BSS,
-    ) -> Result<AssociationID, StaError> {
+    ) -> Result<(AssociationID, Link), StaError> {
         debug!(
             "Connecting to {} on channel {} with MAC address {}.",
             bss.bssid, bss.channel, self.connection_parameters.own_address
@@ -468,7 +501,7 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
         self.do_auth(&router_operation, bss).await?;
 
         // Try to associate with the AP.
-        let aid = self.do_assoc(&mut router_operation, bss).await?;
+        let (aid, link) = self.do_assoc(&mut router_operation, bss).await?;
 
         #[cfg(feature = "rsn")]
         if let Some((pmk, gtk_key_slots, ptk_key_slot)) = pmk_and_key_slots {
@@ -489,7 +522,7 @@ impl<'foa, 'vif, 'params> ConnectionOperation<'foa, 'vif, 'params> {
         router_operation.complete();
         bringup_operation.complete();
 
-        Ok(aid)
+        Ok((aid, link))
     }
 }
 impl Drop for ConnectionOperation<'_, '_, '_> {
@@ -507,7 +540,7 @@ pub fn connect<'foa, 'vif, 'params>(
     rx_router_endpoint: &'params mut StaRxRouterEndpoint<'foa, 'vif>,
     bss: &'params BSS,
     connection_parameters: &'params ConnectionParameters<'params>,
-) -> impl Future<Output = Result<AssociationID, StaError>> {
+) -> impl Future<Output = Result<(AssociationID, Link), StaError>> {
     ConnectionOperation {
         sta_tx_rx,
         connection_parameters,
