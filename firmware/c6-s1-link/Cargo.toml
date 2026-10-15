@@ -54,6 +54,9 @@ chip-esp32 = [
 # the esp32c6 feature, and the -esp crate's esp-hal feature turns on the
 # backends, which cargo then compiles for this chip through feature unification.
 esp-hal = { version = "=1.2.0", features = ["unstable", "rt"] }
+# E5's P4 bisection: our own ESP-NOW frame layout, so the relay counts
+# frames this firmware arms by hand the same way it counts the blob's.
+espnow_frame = { path = "../../vendor/open-mac/espnow_frame" }
 esp-radio = { version = "=1.0.0-beta.1", features = ["wifi", "esp-now", "unstable"] }
 esp-rtos = { version = "=0.4.0", features = ["esp-radio", "embassy"] }
 esp-alloc = "=0.11.0"
@@ -71,6 +74,10 @@ embassy-executor = "0.10"
 # the verdict kept to be said again (VERDICT in main.rs)
 critical-section = "1"
 embassy-time = "0.5"
+# E5's P4: sampling the transmit slot WHILE the blob transmits, which is
+# the only way to see the bits it sets to launch a frame (they are clear
+# again by the time a send returns).
+embassy-futures = "0.1"
 
 # The Janus core and the Track B backends. Depend on the local crates by path
 # inside the firmware; the core reaches its siblings (rusty_esp_core,

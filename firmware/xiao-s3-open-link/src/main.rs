@@ -41,7 +41,7 @@ use esp_println::println;
 use rusty_esp_core::Micros;
 use rusty_esp_mid_core::key::DeviceKey;
 use rusty_esp_signal_esp::hal::rng::EspTrng;
-use rusty_esp_signal_open::raw_link::{self, BROADCAST, RawLink};
+use rusty_esp_signal_open::raw_link::{self, BROADCAST, HtRate, OfdmRate, RawLink, TxPhyRate};
 
 /// `JANUS_MAC_SNAPSHOT` (E5's P2 method): the MAC's registers as the radio
 /// stack left them.
@@ -121,6 +121,63 @@ async fn beacon(link: &mut RawLink, count: u32, gap_us: u64, length: usize) {
     );
     raw_line();
     println!("RESULT: beacons done sent={count} failed={failed}");
+}
+
+/// `JANUS_SWEEP=count,gap_us` at build time (E8): instead of S1, send
+/// `count` test frames ([`RawLink::send_test_frame`]) at every length of
+/// [`SWEEP_LENGTHS`] and every rate of [`SWEEP_RATES`], `gap_us` apart, and
+/// the whole sweep again every 20 s, for a C6 listening on the channel
+/// (`c6-open-rx` with `JANUS_E8_TALLY`) to tally which arrive. Whether a
+/// long frame leaves this radio whole, and whether its HT frames decode
+/// worse than its 802.11g ones at the same modulation, without an access
+/// point in the way.
+fn sweep_plan() -> Option<(u32, u64)> {
+    let mut parts = option_env!("JANUS_SWEEP")?.split(',');
+    let count = parts.next()?.trim().parse().ok()?;
+    let gap_us = parts.next()?.trim().parse().ok()?;
+    Some((count, gap_us))
+}
+
+/// MPDU lengths, FCS not counted.
+const SWEEP_LENGTHS: [usize; 10] = [1500, 1800, 1900, 1950, 2000, 2050, 2100, 2500, 3000, 3600];
+
+/// (code, rate): 1 OFDM 54 and 2 MCS 6 long GI (64-QAM 3/4 both), 3 OFDM 6
+/// and 4 MCS 0 long GI (BPSK 1/2 both).
+fn sweep_rates() -> [(u8, TxPhyRate); 4] {
+    [
+        (1, TxPhyRate::Ofdm(OfdmRate::Mbits54)),
+        (2, TxPhyRate::Ht(HtRate::new(6, false, false).expect("MCS 6"))),
+        (3, TxPhyRate::Ofdm(OfdmRate::Mbits6)),
+        (4, TxPhyRate::Ht(HtRate::new(0, false, false).expect("MCS 0"))),
+    ]
+}
+
+async fn sweep(link: &mut RawLink, count: u32, gap_us: u64) -> ! {
+    let mut round = 0u32;
+    loop {
+        round += 1;
+        let started = embassy_time::Instant::now();
+        let mut sent = 0u32;
+        let mut refused = 0u32;
+        let mut sequence = 0u32;
+        for &length in &SWEEP_LENGTHS {
+            for (code, rate) in sweep_rates() {
+                for _ in 0..count {
+                    match link.send_test_frame(length, rate, code, sequence).await {
+                        Ok(()) => sent += 1,
+                        Err(_) => refused += 1,
+                    }
+                    sequence += 1;
+                    Timer::after(Duration::from_micros(gap_us)).await;
+                }
+            }
+        }
+        println!(
+            "E8 sweep round={round} sent={sent} refused={refused} per_cell={count} elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
+        Timer::at(started + Duration::from_secs(20)).await;
+    }
 }
 
 fn now() -> Micros {
@@ -203,6 +260,10 @@ async fn main(spawner: embassy_executor::Spawner) {
         loop {
             Timer::after(Duration::from_secs(60)).await;
         }
+    }
+
+    if let Some((count, gap_us)) = sweep_plan() {
+        sweep(&mut link, count, gap_us).await;
     }
 
     if let Some((count, gap_us, length)) = beacon_plan() {

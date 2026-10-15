@@ -23,6 +23,8 @@ esp-bootloader-esp-idf = { version = "=0.6.0", features = ["esp32c6"] }
 # UART: the C6 DevKitC's UART socket is the bench's console (as c6-s1-link)
 esp-println = { version = "=0.18.0", default-features = false, features = ["esp32c6", "uart"] }
 esp-backtrace = { version = "=0.20.0", features = ["esp32c6", "panic-handler", "println"] }
+# our own ESP-NOW frame layout, so an independent receiver can count what we send
+espnow_frame = { path = "../../vendor/open-mac/espnow_frame" }
 
 [profile.release]
 opt-level = "s"

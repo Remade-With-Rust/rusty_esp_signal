@@ -179,6 +179,7 @@ version = "0.1.0"
 dependencies = [
  "critical-section",
  "embassy-executor",
+ "embassy-futures",
  "embassy-time",
  "esp-alloc",
  "esp-backtrace",
@@ -187,6 +188,7 @@ dependencies = [
  "esp-println",
  "esp-radio",
  "esp-rtos",
+ "espnow_frame",
  "rusty_esp_core",
  "rusty_esp_mid-core",
  "rusty_esp_signal-core",
@@ -1296,6 +1298,10 @@ dependencies = [
  "critical-section",
  "vcell",
 ]
+
+[[package]]
+name = "espnow_frame"
+version = "0.1.0"
 
 [[package]]
 name = "ff"
@@ -2584,9 +2590,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[patch.unused]]
-name = "rusty_esp_alloc"
+name = "rusty_esp_mid-esp"
 version = "0.1.2"
 
 [[patch.unused]]
-name = "rusty_esp_mid-esp"
+name = "rusty_esp_alloc"
 version = "0.1.2"

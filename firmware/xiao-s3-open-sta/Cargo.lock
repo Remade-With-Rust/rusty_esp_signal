@@ -57,6 +57,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c583acf993cf4245c4acb0a2cc2ab1f9cc097de73411bb6d3647ff6af2b1013d"
 
 [[package]]
+name = "ap_core"
+version = "0.1.0"
+dependencies = [
+ "ieee80211",
+ "llc-rs",
+ "sta_handshake",
+]
+
+[[package]]
 name = "as-slice"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -554,6 +563,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "edge-dhcp"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7a6f957c944e22c2c1904618863702e8af302953454ac738e6df0c7038c4d88"
+dependencies = [
+ "edge-nal",
+ "edge-raw",
+ "embassy-futures",
+ "embassy-time",
+ "heapless 0.9.3",
+ "num_enum",
+ "rand_core 0.10.1",
+]
+
+[[package]]
+name = "edge-nal"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "590182a48668fa4988cd97b9b500bcc9a213e9b122b4e0008e934b3916c64031"
+dependencies = [
+ "embassy-time",
+ "embedded-io-async 0.7.0",
+]
+
+[[package]]
+name = "edge-nal-embassy"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79ad23a63d41bdda528a3b725ae9119ce58abeea265b41fc7f8b254c8d07b2a2"
+dependencies = [
+ "edge-nal",
+ "embassy-futures",
+ "embassy-net",
+ "embedded-io-async 0.7.0",
+]
+
+[[package]]
+name = "edge-raw"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c87c23c2a56d22076013bbf039425369d05bdb9ac833e3249c48008a46e1f95c"
+
+[[package]]
 name = "elliptic-curve"
 version = "0.13.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1041,8 +1093,6 @@ checksum = "911aadae41ec99104efa865bd0b6e486b4b735999f9b571963748a46d16495ab"
 [[package]]
 name = "esp-phy"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08a925ab42e72eaaa77167352bab7c2bd528ea962a0eb40501324f6db594f88c"
 dependencies = [
  "document-features",
  "embassy-sync 0.8.0",
@@ -1298,6 +1348,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "espnow_frame"
+version = "0.1.0"
+
+[[package]]
 name = "ether-type"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1352,6 +1406,7 @@ dependencies = [
  "esp-hal",
  "esp-wifi-hal",
  "futures-util",
+ "heapless 0.9.3",
  "ieee80211",
  "portable-atomic",
  "static_cell",
@@ -1376,6 +1431,7 @@ dependencies = [
  "ieee80211",
  "llc-rs",
  "portable-atomic",
+ "sta_handshake",
 ]
 
 [[package]]
@@ -1536,8 +1592,6 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 [[package]]
 name = "ieee80211"
 version = "0.5.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7418f9be3522922d6e87647eacd5275641f6c225cf4a444a64c31e366ac37559"
 dependencies = [
  "aes-kw",
  "bitfield-struct 0.11.0",
@@ -1846,6 +1900,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "num_enum"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d0bca838442ec211fa11de3a8b0e0e8f3a4522575b5c4c06ed722e005036f26"
+dependencies = [
+ "num_enum_derive",
+ "rustversion",
+]
+
+[[package]]
+name = "num_enum_derive"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "object"
 version = "0.37.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2129,14 +2204,25 @@ dependencies = [
 name = "rusty_esp_signal-open"
 version = "0.3.0"
 dependencies = [
+ "ap_core",
+ "edge-dhcp",
+ "edge-nal",
+ "edge-nal-embassy",
  "embassy-executor",
+ "embassy-futures",
  "embassy-net",
+ "embassy-net-driver",
+ "embassy-net-driver-channel",
+ "embassy-sync 0.8.0",
  "embassy-time",
  "esp-hal",
  "esp-wifi-hal",
+ "espnow_frame",
  "foa",
  "foa_sta",
+ "ieee80211",
  "rusty_esp_signal-core",
+ "sta_handshake",
  "static_cell",
 ]
 
@@ -2347,6 +2433,14 @@ checksum = "f39bb07107650fb128f05f033a97212e946a3c0625cc729c97ed586bf7f226a3"
 dependencies = [
  "somni-expr",
  "somni-parser",
+]
+
+[[package]]
+name = "sta_handshake"
+version = "0.1.0"
+dependencies = [
+ "ieee80211",
+ "llc-rs",
 ]
 
 [[package]]
@@ -2717,9 +2811,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
 
 [[patch.unused]]
-name = "rusty_esp_mid-esp"
+name = "rusty_esp_alloc"
 version = "0.1.2"
 
 [[patch.unused]]
-name = "rusty_esp_alloc"
+name = "rusty_esp_mid-esp"
 version = "0.1.2"

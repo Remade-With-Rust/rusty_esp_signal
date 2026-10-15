@@ -60,6 +60,8 @@ use rusty_esp_signal_esp::hal::rng::EspTrng;
 #[allow(dead_code)]
 #[path = "../../common/mac_snapshot.rs"]
 mod mac_snapshot;
+#[path = "../../common/raw_tx.rs"]
+mod raw_tx;
 
 /// The run's `RESULT:` line, kept to be said again: a reader that joins after
 /// the run (the C6-DevKitC's bridge loses what is printed while the port is
@@ -104,6 +106,33 @@ fn beacon_plan() -> Option<(u32, u64, usize)> {
     Some((count, gap_us, length.clamp(7, 250)))
 }
 
+/// The descriptor and frame our own arming uses, in DRAM where the MAC's
+/// DMA can reach them (E5's P4 bisection).
+static mut OUR_DESC: esp_hal::dma::DmaDescriptor = esp_hal::dma::DmaDescriptor::EMPTY;
+static mut OUR_BUF: [u8; 256] = [0; 256];
+
+/// The window `JANUS_TX_WINDOW` watches while a frame is in the air, as a
+/// bare hex address without the `0x` (`JANUS_TX_WINDOW=600a4000`). 256
+/// words, so a 1 KB window a run.
+fn window_base() -> u32 {
+    let Some(text) = option_env!("JANUS_TX_WINDOW") else {
+        return 0x600a_4c00;
+    };
+    let mut value = 0u32;
+    let mut any = false;
+    for b in text.trim().as_bytes() {
+        let digit = match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' => b - b'a' + 10,
+            b'A'..=b'F' => b - b'A' + 10,
+            _ => continue,
+        };
+        value = value.wrapping_mul(16).wrapping_add(digit as u32);
+        any = true;
+    }
+    if any { value } else { 0x600a_4c00 }
+}
+
 async fn beacon(
     sender: &mut esp_radio::esp_now::EspNowSender,
     count: u32,
@@ -117,17 +146,199 @@ async fn beacon(
     frame[..3].copy_from_slice(b"JBB");
     let started = embassy_time::Instant::now();
     let mut failed = 0u32;
+    // the last sequence the blob sends, which is the one a relaunch repeats
+    let count_hint = count.saturating_sub(1);
     for sequence in 0..count {
         Timer::at(started + Duration::from_micros(u64::from(sequence) * gap_us)).await;
         frame[3..7].copy_from_slice(&sequence.to_be_bytes());
-        if sender
-            .send_async(&esp_radio::esp_now::BROADCAST_ADDRESS, &frame[..length])
-            .await
-            .is_err()
-        {
+        // E5's P4: what the blob writes into a transmit slot, sampled right
+        // after the first few launches
+        // E5's P4: a different length each time, so the register that tracks
+        // it can be told from the rest
+        let this_length = if mac_snapshot::TX_WATCH {
+            [60usize, 100, 150, 200, 250][(sequence as usize) % 5].min(length)
+        } else {
+            length
+        };
+        if mac_snapshot::TX_WATCH && sequence < 10 {
+            mac_snapshot::tx_watch("before");
+        }
+        // E5's P4: the slot sampled WHILE the frame goes out. P4 assumed
+        // bits 30 and 31 of `plcp0` are "valid" and "enable" from the S3's
+        // register map and never saw them set -- a send returns with them
+        // already cleared. A frame is about a millisecond of air, so
+        // sampling concurrently catches whatever the blob really sets.
+        let sampled = if mac_snapshot::TX_WATCH && sequence < 10 {
+            let slot = raw_tx::SLOT_BASE + raw_tx::BLOB_SLOT * raw_tx::SLOT_STRIDE;
+            let send = sender.send_async(&esp_radio::esp_now::BROADCAST_ADDRESS, &frame[..this_length]);
+            // `JANUS_TX_WINDOW=0xADDRESS` widens the aperture from the slot
+            // to a window, to find the write that launches a frame
+            let sample = async {
+                match option_env!("JANUS_TX_WINDOW") {
+                    Some(_) => raw_tx::sample_window_while(window_base(), raw_tx::WINDOW_WORDS).await,
+                    None => raw_tx::sample_while(slot).await,
+                }
+            };
+            match embassy_futures::select::select(send, sample).await {
+                embassy_futures::select::Either::First(r) => (r.is_err(), true),
+                embassy_futures::select::Either::Second(()) => (false, true),
+            }
+        } else {
+            (
+                sender
+                    .send_async(&esp_radio::esp_now::BROADCAST_ADDRESS, &frame[..this_length])
+                    .await
+                    .is_err(),
+                false,
+            )
+        };
+        if sampled.1 {
+            if option_env!("JANUS_TX_WINDOW").is_some() {
+                raw_tx::report_window(this_length as u32, raw_tx::WINDOW_WORDS);
+            } else {
+                raw_tx::report_samples(this_length as u32);
+            }
+        }
+        if sampled.0 {
             failed += 1;
         }
+        if mac_snapshot::TX_WATCH && sequence < 10 {
+            println!("TXWATCH len={this_length}");
+            mac_snapshot::tx_watch("after");
+            // the frame on the air is the payload plus ESP-NOW's 39 octets
+            // of headers, and the radio appends a 4-octet FCS
+            let n = this_length as u32;
+            mac_snapshot::find_value("len", &[n, n + 39, n + 43, n + 4]);
+            // the MPDU on the air is the payload plus ESP-NOW's headers; the
+            // probe adds the FCS's four, so it is testing n + 43
+            mac_snapshot::plcp_probe("blob", n + 39);
+            mac_snapshot::plcp_watch("blob", n);
+            mac_snapshot::txq_state("blob");
+            // E5's P4: the blob's own descriptor against a frame whose
+            // length we chose, so the descriptor's field order is read off
+            // the hardware instead of assumed from esp-hal's layout
+            raw_tx::watch_blob_descriptor(
+                raw_tx::SLOT_BASE + raw_tx::BLOB_SLOT * raw_tx::SLOT_STRIDE,
+                this_length as u32 + 39,
+            );
+            if sequence == 0 && option_env!("JANUS_TX_DUMP").is_some() {
+                // the whole MAC block, after ONE frame of the blob's has
+                // gone out: the reference state for P4's comparison
+                mac_snapshot::dump_range("blob", 0x600a_4000, 2048);
+                // twice, as our own side is dumped twice: a dump of 800
+                // lines at 115200 can drop a burst of them, and a dropped
+                // line is indistinguishable from a register reading zero
+                mac_snapshot::dump_range("blobagain", 0x600a_4000, 2048);
+                // and the modem subsystem BEYOND the MAC: the clocks, the
+                // PHY and the analog I2C master all live out here, and the
+                // MAC's own block is now proven not to hold the answer
+                mac_snapshot::dump_range("blobwide", 0x600a_6000, 10240);
+                mac_snapshot::dump_range("blobwideagain", 0x600a_6000, 10240);
+                // the modem region BELOW the MAC, the last uncovered window
+                mac_snapshot::dump_range("bloblow", 0x600a_0000, 4096);
+                mac_snapshot::dump_range("bloblowagain", 0x600a_0000, 4096);
+            }
+        }
     }
+    // E5's P4, the bisection: OUR OWN slot arming (firmware/common/raw_tx.rs,
+    // the very same code c6-open-rx runs) on the MAC that esp-radio has just
+    // brought up and transmitted through. If a frame radiates HERE and not
+    // under our own bring-up, the arming sequence is right and the whole of
+    // the missing step is in bring-up. The blob's own slot is used, after its
+    // beacons are finished, so nothing is racing us for it.
+    // `JANUS_OURTX=count`.
+    // E5's P4, the tightest test: ONE write, bits 30-31 added to whatever
+    // `plcp0` already holds, on the blob's own descriptor still carrying its
+    // last beacon. A duplicate of that beacon's sequence number in the
+    // relay's log is the frame. `JANUS_RELAUNCH=count`.
+    if let Some(plan) = option_env!("JANUS_RELAUNCH") {
+        let count: u32 = plan.trim().parse().unwrap_or(20);
+        let slot = raw_tx::SLOT_BASE + raw_tx::BLOB_SLOT * raw_tx::SLOT_STRIDE;
+        println!(
+            "RELAUNCH begin count={count} last_beacon_sequence={} (NOT Wi-Fi certified)",
+            count_hint
+        );
+        for i in 0..count {
+            let (plcp0, err, cmp) = raw_tx::relaunch(slot);
+            if i < 6 {
+                println!("RELAUNCH {i} plcp0_after={plcp0:08x} err={err:08x} cmp={cmp:08x}");
+            }
+            Timer::after(Duration::from_millis(50)).await;
+        }
+        println!("RELAUNCH done count={count}");
+    }
+
+    if let Some(plan) = option_env!("JANUS_OURTX") {
+        let count: u32 = plan.trim().parse().unwrap_or(8);
+        let slot = raw_tx::SLOT_BASE + raw_tx::BLOB_SLOT * raw_tx::SLOT_STRIDE;
+        let mut me = [0u8; 6];
+        me.copy_from_slice(esp_hal::efuse::base_mac_address().as_bytes());
+        let (mut took, mut complete) = (0u32, 0u32);
+        println!("RAWTX begin on=blob-brought-up-mac count={count} (NOT Wi-Fi certified)");
+        // the blob's own descriptor, read before we overwrite the slot, and
+        // then armed AS IT STANDS: it still holds a frame the blob sent
+        let blob_descriptor = raw_tx::describe_blob_descriptor(slot);
+        // the poll loop calibrated against embassy's clock, so `polls` below
+        // reads as a time: a 107-octet frame is about a millisecond of air
+        // at 1 Mbit/s, so a slot handed back in a few microseconds cannot
+        // have transmitted anything whatever the status registers say
+        let per_us = raw_tx::polls_per_us(
+            || embassy_time::Instant::now().as_micros(),
+            200_000,
+        );
+        println!("RAWTX calibration polls_per_us={per_us}");
+        for sequence in 0..4u32 {
+            let verdict = raw_tx::arm_foreign_descriptor(slot, blob_descriptor, 50_000);
+            if sequence < 2 {
+                raw_tx::report("blobdesc-armed", slot, 0, &verdict);
+            }
+            Timer::after(Duration::from_millis(20)).await;
+        }
+        for sequence in 0..count {
+            // tag `R`: ours, on a MAC the blob initialised. The relay
+            // reports the tag, so this can never be read as a blob frame
+            // (`B`) or as one from our own bring-up (`O`).
+            let mut body = [0xa5u8; 64];
+            body[..3].copy_from_slice(b"JBR");
+            body[3..7].copy_from_slice(&sequence.to_be_bytes());
+            // SAFETY: single-threaded here; the hardware owns the descriptor
+            // only until the enable bit clears, which `arm` waits for
+            let (desc, buf) = unsafe { (&mut *(&raw mut OUR_DESC), &mut *(&raw mut OUR_BUF)) };
+            let Some(n) =
+                espnow_frame::write(buf, &espnow_frame::BROADCAST, &me, [0, 0, 0, 0], &body)
+            else {
+                continue;
+            };
+            if option_env!("JANUS_TX_INPLACE").is_some() {
+                // the frame into the descriptor the slot already points at
+                let (descriptor, buffer) = raw_tx::arm_in_place(slot, &buf[..n]);
+                Timer::after(Duration::from_millis(5)).await;
+                if sequence < 4 {
+                    raw_tx::report_in_place("inplace", descriptor, buffer, n);
+                }
+            } else if option_env!("JANUS_TX_DOORBELL").is_some() {
+                // plcp0 holds the descriptor, config starts the frame
+                raw_tx::arm_by_config(slot, desc, buf, n, sequence % 4);
+                if sequence < 4 {
+                    raw_tx::report_after("doorbell", slot, n);
+                }
+            } else {
+                let verdict = raw_tx::arm(slot, desc, buf, n, 50_000);
+                if verdict.dma_read_the_frame() {
+                    took += 1;
+                }
+                if verdict.complete & 0xffff != 0 {
+                    complete += 1;
+                }
+                if sequence < 4 {
+                    raw_tx::report("blobmac", slot, n, &verdict);
+                }
+            }
+            Timer::after(Duration::from_millis(20)).await;
+        }
+        println!("RAWTX RESULT on=blob-brought-up-mac of={count} dma_took_frame={took} tx_complete={complete}");
+    }
+
     println!(
         "S1 beacon elapsed_ms={} sent={count} failed={failed}",
         started.elapsed().as_millis()
@@ -221,6 +432,16 @@ async fn main(_spawner: embassy_executor::Spawner) {
     }
     if let Some((count, gap_us, length)) = beacon_plan() {
         beacon(&mut sender, count, gap_us, length).await;
+        // E5's P4: the MAC as the blob leaves it once it HAS transmitted, to
+        // diff against ours after our own transmit
+        #[cfg(feature = "chip-esp32c6")]
+        if mac_snapshot::TX_WATCH {
+            let after = mac_snapshot::take(&mac_snapshot::C6_REGISTERS);
+            loop {
+                mac_snapshot::print("blobtx", &mac_snapshot::C6_REGISTERS, &after);
+                Timer::after(Duration::from_secs(15)).await;
+            }
+        }
         loop {
             Timer::after(Duration::from_secs(60)).await;
         }
