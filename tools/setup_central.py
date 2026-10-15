@@ -21,7 +21,7 @@ Scenarios:
     second-writer   while a session is in flight: is anyone else let in?
     lockout         wrong codes until the device closes its window
 
-Needs bleak (a venv: F:/coding/janus-scratch/venv-ble).
+Needs bleak (a venv: E:/coding/janus-scratch/venv-ble).
 """
 import argparse
 import asyncio

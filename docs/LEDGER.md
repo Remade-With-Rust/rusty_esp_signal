@@ -2246,3 +2246,263 @@ prize.
 lost 1.2 beacons per 1,000 against the blob's 23.7 (E6); the access point
 answers a round trip in 2 ms p50 (E3's P7); the ROM beat our code on 19 of
 21 routines and was adopted there (X10).
+
+## E8: HT, QoS data and A-MSDU on the station's transmit, measured (2026-10-08)
+
+The station (C15) asked for HT and sent QoS data (arm B, short guard
+interval; arm E, the long one), or added two-packet A-MSDUs (arm C), each
+against the control (arm A, 802.11g as E1 left it), alternated on the
+bench XIAO over the owner's phone hotspot. Every image carried E6's 5 dBm
+cap, and the laptop was on the hotspot's 2.4 GHz side (channel 6) for
+every run (the runner re-does a run whose band moves; none did), so the
+hotspot relays each board frame on the board's own channel: these numbers
+compare with each other, not with E1's 5 GHz table. NOT Wi-Fi certified.
+
+**Board -> laptop, Mbit/s (10,000 x 1,400 B), pairs from the same round:**
+
+| pair | A at rest | HT at rest | A under the stream | HT under the stream |
+|---|---:|---:|---:|---:|
+| 1 (B) | 7.75 | 5.08 | 5.08 | 7.40 |
+| 2 (B) | 7.82 | 4.95 | 7.13 | 6.51 |
+| 3 (B) | 5.78 | 6.91 | 2.95 | 6.09 |
+| 4 (E) | 5.53 | 3.84 | 4.46 | 7.60 |
+
+A's fifth run read 9.27 / 8.25; E's second did not finish (the board and
+the laptop both lost the hotspot under the stream). The run-to-run spread
+(A alone: 5.5 to 9.3 at rest) is larger than any difference between arms:
+**no win can be claimed for HT on this link.** HT was slower at rest in
+three pairs of four and faster under the stream in three of four; four
+pairs cannot call either.
+
+**What the counters do say (first attempts acknowledged, per rate):**
+
+| | 802.11g (A) | HT, short GI (B) | HT, long GI (E) |
+|---|---:|---:|---:|
+| 64-QAM 5/6: MCS 7 | — | 19 % | 9 % |
+| 64-QAM 3/4: 54 / MCS 6 | 72-84 % | 27-37 % | 63 % |
+| 64-QAM 2/3: 48 / MCS 5 | 80-96 % | 29-44 % | 83 % |
+| 16-QAM 3/4: 36 / MCS 4 | 86-94 % | 45-84 % | 90 % |
+
+At the same modulation and coding, this radio's HT frames are acknowledged
+less often than its 802.11g ones (MCS 6 63 % against 54 Mbit/s's ~80 %, the
+long guard interval), and the short guard interval costs a lot more on top.
+So B's and E's rate control settled at 14-43 Mbit/s where A held 48. Not
+yet known: whether HT frames leave the radio weaker at the cap (a per-rate
+power backoff in the PHY's tables), or the HT-mixed preamble costs that
+much on a busy 2.4 GHz channel. The hotspot offered a block-ack agreement
+seven times in B's first run, every one declined.
+
+**A-MSDU (arm C) does not work on this link, for two separate reasons**,
+both found with tools/e8-diag.py (one short burst, the serial captured):
+
+1. *Long frames are never acknowledged.* With 1,400-byte packets (a
+   ~2,950-byte frame) 150 of 151 A-MSDUs failed all eight attempts down to
+   MCS 0 (1,209 ACK timeouts) and the burst stalled; C1's 10,000-packet
+   burst left the board unreachable. Stepping the frame size: ~1,748 and
+   ~1,886 bytes on the air were acknowledged, ~2,028, ~2,068 and ~2,148
+   were not. The limit lies between 1,886 and 2,028 bytes, far short of the
+   3,839 an HT receiver must take; whether it is our transmitter or the
+   hotspot's receiver is not decidable without a capture.
+2. *Short A-MSDUs are acknowledged and then dropped.* With 600-byte packets
+   (~1,340-byte frames) all 150 were acknowledged and the laptop received
+   0 of 300. The key slot's SPP flag (`JANUS_OPEN_SPP=on`, the other
+   reading of a reverse-engineered register) changed nothing. An ACK comes
+   before decryption, so the frame arrived intact and was refused above
+   the MAC: CCMP's integrity over an A-MSDU, or a hotspot that takes no
+   A-MSDU from a station. Again a capture decides.
+
+The A-MSDU parser bug found while building this (big-endian Length) was
+real and is fixed regardless.
+
+**What stays:** every arm stays a build switch, all off by default; the
+station behaves as before unless built otherwise. **What would move it:**
+a third-board capture of B's and C's frames (HT-SIG, the power on air, the
+A-MSDU's CCMP), and the same A/B with the laptop on 5 GHz, where E1's
+per-attempt overhead was half of today's.
+
+Raw: `F:/jt-w/e0/c15-e8*-{measure.log,results.json,serial.txt}`,
+`F:/jt-w/e8/diag-*-serial.txt`.
+
+### E8 follow-up: the XIAO's frames heard by a C6 -- the transmitter is not the limit (2026-10-08)
+
+The open MAC on the XIAO (`xiao-s3-open-link`, `JANUS_SWEEP=50,2000`,
+channel 6, 3,885-byte TX buffers) broadcast tagged test frames at ten
+lengths, 1,500 to 3,600 bytes, at OFDM 54 / MCS 6 (64-QAM 3/4 both) and
+OFDM 6 / MCS 0 (BPSK 1/2 both), no access point involved; a C6 on the
+bench (`c6-open-rx`, `JANUS_E8_TALLY`, 4,092-byte receive buffers)
+tallied them. 75 s, about four sweep rounds:
+
+| length | OFDM 54 | MCS 6 | OFDM 6 | MCS 0 |
+|---:|---:|---:|---:|---:|
+| 1,500 | 171 | 166 | 182 | 95 |
+| 1,900 | 128 | 132 | 127 | 126 |
+| 2,000 | 128 | 138 | 135 | 133 |
+| 2,500 | 127 | 127 | 130 | 129 |
+| 3,000 | 113 | 106 | 145 | 133 |
+| 3,600 | 94 | 91 | 126 | 122 |
+
+Every frame at -66 to -67 dBm; **none corrupted** in any cell (the
+counting pattern intact to the tagged length); the longest frame received
+3,604 bytes (the C6 reports the length with the FCS). Cell counts differ
+because the capture caught rounds part-way, not by rate.
+
+So the two E8 failures above belong to the **phone hotspot**, not to this
+MAC: (1) a 3,600-byte frame leaves the XIAO whole at every rate, so the
+~1,886-2,028-byte limit is the hotspot's receiver; (2) MCS 6 is heard as
+often as OFDM 54 at the same signal, and every rate transmits at the same
+5 dBm under the cap (esp-phy's S3 table clamps each rate's entry to the
+option), so HT does not decode worse from this radio; the low HT success
+over the hotspot is that link's. The hotspot is the wrong stand-in for a home
+router: the A/B belongs against a real router. NOT Wi-Fi certified.
+
+### E8 follow-up: against the owner's ISP router, transmit power is the lever (2026-10-08, night)
+
+The phone hotspot sits beside the bench; the owner's ISP router is across
+the house (the board hears it at -55 dBm). Until tonight the open MAC had
+never been run against it (E1's runs were all on the hotspot). C15's arms
+over the router, the laptop on its 5 GHz side, board -> laptop:
+
+| | 5 dBm (E6's cap, esp-radio's default) | 20 dBm (`ESP_PHY_CONFIG_PHY_MAX_TX_POWER=80`) |
+|---|---:|---:|
+| the join | **failed** (327 MAC errors, RTS unanswered) | first attempt |
+| probe, 2,000 x 1,400 B | 0.40 Mbit/s, 59 % lost | **10.35-11.32 Mbit/s, 0.2 % lost** |
+| full run, at rest / under the stream | **0 of 10,000 / 0 of 10,000** (pings 100 % lost) | **7.61 / 7.33; repeat 8.59 / 7.73** |
+| first attempts acknowledged at 54 Mbit/s | 0 % | 79-84 % |
+| camera | -- | 14.6 / 12.8 fps |
+
+At 5 dBm the router does not hear the board: the RTS before the join's
+frames went unanswered (no join at all); with RTS off the join went through
+but frames still failed at every rate. At 20 dBm the unchanged firmware
+joins first time with no MAC errors. The link budget, not the MAC, decided
+it. E6's 5 dBm cap (D-E6, so an open-MAC cell transmits as an esp-radio one
+does) makes a cell across the house from its router unusable; esp-radio's
+cells at their default would be in the same place. This is the owner's
+decision to revisit: power is better a measured budget than a preset.
+
+At 20 dBm against the router: HT (long GI) 10.17 against the control's
+11.32 / 10.35 in single probes, no win (MCS 7 47 %, MCS 5 93 %); A-MSDU's
+~2,950-byte frames not acknowledged here either (993 of 1,047 failed),
+though a C6 receives the same frames whole: how access points receive our
+long frames stays open.
+
+Code from tonight: the expected-throughput control steps down at
+once from a rate under 30 % (it sat at 54 Mbit/s with 0 % acknowledged and
+every other rate unmeasured, so it never moved); `JANUS_OPEN_NO_RTS` as an
+off-by-default switch. NOT Wi-Fi certified.
+
+### E8, the A-MPDU rung: what aggregation is worth, and how the S3 sends one (2026-10-08, night)
+
+**The prize.** esp-radio at 20 dBm against the owner's ISP router, its A-MPDU
+transmit on (`R20`) and off (`N20`, `E0_AMPDU_TX=0`), everything else equal,
+board -> laptop (laptop on 5 GHz): full runs 11.0 / 7.34 Mbit/s at rest with
+it against 6.88 / 7.31 without (under the stream 7.92 / 5.31 against 6.59 /
+5.75); the probe runs below, one 3,000-packet burst each, 5.71 / 5.99 / 6.05
+/ 5.83 with it against 3.69 / 2.77 without. Aggregation is worth up to 2x on
+this link, never less than parity. The open MAC at 20 dBm against
+esp-radio with aggregation: 9.93 / 10.26 against 11.79 / 3.56 at rest (the
+channel swings), parity within the spread.
+
+**The method.** Observation on silicon only (no disassembly):
+`tools/e0/txprobe.rs`, built into esp-radio's C11 by `E0_TXPROBE=1`, reads
+the five transmit slots (`config`/`plcp0` at 0x60033CE4 + 8n, the 19-word
+block at 0x600341C8 + 0x4C n) every 40 us while the stack sends, follows
+`plcp0`'s descriptor chain in DRAM, and prints chained arms and single QoS
+data arms. Off: 0 of 22,370-29,599 arms chained. On: 4,227-5,587 of
+8,011-9,857 arms chained (3 subframes in every one printed).
+
+**How the S3 sends an A-MPDU** (esp-radio, HT MCS 5, TID 0, 3 x 1,482 B):
+- one slot arm, a **DMA chain, one descriptor per subframe**: bit 29 set in
+  every subframe's descriptor (`0xA0`/`0xE0` top byte against a single
+  frame's `0xC0`), EOF only on the last, the length counting an 8-byte prefix;
+- each subframe's buffer: **8-byte prefix** -- MPDU length with FCS (u16),
+  the subframe's sequence number (u16), four zero bytes -- then the MPDU
+  (802.11 header at byte 8). No delimiter in memory: the MAC builds them;
+- `plcp0`: wait-for-ACK (bit 24) **clear**, bit 25 **set** (new; the block-ack
+  expectation is the reading to test), bit 27 set (RTS: esp-radio protects
+  its aggregates);
+- HT-SIG (block +0x08): MCS, the **whole A-MPDU's length** (0x116E = 4,462),
+  high byte 0x0F where ours writes 0x07 -- one more bit, 0x08000000, HT-SIG's
+  Aggregation bit by its position;
+- PLCP1 (block +0x00): the A-MPDU length & 0xFFF, the HT rate, bit 25;
+  block +0x18: `len | 0x400000 | mcs << 28` as ours, with the A-MPDU length;
+- block +0x3C: the first subframe's sequence number (+3 per A-MPDU);
+- the first subframe alone carries a duration (48 us: the block-ack's time).
+Words +0x34/+0x38 hold an address and are not recorded; +0x40..+0x48 vary
+per arm (a time and two unknowns) and are next to read.
+
+The next step is the open MAC's: an ADDBA originator (the block-ack
+agreement), then one chained arm laid out as above. NOT Wi-Fi certified.
+
+### E8: the open MAC's A-MPDU -- +50 % against the owner's ISP router, in-run A/B (2026-10-09)
+
+The open MAC now sends A-MPDUs on the ESP32-S3: an ADDBA agreement on TID 0 (the router answered the second
+request; window 64), TID 0 numbered by the station, up to three subframes
+in one TX buffer chained as esp-radio chains them, the router's block-acks
+read through the control-frame filter, unacknowledged subframes resent from
+the bitmap (two more rounds), a BlockAckReq after any given up on, the rate
+judged by subframes acknowledged, and the sender woken by the block-ack.
+
+**Consecutive full runs could not resolve it**: on the router the channel
+moved more between 7-minute runs (2.6 to 10.6 Mbit/s for the same arm)
+than any arm differed. So the A/B moved inside one boot: a run-time switch
+(`set_ampdu_enabled`, UDP `A`+0/1 in E1's probe) and `tools/e8-diag.py
+--abab 8`, eight pairs of 3,000 x 1,400 B bursts, aggregation on and off in
+alternating order, each pair on the same channel (laptop on 5 GHz, 20 dBm,
+HT long GI):
+
+| set | A-MPDU on, mean | off, mean | pairs won by on | delivered on / off |
+|---|---:|---:|---:|---:|
+| 1 | **7.90** Mbit/s | 5.60 | 8 of 8 | 23,970 / 23,848 of 24,000 |
+| 2 | **8.92** Mbit/s | 5.58 | 7 of 8 | 23,986 / 23,880 of 24,000 |
+
+15 of 16 pairs, +50 % on the means, a peak of 11.72 Mbit/s; set 2's boot
+sent 9,000 A-MPDUs (27,000 subframes), resent 2,606, gave up on 5 (4
+BlockAckReqs). The earlier faults each run found and fixed on the way: no
+answer to the first ADDBA (now asked every 2 s), 11 % of subframes lost
+without resends (now from the bitmap), a stalled window after subframes
+were given up (0 of 10,000 delivered; now a BlockAckReq), the rate held
+too high (now per subframe), a 300 us poll per A-MPDU (now a signal).
+Without RTS before the aggregate the resends doubled (5,835 against 3,095):
+RTS stays, as esp-radio does it.
+
+A-MPDU stays a build switch (`JANUS_OPEN_AMPDU=on`, with `JANUS_OPEN_HT=on`
+and `FOA_CONFIG_TX_BUFFER_SIZE=4500`), off by default: one router measured;
+the phone hotspot refused long frames in the A-MSDU work. NOT Wi-Fi
+certified.
+
+## A station and an access point on one radio, an hour (2026-10-09)
+
+On the bench XIAO with the owner's go, joined to the owner's ISP router by
+C13's setup. The image: C15 with E0's probes and the access point hosted
+beside the station once it joined (`stack_beside_access_point`,
+`access_point::hosted_beside`), built at 20 dBm (the measurement arm of
+D-E6; the router is
+across the house). The station on FoA's first virtual interface, the
+access point (WPA2, its own 10.71.0.1/24 and DHCP) on the
+second, on the station's channel (11). Nothing forwarded between them.
+Sixty one-minute windows, alternately busy (the
+laptop pulling uplink bursts from the station) and idle.
+
+| | busy (30 min) | idle (30 min) |
+|---|---|---|
+| beacons a minute | 586.0 | 586.1 |
+| mean delay after TBTT | 390 µs | 213 µs |
+| worst delay | 53.5 ms | 53.2 ms |
+| station uplink | 9.2 Mbit/s (7.7-9.6 a window) | -- |
+
+Over the hour: 3,600 s up without a reset, the station joined once (one
+attempt), 35,117 beacons, **no TBTT skipped**, 340 more than 2 ms late
+(0.97 %), 46 beacon transmissions failed (0.13 %). Control, the library
+access point alone (E3's run of 2026-10-07): 68 of 3,128 late (2.2 %), one
+TBTT skipped, worst 38.7 ms. So the station beside it costs the beacons
+nothing measurable in count or lateness; station traffic moves the mean
+delay by about 180 µs; the ~40-50 ms worst cases are there with the access
+point alone and with the station idle, so they are not the station's
+(cause not traced). The station's uplink beside a beaconing access point is
+inside E8's single-role range against the same router (7.6-11.3 Mbit/s,
+consecutive runs). No station joined the access point in this run. A
+first reading of the run's own tool
+said "not held": it counted the boot banner (`rst:0x15`, the monitor
+attaching) as a reset; it now looks only after the access point is up.
+NOT Wi-Fi
+certified.
