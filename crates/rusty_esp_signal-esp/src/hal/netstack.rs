@@ -107,6 +107,49 @@ pub fn access_point_config(
     ))
 }
 
+/// Both roles at once: the board joins `station_ssid` and hosts `ap_ssid`,
+/// which is what a relay between two networks is. The radio starts both when the firmware
+/// hands this to `WifiController::set_config`, and each role then has its own
+/// [`Interface`] -- [`Interface::station`] and [`Interface::access_point`] --
+/// so each gets its own stack ([`stack`] for the station's lease,
+/// [`hosted_stack`] for the hosted network).
+///
+/// Why this exists: the open MAC can transmit encrypted data frames on the
+/// radio's FIRST virtual interface only, whatever the role, so one radio
+/// cannot be both a WPA2 station and a WPA2 access point there
+/// (measured: swapping the roles moved the failure with the interface).
+/// The vendor's radio does both, and this is
+/// the configuration that asks for it.
+///
+/// Both halves are built by [`station_config`] and [`access_point_config`],
+/// so what WPA2 means is decided in one place.
+///
+/// # Errors
+///
+/// As [`station_config`] and [`access_point_config`].
+pub fn access_point_station_config(
+    station_ssid: &str,
+    station_passphrase: &str,
+    ap_ssid: &str,
+    ap_passphrase: &str,
+    max_stations: u16,
+) -> Result<esp_radio::wifi::Config> {
+    let esp_radio::wifi::Config::Station(station) =
+        station_config(station_ssid, station_passphrase)?
+    else {
+        return Err(Error::InvalidFormat);
+    };
+    let esp_radio::wifi::Config::AccessPoint(access_point) =
+        access_point_config(ap_ssid, ap_passphrase, max_stations)?
+    else {
+        return Err(Error::InvalidFormat);
+    };
+    Ok(esp_radio::wifi::Config::AccessPointStation(
+        station,
+        access_point,
+    ))
+}
+
 /// An IP stack at a fixed `address` over the access-point interface: the
 /// board is the gateway of the network it hosts. `resources` and `seed` as
 /// for [`stack`].
@@ -146,7 +189,11 @@ pub fn stack<const SOCK: usize>(
 
 /// The stack's engine: runs forever, and must be spawned before anything
 /// awaits the stack.
-#[embassy_executor::task]
+///
+/// Two of them, because a board in both roles
+/// ([`access_point_station_config`]) has a stack per interface and each needs
+/// its own engine; a spawn beyond the pool fails rather than misbehaving.
+#[embassy_executor::task(pool_size = 2)]
 pub async fn net_task(mut runner: Runner<'static, Interface>) -> ! {
     runner.run().await
 }
@@ -171,10 +218,33 @@ pub async fn station_task(
 /// The DHCP server of a hosted network, for the life of the firmware: leases
 /// from `.50` to `.200` of the board's subnet, the board as gateway; a UDP
 /// socket on port 67, so [`SOCKETS`] must leave one for it. `address` is
-/// what [`hosted_stack`] was given.
+/// what [`hosted_stack`] was given. Hands out no DNS server; a board that
+/// relays one uses [`dhcp_server_with_dns_task`].
 #[cfg(feature = "access-point")]
 #[embassy_executor::task]
 pub async fn dhcp_server_task(stack: Stack<'static>, address: Ipv4Cidr) -> ! {
+    serve_dhcp(stack, address, &[]).await
+}
+
+/// [`dhcp_server_task`], handing out `dns` (the first `dns_count` of it) as
+/// the clients' DNS servers.
+///
+/// A board relaying for its clients passes on its upstream lease's DNS servers: its
+/// clients' names are resolved where the upstream network resolves them, and
+/// the queries go through the NAT like any other traffic.
+#[cfg(feature = "access-point")]
+#[embassy_executor::task]
+pub async fn dhcp_server_with_dns_task(
+    stack: Stack<'static>,
+    address: Ipv4Cidr,
+    dns: [core::net::Ipv4Addr; 3],
+    dns_count: usize,
+) -> ! {
+    serve_dhcp(stack, address, &dns[..dns_count.min(3)]).await
+}
+
+#[cfg(feature = "access-point")]
+async fn serve_dhcp(stack: Stack<'static>, address: Ipv4Cidr, dns: &[core::net::Ipv4Addr]) -> ! {
     use core::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
     use edge_dhcp::io::{self, DEFAULT_SERVER_PORT};
     use edge_dhcp::server::{Server, ServerOptions};
@@ -185,7 +255,8 @@ pub async fn dhcp_server_task(stack: Stack<'static>, address: Ipv4Cidr) -> ! {
     let now = || embassy_time::Instant::now().as_secs();
     let mut server = Server::<_, 8>::new(now, ip);
     let mut gateway = [ip];
-    let options = ServerOptions::new(ip, Some(&mut gateway));
+    let mut options = ServerOptions::new(ip, Some(&mut gateway));
+    options.dns = dns;
     let buffers = UdpBuffers::<1, 1500, 1500, 2>::new();
     let mut packet = [0u8; 1500];
     loop {
