@@ -27,6 +27,18 @@ pub const LINK_POLL: Duration = Duration::from_secs(1);
 static ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 static JOINS: AtomicU32 = AtomicU32::new(0);
 static LAST: AtomicU8 = AtomicU8::new(0);
+/// The channel of the network joined; 0 while not joined.
+static JOINED_CHANNEL: AtomicU8 = AtomicU8::new(0);
+
+/// The channel of the network the station is joined to, `None` while it is
+/// not (an access point beside the station beacons
+/// on its channel, the one radio being on one channel).
+pub fn joined_channel() -> Option<u8> {
+    match JOINED_CHANNEL.load(Ordering::Relaxed) {
+        0 => None,
+        c => Some(c),
+    }
+}
 
 /// Why the last join failed, by name ("none" before any failed).
 const REASONS: [&str; 20] = [
@@ -83,6 +95,11 @@ pub fn tx_stats() -> esp_wifi_hal::tx_stats::TxStats {
     esp_wifi_hal::tx_stats::snapshot()
 }
 
+/// The MAC errors by interface and kind, the last one's raw code included.
+pub fn tx_mac_detail() -> esp_wifi_hal::tx_stats::MacDetail {
+    esp_wifi_hal::tx_stats::mac_detail()
+}
+
 /// E2's counters from the station: group-key handshakes taken, group-key
 /// messages refused, unprotected data frames dropped after the join.
 #[must_use]
@@ -103,6 +120,32 @@ pub fn dropped_unprotected() -> (u32, u32, u32, u8, u16) {
 #[must_use]
 pub fn null_frames() -> u32 {
     foa_sta::null_frames()
+}
+
+/// The Ethernet source a relay gives a frame it forwards
+/// upstream (the station's address, locally administered bit flipped).
+#[must_use]
+pub const fn relay_mark(own: [u8; 6]) -> [u8; 6] {
+    foa_sta::relay_mark(own)
+}
+
+/// Relayed frames upstream as background traffic (TID 1, never in the TID 0
+/// aggregates), or not: relayed traffic behind the device's own, on the air.
+pub fn set_relay_background(on: bool) {
+    foa_sta::set_relay_background(on);
+}
+
+/// Relayed frames sent upstream as background since boot.
+#[must_use]
+pub fn relayed_as_background() -> u32 {
+    foa_sta::relayed_as_background()
+}
+
+/// Group-addressed frames handed to the network stack: (to the broadcast
+/// address, to another group address such as IPv6's solicited-node groups).
+#[must_use]
+pub fn group_delivered() -> (u32, u32) {
+    foa_sta::group_delivered()
 }
 
 /// The joins tried, the joins that succeeded, and why the last one that
@@ -335,6 +378,65 @@ const PROB_UNKNOWN: u32 = u32::MAX;
 
 static PROB_PERMILLE: [AtomicU32; 8] = [const { AtomicU32::new(PROB_UNKNOWN) }; 8];
 static OVERHEAD_US: AtomicU32 = AtomicU32::new(0);
+/// The rate data frames start at now, Mbit/s rounded down, and whether
+/// the ladder is HT's (E8).
+static RATE_MBITS: AtomicU8 = AtomicU8::new(54);
+static LADDER_HT: AtomicU8 = AtomicU8::new(0);
+
+/// The rates [`ExpectedRate`] chooses among, fastest first, and each one's
+/// airtime for a 1,500-byte frame (E8): 802.11g's eight, or on an HT link
+/// MCS 7 down to 0 (the short guard interval if the access point takes it
+/// and the build does not turn it off with `JANUS_OPEN_SGI=off`).
+#[derive(Clone, Copy, Debug)]
+struct Ladder {
+    rates: [esp_wifi_hal::rates::TxPhyRate; 8],
+    airtime_us: [u32; 8],
+    /// Each rate in Mbit/s, rounded down, for the watch line.
+    mbits: [u8; 8],
+    ht: bool,
+}
+
+impl Ladder {
+    fn ofdm() -> Self {
+        Self {
+            rates: LADDER.map(esp_wifi_hal::rates::TxPhyRate::Ofdm),
+            airtime_us: AIRTIME_1500_US,
+            mbits: [54, 48, 36, 24, 18, 12, 9, 6],
+            ht: false,
+        }
+    }
+
+    fn for_link(link: Option<foa_sta::ht::Link>) -> Self {
+        use esp_wifi_hal::rates::{HtRate, OfdmRate, TxPhyRate};
+        // Mbit/s x10 at MCS 0-7, 20 MHz, long and short guard interval
+        const LONG: [u16; 8] = [65, 130, 195, 260, 390, 520, 585, 650];
+        const SHORT: [u16; 8] = [72, 144, 216, 288, 433, 577, 650, 722];
+        let Some(ht) = link.and_then(|l| l.ht) else {
+            return Self::ofdm();
+        };
+        let sgi = ht.short_gi && option_env!("JANUS_OPEN_SGI") != Some("off");
+        let top = ht.highest_mcs().unwrap_or(0);
+        let mcs = |i: usize| top.saturating_sub(i as u8);
+        let table = if sgi { SHORT } else { LONG };
+        Self {
+            rates: core::array::from_fn(|i| {
+                HtRate::new(mcs(i), sgi, false)
+                    .map_or(TxPhyRate::Ofdm(OfdmRate::Mbits6), TxPhyRate::Ht)
+            }),
+            airtime_us: core::array::from_fn(|i| foa_sta::ht::ht_airtime_us(mcs(i), sgi, 1500)),
+            mbits: core::array::from_fn(|i| (table[usize::from(mcs(i))] / 10) as u8),
+            ht: true,
+        }
+    }
+
+    fn snapshot(&self) -> [(u32, u32); 8] {
+        if self.ht {
+            esp_wifi_hal::tx_stats::ht_rate_snapshot()
+        } else {
+            esp_wifi_hal::tx_stats::rate_snapshot()
+        }
+    }
+}
 
 /// The starting rate for data frames by expected throughput (E1's third
 /// rate control, Minstrel's in outline). The driver counts first attempts
@@ -346,8 +448,10 @@ static OVERHEAD_US: AtomicU32 = AtomicU32::new(0);
 /// 1,500-byte frame over that frame's airtime plus the per-attempt
 /// overhead measured on the board (contention, the ACK or its timeout,
 /// the hotspot's own frames): a property of the rate, not of whatever
-/// traffic the last second carried.
+/// traffic the last second carried. On an HT link the same over MCS 7-0
+/// (E8).
 struct ExpectedRate {
+    ladder: Ladder,
     index: usize,
     /// Per rate, the success probability in per mille ([`PROB_UNKNOWN`]: none yet).
     prob: [u32; 8],
@@ -360,18 +464,34 @@ struct ExpectedRate {
 }
 
 impl ExpectedRate {
-    fn new() -> Self {
-        let index = LADDER.iter().position(|r| *r == DATA_RATE).unwrap_or(0);
+    fn new(ladder: Ladder) -> Self {
+        // 802.11g starts at DATA_RATE; HT at the top MCS the access point takes
+        let index = if ladder.ht {
+            0
+        } else {
+            LADDER.iter().position(|r| *r == DATA_RATE).unwrap_or(0)
+        };
         RATE_NOW.store(index as u8, Ordering::Relaxed);
+        RATE_MBITS.store(ladder.mbits[index], Ordering::Relaxed);
+        LADDER_HT.store(u8::from(ladder.ht), Ordering::Relaxed);
+        for p in &PROB_PERMILLE {
+            p.store(PROB_UNKNOWN, Ordering::Relaxed);
+        }
         Self {
+            ladder,
             index,
             prob: [PROB_UNKNOWN; 8],
             pending: [(0, 0); 8],
             overhead_us: 150,
             sample_step: 0,
-            last_rates: esp_wifi_hal::tx_stats::rate_snapshot(),
+            last_rates: ladder.snapshot(),
             last: esp_wifi_hal::tx_stats::snapshot(),
         }
+    }
+
+    /// The rate data frames start at now.
+    fn rate(&self) -> esp_wifi_hal::rates::TxPhyRate {
+        self.ladder.rates[self.index]
     }
 
     /// The expected throughput at rate `i`, kbit/s (0: not known).
@@ -379,15 +499,15 @@ impl ExpectedRate {
         if self.prob[i] == PROB_UNKNOWN {
             return 0;
         }
-        self.prob[i] * 12_000 / (AIRTIME_1500_US[i] + self.overhead_us)
+        self.prob[i] * 12_000 / (self.ladder.airtime_us[i] + self.overhead_us)
     }
 
     /// One second's counters: the rate to move to, if any.
     fn tick(
         &mut self,
         now: esp_wifi_hal::tx_stats::TxStats,
-        rates: [(u32, u32); 8],
-    ) -> Option<esp_wifi_hal::rates::OfdmRate> {
+    ) -> Option<esp_wifi_hal::rates::TxPhyRate> {
+        let rates = self.ladder.snapshot();
         for i in 0..LADDER.len() {
             let pending = &mut self.pending[i];
             pending.0 += rates[i].0.wrapping_sub(self.last_rates[i].0);
@@ -410,7 +530,7 @@ impl ExpectedRate {
         if timed >= RATE_MIN_FRAMES {
             let per_attempt = u32::try_from(hw_us / u64::from(timed)).unwrap_or(u32::MAX);
             let overhead = per_attempt
-                .saturating_sub(AIRTIME_1500_US[self.index])
+                .saturating_sub(self.ladder.airtime_us[self.index])
                 .clamp(OVERHEAD_MIN_US, OVERHEAD_MAX_US);
             self.overhead_us = (self.overhead_us * 3 + overhead) / 4;
             OVERHEAD_US.store(self.overhead_us, Ordering::Relaxed);
@@ -421,13 +541,28 @@ impl ExpectedRate {
         let best = (0..LADDER.len())
             .max_by_key(|&i| self.throughput(i))
             .unwrap_or(self.index);
+        // E8: the chosen rate failing outright steps down at once. Its
+        // neighbours unmeasured score zero, so no neighbour ever looked
+        // better and a station whose starting rate the access point never
+        // acknowledged stayed there (54 Mbit/s at 0 % against the owner's
+        // router: 0.79 Mbit/s, every frame's first two attempts lost)
+        let collapsed = self.prob[self.index] != PROB_UNKNOWN
+            && self.prob[self.index] < RATE_COLLAPSE_BELOW_PERMILLE
+            && self.index + 1 < LADDER.len();
+        let best = if collapsed && self.throughput(best) <= self.throughput(self.index) {
+            self.index + 1
+        } else {
+            best
+        };
         let moved = best != self.index
-            && u64::from(self.throughput(best)) * 1000
-                > u64::from(self.throughput(self.index)) * EXPECT_WIN_PERMILLE;
+            && (collapsed
+                || u64::from(self.throughput(best)) * 1000
+                    > u64::from(self.throughput(self.index)) * EXPECT_WIN_PERMILLE);
         if moved {
             self.index = best;
             RATE_STEPS.fetch_add(1, Ordering::Relaxed);
             RATE_NOW.store(best as u8, Ordering::Relaxed);
+            RATE_MBITS.store(self.ladder.mbits[best], Ordering::Relaxed);
         }
         // the next second's sample: the neighbours within two steps in turn
         const OFFSETS: [isize; 4] = [-1, 1, -2, 2];
@@ -436,13 +571,13 @@ impl ExpectedRate {
             let j = self.index as isize + OFFSETS[usize::from(self.sample_step) % OFFSETS.len()];
             self.sample_step = self.sample_step.wrapping_add(1);
             if (0..LADDER.len() as isize).contains(&j) {
-                sample = Some(LADDER[j as usize]);
+                sample = Some(self.ladder.rates[j as usize]);
                 break;
             }
         }
         foa_sta::set_data_sample_rate(sample);
         RATE_PROBES.fetch_add(1, Ordering::Relaxed);
-        moved.then(|| LADDER[self.index])
+        moved.then(|| self.rate())
     }
 }
 
@@ -470,13 +605,54 @@ pub fn rate_goodput() -> ([u32; 8], u32) {
     )
 }
 
-/// The data rate the station starts frames at now, in Mbit/s, and how many
-/// times it has moved since boot.
+/// The data rate the station starts frames at now, in Mbit/s (an HT rate
+/// rounded down: MCS 7 with the short guard interval reads 72), and how
+/// many times it has moved since boot. On an HT link the rungs of
+/// [`rate_model`] and [`rate_goodput`] are MCS 7 down to 0 (E8).
 #[must_use]
 pub fn data_rate() -> (u8, u32) {
     const MBITS: [u8; 8] = [54, 48, 36, 24, 18, 12, 9, 6];
-    let i = usize::from(RATE_NOW.load(Ordering::Relaxed)).min(MBITS.len() - 1);
-    (MBITS[i], RATE_STEPS.load(Ordering::Relaxed))
+    let mbits = if LADDER_HT.load(Ordering::Relaxed) != 0 {
+        RATE_MBITS.load(Ordering::Relaxed)
+    } else {
+        MBITS[usize::from(RATE_NOW.load(Ordering::Relaxed)).min(MBITS.len() - 1)]
+    };
+    (mbits, RATE_STEPS.load(Ordering::Relaxed))
+}
+
+/// E8: A-MPDUs on or off at run time in a build with them (the in-run
+/// A/B); the block-ack agreement and numbering stay.
+pub fn set_ampdu_enabled(on: bool) {
+    foa_sta::set_ampdu_enabled(on);
+}
+
+/// E8: (A-MPDU sends answered by a block-ack, subframes acknowledged,
+/// resent, dropped after three rounds, BlockAckReqs sent).
+#[must_use]
+pub fn block_ack_stats() -> (u32, u32, u32, u32, u32) {
+    foa_sta::block_ack_stats()
+}
+
+/// E8: block-ack action frames received, and the last one's action code |
+/// status-or-parameters << 8.
+#[must_use]
+pub fn ba_census() -> (u32, u32) {
+    foa_sta::ba_census()
+}
+
+/// E8's A-MPDU counters: (ADDBA requests sent, accepted, refused, the
+/// block-ack window agreed now (0: none), A-MPDUs sent, subframes in them).
+#[must_use]
+pub fn ampdu_stats() -> (u32, u32, u32, u16, u32, u32) {
+    foa_sta::ampdu_stats()
+}
+
+/// E8: whether the station's link is HT (its rate ladder MCS 7-0), and its
+/// QoS counters: QoS data frames sent, A-MSDUs of two packets among them,
+/// packets refused, ADDBA requests declined.
+#[must_use]
+pub fn ht_stats() -> (bool, (u32, u32, u32, u32)) {
+    (LADDER_HT.load(Ordering::Relaxed) != 0, foa_sta::qos_stats())
 }
 
 /// What [`stack`] builds: the station's control, the IP stack, and the
@@ -509,26 +685,151 @@ pub fn stack<const SOCK: usize>(
     static VIF: StaticCell<VirtualInterface<'static>> = StaticCell::new();
     static STA: StaticCell<StaResources<'static>> = StaticCell::new();
     let ([vif, ..], mac) = foa::init(crate::FOA.take(), wifi);
-    let (mut control, sta, device) =
-        foa_sta::new_sta_interface(VIF.init(vif), STA.init(StaResources::default()));
+    on_interface(
+        VIF.init(vif),
+        STA.init(StaResources::default()),
+        mac,
+        resources,
+        seed,
+        false,
+    )
+    .0
+}
+
+/// [`stack`], with FoA's second virtual interface kept for an access point
+/// beside the station (both roles on one radio).
+/// Host it with [`access_point::hosted_beside`](crate::access_point::hosted_beside)
+/// once [`joined_channel`] names the channel; the one [`mac_task`] serves
+/// both.
+pub fn stack_beside_access_point<const SOCK: usize>(
+    wifi: esp_hal::peripherals::WIFI<'static>,
+    resources: &'static mut StackResources<SOCK>,
+    seed: u64,
+) -> (OpenStation, crate::SpareInterface) {
+    static VIF: StaticCell<VirtualInterface<'static>> = StaticCell::new();
+    static VIF_AP: StaticCell<VirtualInterface<'static>> = StaticCell::new();
+    static STA: StaticCell<StaResources<'static>> = StaticCell::new();
+    let ([vif, vif_ap, ..], mac) = foa::init(crate::FOA.take(), wifi);
+    let (station, _) = on_interface(
+        VIF.init(vif),
+        STA.init(StaResources::default()),
+        mac,
+        resources,
+        seed,
+        false,
+    );
+    (station, crate::SpareInterface(VIF_AP.init(vif_ap)))
+}
+
+/// [`stack_beside_access_point`], with a [`splice`](crate::splice) between
+/// the station's device and its IP stack: every frame the station receives
+/// goes through the splice the firmware runs (a NAT relay, for one). The
+/// stack is the same, on the splice.
+pub fn stack_spliced_beside_access_point<const SOCK: usize>(
+    wifi: esp_hal::peripherals::WIFI<'static>,
+    resources: &'static mut StackResources<SOCK>,
+    seed: u64,
+) -> (OpenStation, crate::splice::Splice, crate::SpareInterface) {
+    static VIF: StaticCell<VirtualInterface<'static>> = StaticCell::new();
+    static VIF_AP: StaticCell<VirtualInterface<'static>> = StaticCell::new();
+    static STA: StaticCell<StaResources<'static>> = StaticCell::new();
+    let ([vif, vif_ap, ..], mac) = foa::init(crate::FOA.take(), wifi);
+    let (station, splice) = on_interface(
+        VIF.init(vif),
+        STA.init(StaResources::default()),
+        mac,
+        resources,
+        seed,
+        true,
+    );
+    (
+        station,
+        splice.expect("asked for above"),
+        crate::SpareInterface(VIF_AP.init(vif_ap)),
+    )
+}
+
+/// [`stack_spliced_beside_access_point`], with the two virtual interfaces
+/// the other way round: the **access point takes the radio's first
+/// interface** and the station the second.
+///
+/// Why: the hardware encrypts a transmitted frame for the first interface
+/// only, so an access point on the second cannot protect its own frames --
+/// a fault measured on the bench. Hosting the access point first lets it
+/// use the hardware as an access point alone on the radio does (eight
+/// stations held that way), and moves the question to the station, which has one
+/// key instead of a table of them.
+///
+/// Host the access point with
+/// [`access_point::hosted_beside_spliced`](crate::access_point::hosted_beside_spliced)
+/// as usual; it is told it is beside a station either way, so it still
+/// expects the station's channel.
+pub fn stack_spliced_with_access_point_first<const SOCK: usize>(
+    wifi: esp_hal::peripherals::WIFI<'static>,
+    resources: &'static mut StackResources<SOCK>,
+    seed: u64,
+) -> (OpenStation, crate::splice::Splice, crate::SpareInterface) {
+    static VIF: StaticCell<VirtualInterface<'static>> = StaticCell::new();
+    static VIF_AP: StaticCell<VirtualInterface<'static>> = StaticCell::new();
+    static STA: StaticCell<StaResources<'static>> = StaticCell::new();
+    // the first interface goes to the access point, the second to the station
+    let ([vif_ap, vif, ..], mac) = foa::init(crate::FOA.take(), wifi);
+    let (station, splice) = on_interface(
+        VIF.init(vif),
+        STA.init(StaResources::default()),
+        mac,
+        resources,
+        seed,
+        true,
+    );
+    (
+        station,
+        splice.expect("asked for above"),
+        crate::SpareInterface(VIF_AP.init(vif_ap)),
+    )
+}
+
+fn on_interface<const SOCK: usize>(
+    vif: &'static mut VirtualInterface<'static>,
+    sta_resources: &'static mut StaResources<'static>,
+    mac: FoARunner<'static>,
+    resources: &'static mut StackResources<SOCK>,
+    seed: u64,
+    spliced: bool,
+) -> (OpenStation, Option<crate::splice::Splice>) {
+    let (mut control, sta, device) = foa_sta::new_sta_interface(vif, sta_resources);
     let base = esp_hal::efuse::base_mac_address();
     let mut address = [0u8; 6];
     address.copy_from_slice(base.as_bytes());
     // the interface is not up yet, so this cannot be refused
     let _ = control.set_mac_address(address);
+    // the stack's side of a splice: 2 frames each way (the station's own
+    // channel to the MAC keeps its 8)
+    static SPLICED: static_cell::ConstStaticCell<
+        embassy_net_driver_channel::State<{ crate::splice::MTU }, 2, 2>,
+    > = static_cell::ConstStaticCell::new(embassy_net_driver_channel::State::new());
+    let (device, splice) = if spliced {
+        let (device, splice) = crate::splice::splice(device, SPLICED.take(), address);
+        (device, Some(splice))
+    } else {
+        (device, None)
+    };
     let (stack, net) = embassy_net::new(
         device,
         Config::dhcpv4(DhcpConfig::default()),
         resources,
         seed,
     );
-    OpenStation {
-        control,
-        stack,
-        mac,
-        sta,
-        net,
-    }
+    (
+        OpenStation {
+            control,
+            stack,
+            mac,
+            sta,
+            net,
+        },
+        splice,
+    )
 }
 
 /// FoA's lower-MAC runner, for the life of the firmware.
@@ -568,6 +869,7 @@ pub async fn join(
     match with_timeout(JOIN_TIMEOUT, attempt).await {
         Ok(Ok(())) => {
             JOINS.fetch_add(1, Ordering::Relaxed);
+            JOINED_CHANNEL.store(control.channel().unwrap_or(0), Ordering::Relaxed);
             // FoA resets its data rate to 6 Mbit/s on every join
             control.override_phy_rate(DATA_RATE.into());
             true
@@ -613,25 +915,31 @@ pub async fn run_station(
             Action::None => {
                 let mut threshold = RateControl::new();
                 let mut sampled = SampledRate::new();
-                let mut expected = ExpectedRate::new();
+                // E8: the ladder the association allows; an HT link starts
+                // at the top MCS the access point takes
+                let mut expected = ExpectedRate::new(Ladder::for_link(control.link()));
+                if expected.ladder.ht {
+                    control.override_phy_rate(expected.rate());
+                }
                 while control.connected() {
                     Timer::after(LINK_POLL).await;
                     let counters = esp_wifi_hal::tx_stats::snapshot();
                     // JANUS_OPEN_RATE builds the A/B's arms: `fixed` keeps the
                     // starting rate, `threshold` the first-attempt thresholds,
-                    // `probe` the measured goodput of whole seconds, anything
-                    // else the expected throughput
+                    // `probe` the measured goodput of whole seconds (these
+                    // three 802.11g only), anything else the expected throughput
                     let next = match option_env!("JANUS_OPEN_RATE") {
                         Some("fixed") => None,
-                        Some("threshold") => threshold.tick(counters),
-                        Some("probe") => sampled.tick(counters),
-                        _ => expected.tick(counters, esp_wifi_hal::tx_stats::rate_snapshot()),
+                        Some("threshold") => threshold.tick(counters).map(Into::into),
+                        Some("probe") => sampled.tick(counters).map(Into::into),
+                        _ => expected.tick(counters),
                     };
                     if let Some(next) = next {
-                        control.override_phy_rate(next.into());
+                        control.override_phy_rate(next);
                     }
                 }
                 foa_sta::set_data_sample_rate(None);
+                JOINED_CHANNEL.store(0, Ordering::Relaxed);
                 action = policy.on(Event::Disconnected, now());
             }
         }

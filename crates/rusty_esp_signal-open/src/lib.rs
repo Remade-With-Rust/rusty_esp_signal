@@ -32,6 +32,14 @@ pub mod access_point;
 #[cfg(feature = "esp32s3")]
 pub mod raw_link;
 
+/// A splice between a radio's device and its IP stack: a NAT relay
+/// forwards through it.
+#[cfg(feature = "esp32s3")]
+pub mod splice;
+
+/// Whose frame a splice sends first: the stack's own or a relayed one.
+pub mod turn;
+
 #[cfg(feature = "esp32s3")]
 pub use station::*;
 
@@ -45,6 +53,11 @@ pub use station::*;
 /// stack at bring-up, which tripped C18's stack guard inside `hosted_stack`.
 #[cfg(feature = "esp32s3")]
 pub(crate) static FOA: foa::StaticFoAResources = foa::StaticFoAResources::new();
+
+/// FoA's second virtual interface, kept by
+/// [`stack_beside_access_point`] for an access point beside the station.
+#[cfg(feature = "esp32s3")]
+pub struct SpareInterface(pub(crate) &'static mut foa::VirtualInterface<'static>);
 
 #[cfg(feature = "esp32s3")]
 pub use rusty_esp_signal_core::wifi::{PolicyConfig, StationPolicy};

@@ -71,10 +71,94 @@ const SNAP: [u8; 6] = [0xaa, 0xaa, 0x03, 0, 0, 0];
 const EAPOL: [u8; 2] = [0x88, 0x8e];
 
 static BEACONS: AtomicU32 = AtomicU32::new(0);
+/// The access point beacons ([`set_beaconing`]).
+static BEACONING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+/// New stations are admitted ([`set_admitting`]).
+static ADMITTING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+/// Beacons not sent while beaconing was off, and associations refused while
+/// admission was.
+static BEACONS_WITHHELD: AtomicU32 = AtomicU32::new(0);
+static ADMISSIONS_REFUSED: AtomicU32 = AtomicU32::new(0);
+/// Asked by [`renumber_stations`], cleared when the access point has done it.
+static RENUMBER: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static STATIONS_RENUMBERED: AtomicU32 = AtomicU32::new(0);
+/// Relayed unicast frames go out as background ([`set_relay_background`]),
+/// and how many have.
+static RELAY_BACKGROUND: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+static RELAYED_AS_BACKGROUND: AtomicU32 = AtomicU32::new(0);
+
+/// Send relayed frames to stations as background traffic, or not: while on,
+/// a unicast data frame whose IPv4 source is not the access point's own (a
+/// frame relayed from upstream) goes out in the background
+/// access category (user priority 1 for a QoS station), and the access
+/// point's own frames stay best effort. Background waits longer for the
+/// medium, so the cell's own traffic on the same radio gets it first: the
+/// relayed traffic kept behind the device's own, on the air. Group frames
+/// are unchanged.
+pub fn set_relay_background(on: bool) {
+    RELAY_BACKGROUND.store(on, Ordering::Relaxed);
+}
+
+/// Relayed unicast frames sent as background since boot.
+pub fn relayed_as_background() -> u32 {
+    RELAYED_AS_BACKGROUND.load(Ordering::Relaxed)
+}
+
+/// A unicast Ethernet frame the access point did not originate: IPv4, its
+/// source address not `own`.
+fn relayed(eth: &[u8], own: [u8; 4]) -> bool {
+    eth.len() >= 34 && eth[12..14] == [0x08, 0x00] && eth[26..30] != own
+}
+
+/// Beacon at each TBTT, or not: a firmware shedding load can stop a device
+/// with no headroom from advertising its network. The TBTTs keep
+/// their count, so beacons resume in step; stations already joined are
+/// served either way.
+pub fn set_beaconing(on: bool) {
+    BEACONING.store(on, Ordering::Relaxed);
+}
+
+/// Admit new stations, or not: while not, a station that is not already
+/// associated is answered with status 17 (the access point cannot take
+/// another station); one that is re-associates as before. A
+/// shedding policy's "no new stations".
+pub fn set_admitting(on: bool) {
+    ADMITTING.store(on, Ordering::Relaxed);
+}
+
+/// Send every station away to join again (reason 2, the authentication
+/// no longer valid), once, at the access point's next turn. For a
+/// firmware that changes how it forwards: a station rejoining asks DHCP to confirm
+/// the address it held, the new mode's server answers an address it does
+/// not hand out with a NAK, and the station leases again -- in seconds,
+/// where waiting for its lease to run out could take hours (a lease from
+/// the upstream network, when it serves the stations itself, is its own).
+pub fn renumber_stations() {
+    RENUMBER.store(true, Ordering::Relaxed);
+}
+
+/// Stations sent away by [`renumber_stations`], since boot.
+pub fn stations_renumbered() -> u32 {
+    STATIONS_RENUMBERED.load(Ordering::Relaxed)
+}
+
+/// Beacons withheld by [`set_beaconing`] and associations refused by
+/// [`set_admitting`], since boot.
+pub fn shed_counts() -> (u32, u32) {
+    (
+        BEACONS_WITHHELD.load(Ordering::Relaxed),
+        ADMISSIONS_REFUSED.load(Ordering::Relaxed),
+    )
+}
 static BEACON_FAILURES: AtomicU32 = AtomicU32::new(0);
 static BEACONS_LATE: AtomicU32 = AtomicU32::new(0);
 static TBTTS_SKIPPED: AtomicU32 = AtomicU32::new(0);
 static BEACON_LATE_MAX_US: AtomicU32 = AtomicU32::new(0);
+// every beacon's delay, for a window's mean and worst
+static BEACON_HOOKS: AtomicU32 = AtomicU32::new(0);
+static BEACON_LATE_SUM_US: AtomicU32 = AtomicU32::new(0);
+static BEACON_WINDOW_MAX_US: AtomicU32 = AtomicU32::new(0);
 static STAMP_SYNCS: AtomicU32 = AtomicU32::new(0);
 static MANAGEMENT_REPLIES: AtomicU32 = AtomicU32::new(0);
 static MANAGEMENT_UNACKED: AtomicU32 = AtomicU32::new(0);
@@ -106,6 +190,12 @@ static ARP_UP: AtomicU32 = AtomicU32::new(0);
 static QOS_DATA_SENT: AtomicU32 = AtomicU32::new(0);
 static HT_SENT: AtomicU32 = AtomicU32::new(0);
 static DATA_UNACKED: AtomicU32 = AtomicU32::new(0);
+/// Frames this access point encrypted itself, and frames CCMP refused (which
+/// are dropped: a refusal must never put one on the air in the clear). Both
+/// read 0 where the hardware does the encrypting, so they also say which path
+/// a run took.
+static SOFTWARE_CRYPTO: AtomicU32 = AtomicU32::new(0);
+static SOFTWARE_CRYPTO_REFUSED: AtomicU32 = AtomicU32::new(0);
 static LADDER_UP: AtomicU32 = AtomicU32::new(0);
 static LADDER_DOWN: AtomicU32 = AtomicU32::new(0);
 static STRANGERS: AtomicU32 = AtomicU32::new(0);
@@ -136,6 +226,9 @@ static HANDSHAKES_RESTARTED: AtomicU32 = AtomicU32::new(0);
 static HANDSHAKE_TIMEOUTS: AtomicU32 = AtomicU32::new(0);
 static PLAINTEXT_DROPPED: AtomicU32 = AtomicU32::new(0);
 static REPLAYS: AtomicU32 = AtomicU32::new(0);
+/// Protected frames sent again (Retry set) with a packet number already
+/// taken: our ACK was lost; dropped, and not counted as replays.
+static DUPLICATES: AtomicU32 = AtomicU32::new(0);
 
 /// FoA's lower-MAC runner, for the life of the firmware.
 #[embassy_executor::task]
@@ -154,6 +247,45 @@ pub async fn net_task(mut runner: Runner<'static, ch::Device<'static, MTU>>) -> 
 /// subnet, the board as gateway. `address` is what [`hosted_stack`] took.
 #[embassy_executor::task]
 pub async fn dhcp_server_task(stack: Stack<'static>, address: Ipv4Cidr) -> ! {
+    serve_dhcp(stack, address, &[]).await
+}
+
+/// [`dhcp_server_task`], handing out the first `dns_count` of `dns` as the
+/// DNS servers (a NAT relay gives its stations the
+/// upstream router's: the device runs no DNS of its own).
+#[embassy_executor::task]
+pub async fn dhcp_server_with_dns_task(
+    stack: Stack<'static>,
+    address: Ipv4Cidr,
+    dns: [Ipv4Addr; 3],
+    dns_count: usize,
+) -> ! {
+    serve_dhcp(stack, address, &dns[..dns_count.min(3)]).await
+}
+
+/// The DHCP server answers ([`set_dhcp_serving`]), and how long its leases
+/// last ([`set_dhcp_lease_secs`]).
+static DHCP_SERVING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+static DHCP_LEASE_SECS: AtomicU32 = AtomicU32::new(7200);
+
+/// Serve leases, or not: a relay stops its DHCP server when its stations
+/// lease from upstream instead (from the upstream network's
+/// network) and starts it again on the way back. Stopping closes the
+/// server's socket within half a second; starting reopens it.
+pub fn set_dhcp_serving(on: bool) {
+    DHCP_SERVING.store(on, Ordering::Relaxed);
+}
+
+/// How long the DHCP server's leases last, from the next start of
+/// [`dhcp_server_with_dns_task`] (default 7200 s). A short lease is how a
+/// change of mode renumbers the stations: each renews within half of it,
+/// and the server answers an address it does not hand out with a NAK, so
+/// the station leases again.
+pub fn set_dhcp_lease_secs(secs: u32) {
+    DHCP_LEASE_SECS.store(secs, Ordering::Relaxed);
+}
+
+async fn serve_dhcp(stack: Stack<'static>, address: Ipv4Cidr, dns: &[Ipv4Addr]) -> ! {
     use core::net::{SocketAddr, SocketAddrV4};
     use edge_dhcp::io::{self, DEFAULT_SERVER_PORT};
     use edge_dhcp::server::{Server, ServerOptions};
@@ -162,12 +294,20 @@ pub async fn dhcp_server_task(stack: Stack<'static>, address: Ipv4Cidr) -> ! {
 
     let ip: Ipv4Addr = address.address();
     let now = || Instant::now().as_secs();
-    let mut server = Server::<_, 8>::new(now, ip);
+    // leases for twice the stations the access point holds: a station that
+    // left keeps its lease until it runs out, and a new one needs its own
+    let mut server = Server::<_, { 2 * MAX_STATIONS }>::new(now, ip);
     let mut gateway = [ip];
-    let options = ServerOptions::new(ip, Some(&mut gateway));
+    let mut options = ServerOptions::new(ip, Some(&mut gateway));
+    options.dns = dns;
+    options.lease_duration_secs = DHCP_LEASE_SECS.load(Ordering::Relaxed);
     let buffers = UdpBuffers::<1, 1500, 1500, 2>::new();
     let mut packet = [0u8; 1500];
     loop {
+        if !DHCP_SERVING.load(Ordering::Relaxed) {
+            Timer::after(Duration::from_millis(500)).await;
+            continue;
+        }
         let udp = Udp::new(stack, &buffers);
         if let Ok(mut socket) = udp
             .bind(SocketAddr::V4(SocketAddrV4::new(
@@ -176,7 +316,17 @@ pub async fn dhcp_server_task(stack: Stack<'static>, address: Ipv4Cidr) -> ! {
             )))
             .await
         {
-            let _ = io::server::run(&mut server, &options, &mut socket, &mut packet).await;
+            // serve until it fails or serving is switched off
+            let stopped = async {
+                while DHCP_SERVING.load(Ordering::Relaxed) {
+                    Timer::after(Duration::from_millis(500)).await;
+                }
+            };
+            let _ = embassy_futures::select::select(
+                io::server::run(&mut server, &options, &mut socket, &mut packet),
+                stopped,
+            )
+            .await;
         }
         Timer::after(Duration::from_millis(500)).await;
     }
@@ -204,6 +354,25 @@ fn ccmp(key: &[u8; 16], key_type: KeyType) -> CipherParameters<'_> {
         mfp_enabled: false,
         spp_enabled: false,
     })
+}
+
+/// CCMP done here rather than by the hardware (`ap_core::ccmp`), counted.
+/// `false` means the frame must not be sent: the body is still in the clear,
+/// and sending it would put it on the air unprotected.
+fn encapsulate(frame: &mut [u8], temporal_key: &[u8; 16]) -> bool {
+    match ap_core::ccmp::encapsulate(frame, temporal_key) {
+        Ok(()) => {
+            SOFTWARE_CRYPTO.fetch_add(1, Ordering::Relaxed);
+            true
+        }
+        // `note!` is a no-op in this build, so the reason is bound with an
+        // underscore as everywhere else here; the counter is what a run reads
+        Err(_why) => {
+            SOFTWARE_CRYPTO_REFUSED.fetch_add(1, Ordering::Relaxed);
+            note!("open-ap: CCMP refused a frame: {:?}", _why);
+            false
+        }
+    }
 }
 
 /// The CCMP header (802.11-2020 12.5.3.2): PN0, PN1, reserved, the key ID
@@ -325,7 +494,8 @@ struct Peer {
     resends: u8,
     key_slot: Option<KeySlot<'static>>,
     tx_packet_number: u64,
-    rx_packet_number: u64,
+    /// The receive counters, per TID (`ap_core::replay`).
+    rx_window: ap_core::replay::Window,
     /// A group-key handshake's message 1 waits for this dozing station to
     /// wake (its AID is in the TIM meanwhile).
     group_key_wanted: bool,
@@ -349,6 +519,14 @@ struct AccessPoint {
     /// Two key slots: the key in use and the one about to be.
     gtk_slots: [KeySlot<'static>; 2],
     gtk_slot_in_use: usize,
+    /// CCMP done here (`ap_core::ccmp`) instead of by the hardware, which
+    /// encrypts only for the radio's first virtual interface: an access point
+    /// hosted beside a station is on the second, where every protected frame
+    /// failed with the hardware's transmit error class 4 sub-error 1
+    /// (measured on the bench). The frame then names no key slot. The
+    /// key slots are still set up, because receiving is decrypted by the
+    /// hardware on either interface and that works.
+    software_crypto: bool,
     group_packet_number: u64,
     rekey_at_us: u64,
     rekey_due: bool,
@@ -367,6 +545,8 @@ struct AccessPoint {
     /// out as Ethernet. Kept, where a zeroed 1.5-1.6 KB array per frame was
     /// not.
     release_buf: Option<&'static mut [u8; FORWARD_BYTES]>,
+    /// The access point's own IPv4 address: what it did not relay.
+    own_ip: [u8; 4],
 }
 
 impl AccessPoint {
@@ -561,6 +741,7 @@ impl AccessPoint {
     /// protected under the station's pairwise key.
     async fn transmit_group_message_1(&mut self, station: Address, fresh: bool) {
         let bssid = self.bss.bssid;
+        let software_crypto = self.software_crypto;
         let Some(gtk) = self.pending_gtk else {
             if let Some(p) = self.peer(&station) {
                 // the rotation finished without this station (it was dropped
@@ -600,6 +781,11 @@ impl AccessPoint {
         ) else {
             return;
         };
+        // protected under the pairwise key, so it needs the same treatment as
+        // a data frame on an interface the hardware will not encrypt for
+        if software_crypto && !encapsulate(&mut buf[..n], keys.tk()) {
+            return;
+        }
         let done = self
             .tx
             .transmit_edca(
@@ -608,7 +794,7 @@ impl AccessPoint {
                 n,
                 plcp(TxPhyRate::Ofdm(OfdmRate::Mbits24)),
                 TxMacParameters {
-                    key_slot_index: Some(slot as u8),
+                    key_slot_index: (!software_crypto).then_some(slot as u8),
                     wait_for_ack: true,
                     override_seq_num: true,
                     ..Default::default()
@@ -769,7 +955,7 @@ impl AccessPoint {
                     resends: 0,
                     key_slot: None,
                     tx_packet_number: 0,
-                    rx_packet_number: 0,
+                    rx_window: ap_core::replay::Window::new(),
                     group_key_wanted: false,
                     qos: false,
                     ladder: Ladder::new(None),
@@ -807,7 +993,7 @@ impl AccessPoint {
                 resends: 0,
                 key_slot: None,
                 tx_packet_number: 1,
-                rx_packet_number: 0,
+                rx_window: ap_core::replay::Window::new(),
                 group_key_wanted: false,
                 qos: false,
                 ladder: Ladder::new(None),
@@ -959,6 +1145,8 @@ impl AccessPoint {
         payload: &[u8],
         more_data: bool,
         group: bool,
+        category: EdcaAccessCategory,
+        user_priority: u8,
     ) {
         let (qos_station, rate) = if group {
             (false, one_mbit())
@@ -981,7 +1169,7 @@ impl AccessPoint {
         frame[16..22].copy_from_slice(from);
         frame[22..24].copy_from_slice(&[0, 0]);
         if qos_station {
-            frame[24..26].copy_from_slice(&qos::qos_control(0));
+            frame[24..26].copy_from_slice(&qos::qos_control(user_priority));
         }
         frame[header..header + 6].copy_from_slice(&SNAP);
         frame[header + 6..header + 8].copy_from_slice(&ether_type);
@@ -992,7 +1180,7 @@ impl AccessPoint {
             RetryBehaviour::RetryUntil(7)
         };
         let pending = self.tx.transmit_edca(
-            EdcaAccessCategory::default(),
+            category,
             buf,
             n,
             plcp(rate),
@@ -1040,15 +1228,40 @@ impl AccessPoint {
         let ether_type = [eth[12], eth[13]];
         let payload = &eth[14..];
         let group = is_group(&to);
+        // relayed unicast as background while the ladder asks (L2)
+        let background =
+            !group && RELAY_BACKGROUND.load(Ordering::Relaxed) && relayed(eth, self.own_ip);
+        if background {
+            RELAYED_AS_BACKGROUND.fetch_add(1, Ordering::Relaxed);
+        }
+        let (category, user_priority) = if background {
+            (EdcaAccessCategory::Background, 1)
+        } else {
+            (EdcaAccessCategory::default(), 0)
+        };
         if !self.bss.protected {
-            self.transmit_open(to, from, ether_type, payload, more_data, group)
-                .await;
+            self.transmit_open(
+                to,
+                from,
+                ether_type,
+                payload,
+                more_data,
+                group,
+                category,
+                user_priority,
+            )
+            .await;
             return;
         }
-        let (slot, key_id, packet_number, qos_station, rate) = if group {
+        // the key itself comes along for the frames this access point
+        // encrypts (`software_crypto`): the group key, or the station's
+        // pairwise key from its own handshake
+        let software_crypto = self.software_crypto;
+        let (slot, key, key_id, packet_number, qos_station, rate) = if group {
             self.group_packet_number += 1;
             (
                 self.gtk_slots[self.gtk_slot_in_use].key_slot(),
+                self.gtk.key,
                 self.gtk.key_id,
                 self.group_packet_number,
                 false,
@@ -1061,8 +1274,18 @@ impl AccessPoint {
             let Some(slot) = peer.key_slot.as_ref().map(KeySlot::key_slot) else {
                 return;
             };
+            let Some(key) = peer.authenticator.keys.as_ref().map(|k| *k.tk()) else {
+                return;
+            };
             peer.tx_packet_number += 1;
-            (slot, 0, peer.tx_packet_number, peer.qos, peer.ladder.rate())
+            (
+                slot,
+                key,
+                0,
+                peer.tx_packet_number,
+                peer.qos,
+                peer.ladder.rate(),
+            )
         };
         // a QoS station gets QoS Data (subtype 8) with the QoS Control field
         let header = if qos_station { 26 } else { 24 };
@@ -1083,25 +1306,33 @@ impl AccessPoint {
         frame[16..22].copy_from_slice(from);
         frame[22..24].copy_from_slice(&[0, 0]);
         if qos_station {
-            frame[24..26].copy_from_slice(&qos::qos_control(0));
+            frame[24..26].copy_from_slice(&qos::qos_control(user_priority));
         }
         frame[header..header + 8].copy_from_slice(&ccmp_header(packet_number, key_id));
         frame[header + 8..header + 14].copy_from_slice(&SNAP);
         frame[header + 14..header + 16].copy_from_slice(&ether_type);
         frame[header + 16..header + 16 + payload.len()].copy_from_slice(payload);
         frame[n - 8..].fill(0);
+        // What the driver and the hardware still change after this -- the
+        // sequence number (`override_seq_num`), the Retry bit on a resend,
+        // the duration -- is exactly what 12.5.3.3.3 masks out of the
+        // authenticated data, so encrypting now and transmitting after is
+        // sound. The fragment number, which is NOT masked, stays 0.
+        if software_crypto && !encapsulate(frame, &key) {
+            return;
+        }
         let retry = if group {
             RetryBehaviour::Drop
         } else {
             RetryBehaviour::RetryUntil(7)
         };
         let pending = self.tx.transmit_edca(
-            EdcaAccessCategory::default(),
+            category,
             buf,
             n,
             plcp(rate),
             TxMacParameters {
-                key_slot_index: Some(slot as u8),
+                key_slot_index: (!software_crypto).then_some(slot as u8),
                 wait_for_ack: !group,
                 override_seq_num: true,
                 ..Default::default()
@@ -1187,14 +1418,25 @@ impl AccessPoint {
                 qos,
                 ht,
             }) => {
-                let (status, aid) = match self.stations.associate(
-                    from,
-                    ssid == Some(bss.ssid),
-                    rsn_element,
-                    bss.protected,
-                ) {
-                    Ok(aid) => (status::SUCCESS, aid),
-                    Err(status) => (status, 0),
+                // while the ladder admits no new stations, only one already
+                // associated (or keyed) may associate again
+                let known = self
+                    .stations
+                    .get(&from)
+                    .is_some_and(|s| matches!(s.state, State::Associated | State::Connected));
+                let (status, aid) = if !ADMITTING.load(Ordering::Relaxed) && !known {
+                    ADMISSIONS_REFUSED.fetch_add(1, Ordering::Relaxed);
+                    (status::TOO_MANY_STATIONS, 0)
+                } else {
+                    match self.stations.associate(
+                        from,
+                        ssid == Some(bss.ssid),
+                        rsn_element,
+                        bss.protected,
+                    ) {
+                        Ok(aid) => (status::SUCCESS, aid),
+                        Err(status) => (status, 0),
+                    }
                 };
                 if status == status::SUCCESS {
                     self.stations.set_capabilities(&from, qos, ht);
@@ -1321,11 +1563,21 @@ impl AccessPoint {
         if peer.key_slot.is_none() {
             return; // no keys yet: nothing protected can be from it
         }
-        if packet_number <= peer.rx_packet_number {
-            REPLAYS.fetch_add(1, Ordering::Relaxed);
-            return;
+        // per TID for QoS data (its QoS Control after the 24-byte header):
+        // one counter per station dropped a phone's frames on its other TIDs
+        let tid = (subtype & 0b1000 != 0).then(|| f.get(24).map_or(0, |q| q & 0x0f));
+        let retry = fc1 & 0x08 != 0;
+        match peer.rx_window.check(tid, packet_number, retry) {
+            ap_core::replay::Verdict::Fresh => {}
+            ap_core::replay::Verdict::Duplicate => {
+                DUPLICATES.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+            ap_core::replay::Verdict::Replay => {
+                REPLAYS.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
         }
-        peer.rx_packet_number = packet_number;
         self.station_data(f, header + 8, station, destination, up)
             .await;
     }
@@ -1441,6 +1693,16 @@ pub struct AccessPointConfig {
     /// Where the soft-AP TSF starts: the RTC's time since power-up, so a
     /// reset does not look like a clock that ran backwards (E3's R1).
     pub tsf_seed_us: u64,
+    /// The access point encrypts its own frames (`ap_core::ccmp`) rather
+    /// than letting the hardware do it.
+    ///
+    /// `None` decides from the interface: the hardware encrypts for the
+    /// radio's FIRST virtual interface only, so an access point hosted
+    /// beside a station -- on the second -- must do its own, and one alone
+    /// on the radio need not. Set it when the firmware knows better, as a
+    /// firmware that hosts the access point first does
+    /// (`station::stack_spliced_with_access_point_first`).
+    pub software_crypto: Option<bool>,
 }
 
 impl AccessPointConfig {
@@ -1457,6 +1719,7 @@ impl AccessPointConfig {
             inactivity: Duration::from_secs(300),
             ht: true,
             tsf_seed_us,
+            software_crypto: None,
         }
     }
 
@@ -1531,19 +1794,8 @@ fn bring_up<const SOCK: usize>(
     seed: u64,
     raw_peer: Option<[u8; 6]>,
 ) -> (OpenAccessPoint, Option<(RawLink, RawRunner)>) {
-    let protected = !config.passphrase.is_empty();
-    assert!(
-        !protected || (8..=63).contains(&config.passphrase.len()),
-        "WPA2-PSK's passphrase is 8 to 63 bytes (or empty: an open network)"
-    );
-    assert!(config.ssid.len() <= 32, "an SSID is up to 32 bytes");
+    let (pmk, protected) = prepare(&config);
     tsf::start_access_point_clock_at(config.tsf_seed_us);
-
-    // the PMK, once: PBKDF2-HMAC-SHA1, 4,096 rounds (none on an open network)
-    let mut pmk = [0u8; 32];
-    if protected {
-        ieee80211::crypto::map_passphrase_to_psk(config.passphrase, config.ssid, &mut pmk);
-    }
 
     static VIF: StaticCell<VirtualInterface<'static>> = StaticCell::new();
     static VIF_RAW: StaticCell<VirtualInterface<'static>> = StaticCell::new();
@@ -1552,6 +1804,110 @@ fn bring_up<const SOCK: usize>(
     // the raw link (E4) on the second interface, when asked for
     let raw =
         raw_peer.map(|peer| crate::raw_link::attach(VIF_RAW.init(vif_raw), config.channel, peer));
+    let (hosted, _) = host_on(vif, config, pmk, protected, resources, seed, false, false);
+    (
+        OpenAccessPoint {
+            stack: hosted.stack,
+            bssid: hosted.bssid,
+            mac,
+            ap: hosted.ap,
+            net: hosted.net,
+        },
+        raw,
+    )
+}
+
+/// The checks a configuration must pass, and its PMK: PBKDF2-HMAC-SHA1,
+/// 4,096 rounds, once (none on an open network).
+fn prepare(config: &AccessPointConfig) -> ([u8; 32], bool) {
+    let protected = !config.passphrase.is_empty();
+    assert!(
+        !protected || (8..=63).contains(&config.passphrase.len()),
+        "WPA2-PSK's passphrase is 8 to 63 bytes (or empty: an open network)"
+    );
+    assert!(config.ssid.len() <= 32, "an SSID is up to 32 bytes");
+    let mut pmk = [0u8; 32];
+    if protected {
+        ieee80211::crypto::map_passphrase_to_psk(config.passphrase, config.ssid, &mut pmk);
+    }
+    (pmk, protected)
+}
+
+/// The access point on a station's spare interface: both roles on one
+/// radio, so on one channel, the station's. Call it
+/// once the station has joined, with `config.channel` the channel it
+/// joined on ([`joined_channel`](crate::joined_channel)); the station's
+/// [`mac_task`](crate::mac_task) already serves both interfaces, so spawn
+/// [`ap_task`], [`net_task`] and [`dhcp_server_task`] alone. The BSSID is
+/// the base MAC plus one, the station's address the base MAC. `None` when
+/// the radio is on another channel than `config.channel` (the station
+/// left, or joined elsewhere, in between): nothing is hosted then.
+///
+/// # Panics
+///
+/// As [`hosted_stack`].
+pub fn hosted_beside<const SOCK: usize>(
+    spare: crate::SpareInterface,
+    config: AccessPointConfig,
+    resources: &'static mut StackResources<SOCK>,
+    seed: u64,
+) -> Option<HostedBeside> {
+    let (pmk, protected) = prepare(&config);
+    tsf::start_access_point_clock_at(config.tsf_seed_us);
+    let (hosted, _) = host_on(
+        spare.0, config, pmk, protected, resources, seed, false, true,
+    );
+    hosted.channel_locked.then_some(hosted)
+}
+
+/// [`hosted_beside`], with a [`splice`](crate::splice) between the access
+/// point's device and its IP stack: every frame a station sends goes
+/// through the splice the firmware runs (a NAT relay, for one). The stack
+/// is the same, on the splice.
+///
+/// # Panics
+///
+/// As [`hosted_stack`].
+pub fn hosted_beside_spliced<const SOCK: usize>(
+    spare: crate::SpareInterface,
+    config: AccessPointConfig,
+    resources: &'static mut StackResources<SOCK>,
+    seed: u64,
+) -> Option<(HostedBeside, crate::splice::Splice)> {
+    let (pmk, protected) = prepare(&config);
+    tsf::start_access_point_clock_at(config.tsf_seed_us);
+    let (hosted, splice) = host_on(spare.0, config, pmk, protected, resources, seed, true, true);
+    hosted
+        .channel_locked
+        .then_some((hosted, splice.expect("asked for above")))
+}
+
+/// What [`hosted_beside`] gives a firmware: the access point's stack,
+/// BSSID and runners, without a lower-MAC runner of its own.
+pub struct HostedBeside {
+    /// The IP stack at the configured address.
+    pub stack: Stack<'static>,
+    /// The network's BSSID (the base MAC plus one).
+    pub bssid: [u8; 6],
+    /// The access point's runner, for [`ap_task`].
+    pub ap: ApRunner,
+    /// The IP stack's runner, for [`net_task`].
+    pub net: Runner<'static, ch::Device<'static, MTU>>,
+    channel_locked: bool,
+}
+
+fn host_on<const SOCK: usize>(
+    vif: &'static mut VirtualInterface<'static>,
+    config: AccessPointConfig,
+    pmk: [u8; 32],
+    protected: bool,
+    resources: &'static mut StackResources<SOCK>,
+    seed: u64,
+    spliced: bool,
+    // `beside_a_station`: the access point is on the radio's second virtual
+    // interface, where the hardware will not encrypt for it
+    beside_a_station: bool,
+) -> (HostedBeside, Option<crate::splice::Splice>) {
     let (control, rx, tx) = vif.split();
     let control: &'static LMacInterfaceControl<'static> = control;
 
@@ -1559,7 +1915,9 @@ fn bring_up<const SOCK: usize>(
     let mut bssid = [0u8; 6];
     bssid.copy_from_slice(base.as_bytes());
     bssid[5] = bssid[5].wrapping_add(1);
-    let _ = control.lock_channel(config.channel);
+    // alone on the radio this cannot be refused; beside a station it is
+    // refused unless the station is on this channel
+    let channel_locked = control.lock_channel(config.channel).is_ok();
     control.set_filter(RxFilterBank::ReceiverAddress, bssid);
     control.set_filter(RxFilterBank::Bssid, bssid);
     control.set_filter_bssid_check(false);
@@ -1606,6 +1964,15 @@ fn bring_up<const SOCK: usize>(
         gateway: Some(config.address.address()),
         dns_servers: Default::default(),
     });
+    // the stack's side of a splice: 2 frames each way (the device's own
+    // traffic is light; static RAM is not)
+    static SPLICED: ConstStaticCell<ch::State<MTU, 2, 2>> = ConstStaticCell::new(ch::State::new());
+    let (device, splice) = if spliced {
+        let (device, splice) = crate::splice::splice(device, SPLICED.take(), bssid);
+        (device, Some(splice))
+    } else {
+        (device, None)
+    };
     let (stack, net) = embassy_net::new(device, ip, resources, seed);
 
     static HELD_FRAMES: ConstStaticCell<Held> = ConstStaticCell::new(Held::new());
@@ -1625,6 +1992,7 @@ fn bring_up<const SOCK: usize>(
             protected,
             ht: config.ht,
         },
+        software_crypto: config.software_crypto.unwrap_or(beside_a_station),
         stations: Stations::new(),
         peers: [const { None }; MAX_STATIONS],
         pmk,
@@ -1642,18 +2010,19 @@ fn bring_up<const SOCK: usize>(
         probe: [0; 256],
         probe_len: 0,
         release_buf: Some(RELEASE_BUF.take()),
+        own_ip: config.address.address().octets(),
     };
     let mut ap = ap;
     ap.probe_len = frames::probe_response(&mut ap.probe, &ap.bss, BROADCAST).unwrap_or(0);
     (
-        OpenAccessPoint {
+        HostedBeside {
             stack,
             bssid,
-            mac,
             ap: ApRunner { ap, rx, up, down },
             net,
+            channel_locked,
         },
-        raw,
+        splice,
     )
 }
 
@@ -1741,6 +2110,12 @@ pub async fn ap_task(runner: ApRunner) -> ! {
                 let Some(beacon) = template else {
                     continue;
                 };
+                // a shedding policy's last step: no beacon (the TBTT still
+                // counted above, so the next one is in step)
+                if !BEACONING.load(Ordering::Relaxed) {
+                    BEACONS_WITHHELD.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
                 if frames::set_tim(&mut beacon_buf[..], beacon.tim_at, &tim).is_none() {
                     continue;
                 }
@@ -1761,6 +2136,9 @@ pub async fn ap_task(runner: ApRunner) -> ! {
                                 BEACONS_LATE.fetch_add(1, Ordering::Relaxed);
                             }
                             BEACON_LATE_MAX_US.fetch_max(late as u32, Ordering::Relaxed);
+                            BEACON_HOOKS.fetch_add(1, Ordering::Relaxed);
+                            BEACON_LATE_SUM_US.fetch_add(late as u32, Ordering::Relaxed);
+                            BEACON_WINDOW_MAX_US.fetch_max(late as u32, Ordering::Relaxed);
                             let ts = hook + TO_TIMESTAMP_US;
                             f[at..at + 8].copy_from_slice(&ts.to_le_bytes());
                         },
@@ -1802,6 +2180,20 @@ pub async fn ap_task(runner: ApRunner) -> ! {
                     ap.deliver(eth).await;
                 }
                 down.tx_done();
+            }
+        }
+        if RENUMBER.load(Ordering::Relaxed) && RENUMBER.swap(false, Ordering::Relaxed) {
+            loop {
+                let Some(gone) = ap.stations.iter().next().map(|s| s.address) else {
+                    break;
+                };
+                ap.forget(&gone);
+                STATIONS_RENUMBERED.fetch_add(1, Ordering::Relaxed);
+                let b = ap.bss.bssid;
+                ap.reply(|out, _| {
+                    frames::deauthentication(out, b, gone, reason::PREV_AUTH_NOT_VALID)
+                })
+                .await;
             }
         }
         if sweep.elapsed().as_secs() >= 10 {
@@ -1903,8 +2295,11 @@ pub struct Stats {
     /// protected frames whose packet number did not climb.
     pub plaintext_dropped: u32,
     /// Unprotected data frames dropped after a station's keys were in, and
-    /// protected frames whose packet number did not climb.
+    /// protected frames whose packet number did not climb on their TID.
     pub replays: u32,
+    /// Protected frames sent again (Retry set) with a packet number already
+    /// taken: our ACK was lost; dropped as duplicates, not replays.
+    pub duplicates: u32,
     /// Class-3 frames from stations the table does not hold (answered with
     /// reason 7).
     pub strangers: u32,
@@ -1953,6 +2348,12 @@ pub struct Stats {
     /// QoS Data frames sent, frames sent at HT rates, unicast data frames
     /// never acknowledged, rate-ladder steps up and down.
     pub data_unacked: u32,
+    /// Frames this access point encrypted itself, and frames CCMP refused
+    /// and so did not send. Both 0 when the hardware does the encrypting.
+    pub software_crypto: u32,
+    /// Frames this access point encrypted itself, and frames CCMP refused
+    /// and so did not send. Both 0 when the hardware does the encrypting.
+    pub software_crypto_refused: u32,
     /// QoS Data frames sent, frames sent at HT rates, unicast data frames
     /// never acknowledged, rate-ladder steps up and down.
     pub ladder_up: u32,
@@ -1967,6 +2368,17 @@ pub struct Stats {
 #[must_use]
 pub fn clocks() -> (u64, u64) {
     (tsf::access_point(), tsf::stamp())
+}
+
+/// Every beacon's delay after its TBTT, for windows: beacons stamped since boot, their delays summed since boot (µs,
+/// wrapping), and the worst delay since the previous call, which this
+/// call resets. Two calls' differences give a window's count and mean.
+pub fn beacon_window() -> (u32, u32, u32) {
+    (
+        BEACON_HOOKS.load(Ordering::Relaxed),
+        BEACON_LATE_SUM_US.load(Ordering::Relaxed),
+        BEACON_WINDOW_MAX_US.swap(0, Ordering::Relaxed),
+    )
 }
 
 /// The counters now.
@@ -2006,6 +2418,7 @@ pub fn stats() -> Stats {
         forwarded: r(&FORWARDED),
         plaintext_dropped: r(&PLAINTEXT_DROPPED),
         replays: r(&REPLAYS),
+        duplicates: r(&DUPLICATES),
         strangers: r(&STRANGERS),
         held: r(&HELD),
         held_dropped: r(&HELD_DROPPED),
@@ -2022,6 +2435,8 @@ pub fn stats() -> Stats {
         qos_sent: r(&QOS_DATA_SENT),
         ht_sent: r(&HT_SENT),
         data_unacked: r(&DATA_UNACKED),
+        software_crypto: r(&SOFTWARE_CRYPTO),
+        software_crypto_refused: r(&SOFTWARE_CRYPTO_REFUSED),
         ladder_up: r(&LADDER_UP),
         ladder_down: r(&LADDER_DOWN),
     }

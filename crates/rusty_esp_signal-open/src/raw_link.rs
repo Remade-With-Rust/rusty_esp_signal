@@ -37,7 +37,9 @@ use embassy_time::{Duration, Instant, with_timeout};
 use esp_hal::rng::Rng as HardwareRng;
 use foa::esp_wifi_hal::ll::EdcaAccessCategory;
 use foa::esp_wifi_hal::prelude::{RxFilterBank, TxMacParameters, TxPlcpParameters};
-use foa::esp_wifi_hal::rates::{HrDsssRate, TxPhyRate};
+use foa::esp_wifi_hal::rates::HrDsssRate;
+/// The rates [`RawLink::send_test_frame`] takes (E8's length sweep).
+pub use foa::esp_wifi_hal::rates::{HtRate, OfdmRate, TxPhyRate};
 use foa::{FoARunner, RetryBehaviour, RxEndpoint, TxEndpoint, VirtualInterface};
 use rusty_esp_signal_core::esp_core::error::Result;
 use rusty_esp_signal_core::esp_core::{Error, Micros, Rng};
@@ -426,6 +428,65 @@ impl<E: Sha256Blocks> RawLink<E> {
             },
         )?;
         self.transmit_frame(buf, n).await
+    }
+
+    /// E8's length sweep (a test frame, not the link): one broadcast data
+    /// frame of `mpdu_len` octets (FCS not counted) at `rate`, sent once,
+    /// no ACK. The body starts `JE8`, then the length (u16, big-endian),
+    /// `rate_code` and `sequence` (u32, big-endian), for a receiver to
+    /// tally per length and rate; the rest is a counting pattern. Refused
+    /// when the TX buffer is shorter than the frame.
+    pub async fn send_test_frame(
+        &mut self,
+        mpdu_len: usize,
+        rate: TxPhyRate,
+        rate_code: u8,
+        sequence: u32,
+    ) -> Result<()> {
+        let mut buf = self.tx.alloc_tx_buf().await;
+        if mpdu_len < 24 + 10 || mpdu_len > buf.len() {
+            return Err(Error::BufferTooSmall { needed: mpdu_len });
+        }
+        let f = &mut buf[..mpdu_len];
+        f[0] = 0x08; // data
+        f[1] = 0x00;
+        f[2..4].fill(0);
+        f[4..10].copy_from_slice(&BROADCAST);
+        f[10..16].copy_from_slice(&self.me);
+        f[16..22].copy_from_slice(&self.me);
+        f[22..24].fill(0);
+        f[24..27].copy_from_slice(b"JE8");
+        f[27..29].copy_from_slice(&(mpdu_len as u16).to_be_bytes());
+        f[29] = rate_code;
+        f[30..34].copy_from_slice(&sequence.to_be_bytes());
+        for (i, b) in f[34..].iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        let done = self
+            .tx
+            .transmit_edca(
+                EdcaAccessCategory::default(),
+                buf,
+                mpdu_len,
+                TxPlcpParameters {
+                    rate,
+                    ..Default::default()
+                },
+                TxMacParameters {
+                    wait_for_ack: false,
+                    override_seq_num: true,
+                    ..Default::default()
+                },
+                RetryBehaviour::Drop,
+            )
+            .wait_for_completion()
+            .await;
+        SENT.fetch_add(1, Ordering::Relaxed);
+        if matches!(done, Some(d) if d.result.is_ok()) {
+            Ok(())
+        } else {
+            Err(Error::Hardware)
+        }
     }
 
     /// A laid-out frame of `n` octets in `buf` on the air: acknowledged
