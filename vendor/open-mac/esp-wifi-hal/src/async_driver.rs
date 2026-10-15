@@ -709,10 +709,57 @@ pub struct TxMacParameters {
     ///
     /// Under normal circumstances, you should never have to deviate from the default here.
     pub edca_parameters: EdcaParameters,
+    /// E8: the buffer holds an A-MPDU's subframes, laid out as this says;
+    /// `None` is one MPDU, as always. ESP32-S3 only; the rate must be HT.
+    pub ampdu: Option<AmpduLayout>,
     /// Requires using `..Default::default()` initialization, to ensure future backwards
     /// compatibility.
     pub _ne: NonExhaustive,
 }
+
+/// Subframes an A-MPDU may carry here.
+pub const AMPDU_MAX: usize = 4;
+
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+/// An A-MPDU in one TX buffer (E8, the family's addition), the layout the
+/// ESP32-S3's MAC takes as esp-radio lays it (read off silicon, signal's
+/// ledger 2026-10-08): per subframe an 8-byte prefix
+/// (`sta_handshake::ht::ampdu_prefix`) then its MPDU, each subframe on a
+/// word boundary. The driver chains one DMA descriptor per subframe; the
+/// MAC builds the delimiters. Sequence numbers are the caller's (in each
+/// MPDU header and prefix), so `override_seq_num` must be off.
+pub struct AmpduLayout {
+    /// Subframes in the buffer, 2 to [`AMPDU_MAX`].
+    pub count: u8,
+    /// Each subframe's start in the buffer (its prefix).
+    pub offsets: [u16; AMPDU_MAX],
+    /// Each subframe's MPDU length, FCS not counted.
+    pub mpdu_lens: [u16; AMPDU_MAX],
+    /// The first subframe's sequence number.
+    pub ssn: u16,
+}
+
+impl AmpduLayout {
+    /// The A-MPDU's length on the air: each subframe a 4-byte delimiter
+    /// and its MPDU with FCS, padded to 4 bytes but the last.
+    pub fn psdu_len(&self) -> usize {
+        let n = usize::from(self.count);
+        (0..n)
+            .map(|i| {
+                let sub = 4 + usize::from(self.mpdu_lens[i]) + 4;
+                if i + 1 < n { sub.next_multiple_of(4) } else { sub }
+            })
+            .sum()
+    }
+}
+
+/// The extra descriptors an A-MPDU's chain takes, per hardware slot: the
+/// slot's own descriptor holds the first subframe. A slot transmits one
+/// frame at a time, owned by its queue endpoint, so a slot's row is never
+/// in use twice.
+pub(crate) static mut AMPDU_DESCRIPTORS: [[DmaDescriptor; AMPDU_MAX - 1]; 5] =
+    [[DmaDescriptor::EMPTY; AMPDU_MAX - 1]; 5];
 
 /// Endpoint for a hardware transmit queue.
 ///
@@ -871,6 +918,7 @@ mod private {
             dma_descriptor: Pin<&DmaDescriptor>,
             extracted_parameters: ExtractedParameters,
             edca_tx_parameters: EdcaTxParameters,
+            ampdu: Option<(usize, u16)>,
         ) {
             // To setup a frame for transmission, we have to do a few things with the hardware.
             // 1. Configure channel access parameters, like the medium access timeout (unsure), as
@@ -886,7 +934,11 @@ mod private {
             {
                 rts_enabled
             } else {
-                extracted_parameters.is_unicast
+                // E8: `JANUS_OPEN_NO_RTS=on` builds the driver with no RTS
+                // unless a frame forces one (the join's frames took the
+                // default; the owner's ISP router failed them with MAC
+                // errors that looked like CTS timeouts)
+                extracted_parameters.is_unicast && option_env!("JANUS_OPEN_NO_RTS") != Some("on")
             };
 
             ll_driver.set_channel_access_parameters(
@@ -901,10 +953,12 @@ mod private {
                 mac_parameters.wait_for_ack,
                 rts_enabled,
             );
+            // E8: an A-MPDU's length is the whole aggregate's
+            let frame_len = ampdu.map_or(dma_descriptor.len(), |(psdu_len, _)| psdu_len);
             ll_driver.set_plcp1(
                 queue,
                 rate,
-                dma_descriptor.len(),
+                frame_len,
                 interface,
                 mac_parameters.key_slot_index,
             );
@@ -916,8 +970,21 @@ mod private {
                     queue,
                     ht_rate.mcs_index(),
                     ht_rate.short_gi(),
-                    dma_descriptor.len(),
+                    frame_len,
                 );
+                #[cfg(feature = "esp32s3")]
+                if let Some((psdu_len, ssn)) = ampdu {
+                    // esp-radio protects its A-MPDUs with RTS/CTS;
+                    // `JANUS_OPEN_AMPDU_RTS=off` sends them unprotected
+                    ll_driver.set_ampdu_parameters(
+                        queue,
+                        ht_rate.mcs_index(),
+                        ht_rate.short_gi(),
+                        psdu_len,
+                        ssn,
+                        option_env!("JANUS_OPEN_AMPDU_RTS") != Some("off"),
+                    );
+                }
             }
         }
         /// Transmit a frame and wait for the transmission to be completed.
@@ -931,6 +998,7 @@ mod private {
             queue: HardwareTxQueue,
             dma_descriptor: Pin<&DmaDescriptor>,
             fallible_params: Result<(ExtractedParameters, EdcaTxParameters), TxError>,
+            ampdu: Option<(usize, u16)>,
         ) -> impl Future<Output = Result<(), TxError>> + Send + Sync + 'a {
             let ll_driver = unsafe { self.ll_driver_ref() };
             let hardware_tx_result_signal = &HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()];
@@ -953,6 +1021,7 @@ mod private {
                     dma_descriptor.as_ref(),
                     extracted_parameters,
                     edca_tx_parameters,
+                    ampdu,
                 );
 
                 // This compensates for other slots being marked as done, without it being used at all.
@@ -1024,6 +1093,91 @@ mod private {
                 is_unicast,
             })
         }
+        /// The Retry bit of the frame (or of every subframe of an A-MPDU).
+        fn set_retry_flags(
+            mpdu_buf: &mut [u8],
+            ampdu: Option<&crate::async_driver::AmpduLayout>,
+            retry: bool,
+        ) {
+            let mut set = |at: usize| {
+                if let Some(byte) = mpdu_buf.get_mut(at) {
+                    if retry {
+                        *byte |= bit!(3);
+                    } else {
+                        *byte &= !bit!(3);
+                    }
+                }
+            };
+            match ampdu {
+                Some(layout) => {
+                    for i in 0..usize::from(layout.count) {
+                        set(usize::from(layout.offsets[i]) + 8 + 1);
+                    }
+                }
+                None => set(1),
+            }
+        }
+        /// E8: an A-MPDU's buffer checked and its descriptor chain built:
+        /// each subframe's prefix and MPDU inside the buffer and on a word
+        /// boundary; the frame parameters from the first MPDU; one
+        /// descriptor per subframe (the slot's own for the first, the
+        /// slot's row of [`crate::async_driver::AMPDU_DESCRIPTORS`] for the
+        /// rest), each word 0 as esp-radio's: size = the MPDU, length = MPDU
+        /// + FCS + the 8-byte prefix, bit 29, EOF on the last, owner DMA.
+        #[allow(clippy::too_many_arguments)]
+        fn prepare_ampdu_for_tx(
+            &self,
+            interface: usize,
+            mac_parameters: &TxMacParameters,
+            layout: &crate::async_driver::AmpduLayout,
+            queue: HardwareTxQueue,
+            mpdu_buf: &mut [u8],
+            first: &mut DmaDescriptor,
+        ) -> Result<ExtractedParameters, TxError> {
+            if mac_parameters.override_seq_num {
+                return Err(TxError::OutOfBounds);
+            }
+            let n = usize::from(layout.count);
+            for i in 0..n {
+                let start = usize::from(layout.offsets[i]);
+                let end = start + 8 + usize::from(layout.mpdu_lens[i]);
+                if start % 4 != 0 || end > mpdu_buf.len() || layout.mpdu_lens[i] < 24 {
+                    return Err(TxError::BufferTooShort);
+                }
+            }
+            let first_mpdu = usize::from(layout.offsets[0]) + 8;
+            let extracted_parameters = self.prepare_frame_for_tx(
+                interface,
+                mac_parameters,
+                &mut mpdu_buf[first_mpdu..first_mpdu + usize::from(layout.mpdu_lens[0])],
+            )?;
+            let base = mpdu_buf.as_mut_ptr();
+            // SAFETY: this slot's row; the slot carries one frame at a time
+            let extra = unsafe { &mut (*(&raw mut crate::async_driver::AMPDU_DESCRIPTORS))[queue.hardware_slot()] };
+            let mut descriptors: [*mut DmaDescriptor; crate::async_driver::AMPDU_MAX] = [core::ptr::null_mut(); crate::async_driver::AMPDU_MAX];
+            descriptors[0] = first;
+            for i in 1..n {
+                descriptors[i] = &mut extra[i - 1];
+            }
+            for i in 0..n {
+                let mpdu_len = u32::from(layout.mpdu_lens[i]);
+                let last = i + 1 == n;
+                let word0 = (mpdu_len & 0xfff)
+                    | (((mpdu_len + 4 + 8) & 0xfff) << 12)
+                    | (1 << 29)
+                    | if last { 1 << 30 } else { 0 }
+                    | (1 << 31);
+                // SAFETY: the descriptors are this slot's (above); word 0 is
+                // the descriptor's first u32, as the DMA reads it
+                unsafe {
+                    let d = descriptors[i];
+                    core::ptr::write_volatile(d.cast::<u32>(), word0);
+                    (*d).buffer = base.add(usize::from(layout.offsets[i]));
+                    (*d).next = if last { core::ptr::null_mut() } else { descriptors[i + 1] };
+                }
+            }
+            Ok(extracted_parameters)
+        }
         fn prepare_dma_descriptor_for_tx(mpdu_buf: &mut [u8], dma_descriptor: &mut DmaDescriptor) {
             // Attach length for FCS.
             let frame_length = mpdu_buf.len() + 4;
@@ -1085,6 +1239,7 @@ mod private {
                 queue,
                 dma_descriptor.into_ref(),
                 duration_and_backoff_slots,
+                None,
             )
         }
         #[allow(clippy::too_many_arguments)]
@@ -1101,9 +1256,27 @@ mod private {
             mut dma_descriptor: Pin<&'a mut DmaDescriptor>,
             mpdu_buf: &mut [u8],
         ) -> Result<u8, TxError> {
-            let extracted_parameters =
-                self.prepare_frame_for_tx(interface, mac_parameters, mpdu_buf)?;
-            Self::prepare_dma_descriptor_for_tx(mpdu_buf, dma_descriptor.deref_mut());
+            // E8: an A-MPDU's subframes chained over the one buffer
+            let ampdu = mac_parameters
+                .ampdu
+                .filter(|a| a.count >= 2 && usize::from(a.count) <= crate::async_driver::AMPDU_MAX);
+            let extracted_parameters = if let Some(layout) = ampdu {
+                Self::prepare_ampdu_for_tx(
+                    self,
+                    interface,
+                    mac_parameters,
+                    &layout,
+                    queue,
+                    mpdu_buf,
+                    dma_descriptor.deref_mut(),
+                )?
+            } else {
+                let extracted_parameters =
+                    self.prepare_frame_for_tx(interface, mac_parameters, mpdu_buf)?;
+                Self::prepare_dma_descriptor_for_tx(mpdu_buf, dma_descriptor.deref_mut());
+                extracted_parameters
+            };
+            let ampdu_words = ampdu.map(|layout| (layout.psdu_len(), layout.ssn));
 
             // We start transmitting and adapt the rate as required. As soon, as a transmission
             // succeeds, we return.
@@ -1151,19 +1324,20 @@ mod private {
                                 backoff_slots,
                             },
                         )),
+                        ampdu_words,
                     )
                     .await
                     .map(|_| i as u8);
-                crate::tx_stats::attempt(&last_res);
-                crate::tx_stats::attempt_at(&tx_attempt_rate, &last_res, i == 0);
+                crate::tx_stats::attempt_on(interface, &last_res);
+                // E8: an A-MPDU's rate is judged by its subframes, which
+                // its sender counts from the block-ack (`record_subframes`)
+                crate::tx_stats::attempt_at(&tx_attempt_rate, &last_res, i == 0 && ampdu.is_none());
                 if matches!(last_res, Err(TxError::MacProtocol(_))) {
                     // The peer may have received this MPDU even if its ACK was
                     // lost. Mark later attempts as retries of the same frame.
                     // A channel-access failure alone must not set this flag,
                     // nor clear one retained from an earlier MAC failure.
-                    if let Some(byte) = mpdu_buf.get_mut(1) {
-                        *byte |= bit!(3);
-                    }
+                    Self::set_retry_flags(mpdu_buf, ampdu.as_ref(), true);
                 }
                 match last_res {
                     Ok(_) => break,
@@ -1183,10 +1357,12 @@ mod private {
                     _ => {}
                 }
             }
-            if let Some(byte) = mpdu_buf.get_mut(1) {
-                *byte &= !bit!(3);
-            }
-            crate::tx_stats::record(&last_res, tx_started.elapsed().as_micros(), mpdu_buf.len());
+            Self::set_retry_flags(mpdu_buf, ampdu.as_ref(), false);
+            crate::tx_stats::record(
+                &last_res,
+                tx_started.elapsed().as_micros(),
+                ampdu_words.map_or(mpdu_buf.len(), |(psdu_len, _)| psdu_len),
+            );
             if let Err(error) = last_res {
                 // Upper layers may enqueue without awaiting a completion handle.
                 // Keep exhausted MAC/medium failures visible without logging payloads.

@@ -21,6 +21,18 @@ static RADIO_US: AtomicU64 = AtomicU64::new(0);
 static BYTES: AtomicU64 = AtomicU64::new(0);
 static ACK_TIMEOUT: AtomicU32 = AtomicU32::new(0);
 static MAC_OTHER: AtomicU32 = AtomicU32::new(0);
+/// InvalidKeyId, also counted in `MAC_OTHER` so the existing fail_mac total
+/// stays comparable. A protected frame on the wrong interface reads as this.
+static INVALID_KEY: AtomicU32 = AtomicU32::new(0);
+/// The MAC errors that are neither an ACK timeout nor a key id, by kind, and
+/// every MAC error by interface (0, 1): which side of P2 fails, and how.
+static MAC_CTS: AtomicU32 = AtomicU32::new(0);
+static MAC_RTS: AtomicU32 = AtomicU32::new(0);
+static MAC_UNKNOWN: AtomicU32 = AtomicU32::new(0);
+static MAC_IF: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
+/// The last MAC error other than an ACK timeout: interface << 24 | kind << 16
+/// (1 CTS, 2 RTS access, 3 key id, 4 unknown) | error << 8 | sub-error.
+static MAC_LAST: AtomicU32 = AtomicU32::new(0);
 static ACCESS_TIMEOUT: AtomicU32 = AtomicU32::new(0);
 static ACCESS_COLLISION: AtomicU32 = AtomicU32::new(0);
 static OTHER: AtomicU32 = AtomicU32::new(0);
@@ -72,8 +84,11 @@ pub(crate) fn woke(slot: usize) {
 /// it carries that failure's conditions, and counting retries made the
 /// rates the retry chain falls to read worse than the rate above them
 /// (2026-10-03: 24 Mbit/s at 69 %, 36 at 97 %).
-static RATE_ATTEMPTS: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
-static RATE_ACKED: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
+/// E8: the HT rates follow the OFDM ones, MCS 7 down to 0 at 8..16 (the
+/// short and the long guard interval share an MCS's place: a build uses
+/// one).
+static RATE_ATTEMPTS: [AtomicU32; 16] = [const { AtomicU32::new(0) }; 16];
+static RATE_ACKED: [AtomicU32; 16] = [const { AtomicU32::new(0) }; 16];
 
 /// Where `rate` sits in [`rate_snapshot`]: 54 Mbit/s first, 6 last.
 #[must_use]
@@ -94,19 +109,37 @@ pub const fn ofdm_index(rate: OfdmRate) -> usize {
 /// went on the air, and was either answered or not (a lost channel-access
 /// contest says nothing about the rate).
 pub(crate) fn attempt_at<T>(rate: &TxPhyRate, result: &Result<T, TxError>, first: bool) {
-    let (true, PhyRate::Ofdm(rate)) = (first, rate) else {
+    if !first {
         return;
+    }
+    let i = match rate {
+        PhyRate::Ofdm(rate) => ofdm_index(*rate),
+        PhyRate::Ht(ht) if ht.mcs_index() < 8 => 8 + usize::from(7 - ht.mcs_index()),
+        _ => return,
     };
     let acked = match result {
         Ok(_) => true,
         Err(TxError::MacProtocol(MacProtocolError::AckTimeout)) => false,
         Err(_) => return,
     };
-    let i = ofdm_index(*rate);
     RATE_ATTEMPTS[i].fetch_add(1, Ordering::Relaxed);
     if acked {
         RATE_ACKED[i].fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// E8: an A-MPDU's first round at `rate`: `sent` subframes, `acked` of them
+/// in the block-ack. Counted with the single frames' first attempts, so the
+/// rate control judges a rate by the MPDUs it delivers, not by whether an
+/// aggregate drew any block-ack at all.
+pub fn record_subframes(rate: &TxPhyRate, sent: u32, acked: u32) {
+    let i = match rate {
+        PhyRate::Ofdm(rate) => ofdm_index(*rate),
+        PhyRate::Ht(ht) if ht.mcs_index() < 8 => 8 + usize::from(7 - ht.mcs_index()),
+        _ => return,
+    };
+    RATE_ATTEMPTS[i].fetch_add(sent, Ordering::Relaxed);
+    RATE_ACKED[i].fetch_add(acked.min(sent), Ordering::Relaxed);
 }
 
 /// Per OFDM rate (54 down to 6 Mbit/s): frames whose first attempt was on
@@ -119,11 +152,52 @@ pub fn rate_snapshot() -> [(u32, u32); 8] {
     })
 }
 
+/// The same per HT rate, MCS 7 down to MCS 0 (E8).
+#[must_use]
+pub fn ht_rate_snapshot() -> [(u32, u32); 8] {
+    core::array::from_fn(|i| {
+        (RATE_ATTEMPTS[8 + i].load(Ordering::Relaxed), RATE_ACKED[8 + i].load(Ordering::Relaxed))
+    })
+}
+
+/// [`attempt`], and a MAC error's interface and kind besides.
+pub(crate) fn attempt_on<T>(interface: usize, result: &Result<T, TxError>) {
+    if let Err(TxError::MacProtocol(e)) = result {
+        if let Some(c) = MAC_IF.get(interface) {
+            c.fetch_add(1, Ordering::Relaxed);
+        }
+        let (kind, code) = match e {
+            MacProtocolError::AckTimeout => (0, 0),
+            MacProtocolError::CtsTimeout => {
+                MAC_CTS.fetch_add(1, Ordering::Relaxed);
+                (1, 0)
+            }
+            MacProtocolError::RtsChannelAccessError(_) => {
+                MAC_RTS.fetch_add(1, Ordering::Relaxed);
+                (2, 0)
+            }
+            MacProtocolError::InvalidKeyId => (3, 0x04c0),
+            MacProtocolError::Unknown { error, sub_error } => {
+                MAC_UNKNOWN.fetch_add(1, Ordering::Relaxed);
+                (4, (u32::from(*error) << 8) | u32::from(*sub_error))
+            }
+        };
+        if kind != 0 {
+            MAC_LAST.store(((interface as u32 & 0xff) << 24) | (kind << 16) | code, Ordering::Relaxed);
+        }
+    }
+    attempt(result);
+}
+
 /// One attempt's outcome, by kind: what a failed attempt failed of.
 pub(crate) fn attempt<T>(result: &Result<T, TxError>) {
     let counter = match result {
         Ok(_) => return,
         Err(TxError::MacProtocol(MacProtocolError::AckTimeout)) => &ACK_TIMEOUT,
+        Err(TxError::MacProtocol(MacProtocolError::InvalidKeyId)) => {
+            INVALID_KEY.fetch_add(1, Ordering::Relaxed);
+            &MAC_OTHER
+        }
         Err(TxError::MacProtocol(_)) => &MAC_OTHER,
         Err(TxError::ChannelAccess(ChannelAccessError::Timeout)) => &ACCESS_TIMEOUT,
         Err(TxError::ChannelAccess(ChannelAccessError::Collision)) => &ACCESS_COLLISION,
@@ -169,7 +243,11 @@ pub struct TxStats {
     /// Failed attempts: no ACK in time.
     pub ack_timeout: u32,
     /// Failed attempts: another MAC protocol error (CTS timeout, key...).
+    /// [`Self::invalid_key`] is the key-id part of this, counted here too.
     pub mac_other: u32,
+    /// Failed attempts whose MAC error was an invalid key id. Also included
+    /// in `mac_other`.
+    pub invalid_key: u32,
     /// Failed attempts: channel access timed out.
     pub access_timeout: u32,
     /// Failed attempts: channel access collided (another queue won).
@@ -184,6 +262,34 @@ pub struct TxStats {
     pub wake_us: u64,
 }
 
+/// The MAC errors in detail: which interface failed, and how (P2's fault).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MacDetail {
+    /// MAC errors (every kind, ACK timeouts included) on interface 0 and 1.
+    pub by_interface: [u32; 2],
+    /// CTS timeouts.
+    pub cts: u32,
+    /// RTS channel-access errors.
+    pub rts: u32,
+    /// Errors the driver does not name.
+    pub unknown: u32,
+    /// The last one that was not an ACK timeout: interface << 24 | kind << 16
+    /// (1 CTS, 2 RTS access, 3 key id, 4 unknown) | error << 8 | sub-error.
+    pub last: u32,
+}
+
+/// Read [`MacDetail`].
+#[must_use]
+pub fn mac_detail() -> MacDetail {
+    MacDetail {
+        by_interface: [MAC_IF[0].load(Ordering::Relaxed), MAC_IF[1].load(Ordering::Relaxed)],
+        cts: MAC_CTS.load(Ordering::Relaxed),
+        rts: MAC_RTS.load(Ordering::Relaxed),
+        unknown: MAC_UNKNOWN.load(Ordering::Relaxed),
+        last: MAC_LAST.load(Ordering::Relaxed),
+    }
+}
+
 /// Read the counters.
 #[must_use]
 pub fn snapshot() -> TxStats {
@@ -196,6 +302,7 @@ pub fn snapshot() -> TxStats {
         bytes: BYTES.load(Ordering::Relaxed),
         ack_timeout: ACK_TIMEOUT.load(Ordering::Relaxed),
         mac_other: MAC_OTHER.load(Ordering::Relaxed),
+        invalid_key: INVALID_KEY.load(Ordering::Relaxed),
         access_timeout: ACCESS_TIMEOUT.load(Ordering::Relaxed),
         access_collision: ACCESS_COLLISION.load(Ordering::Relaxed),
         other: OTHER.load(Ordering::Relaxed),

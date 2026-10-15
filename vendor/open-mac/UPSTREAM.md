@@ -247,3 +247,40 @@ list. All pass on the port (2026-10-03).
   `esp-wifi-hal` depends on it by path; nothing else in an open-MAC image
   depends on esp-phy. Before this the open MAC transmitted at the PHY's
   20 dBm, 15 dB above esp-radio's cells (E4's beacon count).
+- E8 (2026-10-08), the station's 802.11n:
+  - `ieee80211`: an A-MSDU subframe's Length field read and written
+    big-endian (upstream: little-endian, so no real A-MSDU parsed).
+  - `sta_handshake::ht` (ours): the association elements (HT
+    Capabilities, WMM Information), the link an association response
+    grants, HT airtime, the QoS data / A-MSDU writer, the ADDBA decline.
+    `foa_sta` now depends on `sta_handshake` without the `rsn` feature.
+  - `foa_sta`: asks for HT and WMM when built with `JANUS_OPEN_HT=on`;
+    `ConnectionInfo::link` and `StaControl::link()`; QoS data on a QoS
+    link, two waiting packets in one A-MSDU with `JANUS_OPEN_AMSDU=on`;
+    ADDBA requests declined; the sample rate and the retry chain take HT
+    rates; a runt from the network stack is given back (upstream took it
+    again forever); `qos_stats()`.
+  - `foa`: `tx_buffer_size` is a setting (`FOA_CONFIG_TX_BUFFER_SIZE`,
+    default upstream's 1,600; 3,885 holds a two-packet A-MSDU with CCMP).
+  - `esp-wifi-hal::tx_stats`: first-attempt counts per HT MCS
+    (`ht_rate_snapshot`).
+  - `foa_sta::rsn`: the pairwise key's SPP flag is a build switch
+    (`JANUS_OPEN_SPP=on`; upstream false). Measured: it did not make the
+    owner's hotspot take an A-MSDU (signal's ledger, E8).
+- E8 (2026-10-08, night), A-MPDU transmit on the ESP32-S3 (`JANUS_OPEN_AMPDU=on`,
+  with `JANUS_OPEN_HT=on` and a TX buffer holding the subframes,
+  `FOA_CONFIG_TX_BUFFER_SIZE=4500` for three): the layout read off silicon
+  from esp-radio with an observation probe (signal's ledger), never from
+  its code.
+  - `esp-wifi-hal`: `TxMacParameters::ampdu` (`AmpduLayout`), a descriptor
+    chain per A-MPDU (bit 29 on each, EOF on the last), `set_ampdu_parameters`
+    (HT-SIG's Aggregation bit and length, plcp0 bits 24/25/27, the slot
+    block's +0x3C), Retry set per subframe on a resend.
+  - `sta_handshake::ht`: ADDBA Request writer, ADDBA Response reader, the
+    8-byte subframe prefix, the A-MPDU length.
+  - `foa_sta`: TID 0 numbered by the station on an A-MPDU build; the ADDBA
+    Request at an HT link and every 2 s until agreed; block-acks let through
+    the control-frame filter and read in the routing task; the waiting
+    packets sent as one A-MPDU and its unacknowledged subframes resent from
+    the block-ack bitmap (at most two more rounds); counters
+    `ampdu_stats`, `ba_census`, `block_ack_stats`.

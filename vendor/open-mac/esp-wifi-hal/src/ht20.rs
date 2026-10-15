@@ -21,6 +21,33 @@ pub(crate) const fn tx_misc(current: u32, response_rate: u8, interface: usize) -
         | ((interface as u32) << 28)
 }
 
+/// PLCP1 for a C3/S3 transmission, as `mac_tx_set_plcp1` of the ESP32-S3
+/// blob writes it. LEN 0..11, RATE 12..16, KEY_SLOT_ID 17..21, the HT bit
+/// at 25. Bits 30:31 stay clear: the S3 blob never sets them (the S2 blob
+/// is the one that puts the interface there). The interface itself is
+/// PLCP2 bits 28:29, written by [`tx_misc`], which is where
+/// `mac_tx_set_txop_q` puts it.
+///
+/// A keyed frame on an odd interface also sets bit 29. The blob sets that
+/// bit when the descriptor's interface id has its low bit set and the
+/// frame carries a key. Interface 0 never does, so its word is unchanged.
+pub(crate) const fn tx_plcp1(
+    frame_length: u32,
+    hardware_rate: u32,
+    key_slot: u32,
+    ht: bool,
+    interface: usize,
+    keyed: bool,
+) -> u32 {
+    assert!(interface < 4);
+    let odd_interface = interface & 1 == 1;
+    (frame_length & 0xfff)
+        | ((hardware_rate & 0x1f) << 12)
+        | ((key_slot & 0x1f) << 17)
+        | ((ht as u32) << 25)
+        | if keyed && odd_interface { 1 << 29 } else { 0 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -62,5 +89,24 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn plcp1_follows_the_s3_blob() {
+        let open = tx_plcp1(1500, 0x1b, 7, true, 1, false);
+        assert_eq!(open & 0xfff, 1500);
+        assert_eq!((open >> 12) & 0x1f, 0x1b);
+        assert_eq!((open >> 17) & 0x1f, 7);
+        assert_eq!((open >> 25) & 1, 1);
+        // bits 29:31 stay clear on an open frame, and on interface 0 even
+        // when a key is used
+        assert_eq!(open >> 29, 0);
+        assert_eq!(tx_plcp1(1500, 0x1b, 7, true, 0, true) >> 29, 0);
+        // a keyed frame on interface 1 sets bit 29 and leaves 30:31 clear
+        let keyed = tx_plcp1(1500, 0x1b, 7, true, 1, true);
+        assert_eq!(keyed >> 29, 1);
+        assert_eq!(keyed & !(1 << 29), open);
+        assert_eq!(tx_plcp1(24, 0, 24, false, 2, true) >> 29, 0);
+        assert_eq!(tx_plcp1(24, 0, 24, false, 3, true) >> 29, 1);
     }
 }

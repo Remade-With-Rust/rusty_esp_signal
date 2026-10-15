@@ -1320,17 +1320,24 @@ impl LowLevelDriver {
     ) {
         #[cfg(any(feature = "esp32s3", feature = "esp32c3"))]
         {
-            // Layout from mac_tx_set_plcp1 of the ESP32-C3/S3 blobs: LEN 0..11, RATE 12..16,
-            // KEY_SLOT_ID 17.., IS_80211_N 25. The interface ID and the rate the hardware expects
-            // the response at live in the "misc" slot register (PAC: PLCP2).
+            // Layout from mac_tx_set_plcp1 of the ESP32-S3 blob: LEN 0..11, RATE
+            // 12..16, KEY_SLOT_ID 17..21, IS_80211_N 25. Bits 30:31 stay clear.
+            // The interface is PLCP2 bits 28:29 (mac_tx_set_txop_q). A keyed
+            // frame on an odd interface also sets bit 29, which that blob sets
+            // from the interface id's low bit; interface 0 still writes a zero
+            // there. Open frames leave it clear, as before.
             let hardware_rate = match rate {
                 TxPhyRate::Ht(ht) => crate::ht20::ht_rate(ht.mcs_index(), ht.short_gi()),
                 _ => rate.as_hardware_rate(),
             };
-            let plcp1 = (frame_length as u32 & 0xfff)
-                | ((hardware_rate as u32 & 0x1f) << 12)
-                | ((key_slot.unwrap_or_default() as u32) << 17)
-                | ((matches!(rate, TxPhyRate::Ht(_)) as u32) << 25);
+            let plcp1 = crate::ht20::tx_plcp1(
+                frame_length as u32,
+                hardware_rate as u32,
+                key_slot.unwrap_or_default() as u32,
+                matches!(rate, TxPhyRate::Ht(_)),
+                interface,
+                key_slot.is_some(),
+            );
             Self::regs_internal()
                 .plcp1(queue.hardware_slot())
                 .write(|w| unsafe { w.bits(plcp1) });
@@ -1401,6 +1408,45 @@ impl LowLevelDriver {
         Self::regs_internal()
             .duration(queue.hardware_slot())
             .write(|w| unsafe { w.bits(duration | (duration << 16)) });
+    }
+    /// E8: the words an A-MPDU's slot arm takes beyond an HT frame's, as
+    /// esp-radio set them on the ESP32-S3 (read off silicon with
+    /// `tools/e0/txprobe.rs`, signal's ledger 2026-10-08; called after
+    /// [`Self::set_plcp0`] and [`Self::set_ht_parameters`]): HT-SIG with the
+    /// Aggregation bit and the A-MPDU's length, the HT word with it, `plcp0`
+    /// without the ACK wait (a block-ack answers) and with bit 25 (seen on
+    /// every A-MPDU arm, never on a single frame) and the RTS bit if asked,
+    /// and the first subframe's sequence number at the slot block's +0x3C.
+    #[cfg(feature = "esp32s3")]
+    pub fn set_ampdu_parameters(
+        &self,
+        queue: HardwareTxQueue,
+        mcs: u8,
+        is_short_gi: bool,
+        psdu_len: usize,
+        ssn: u16,
+        rts: bool,
+    ) {
+        let slot = queue.hardware_slot();
+        Self::regs_internal().ht_sig(slot).write(|w| unsafe {
+            w.bits(crate::ht20::ht_sig(mcs, is_short_gi, psdu_len) | 0x0800_0000)
+        });
+        Self::regs_internal().ht_unknown(slot).write(|w| unsafe {
+            w.bits((psdu_len as u32 & 0x7ffff) | 0x40_0000 | ((mcs as u32 & 0b111) << 28))
+        });
+        Self::regs_internal()
+            .tx_slot_config(slot)
+            .plcp0()
+            .modify(|r, w| unsafe {
+                w.bits(
+                    (r.bits() & !(1 << 24)) | (1 << 25) | if rts { 1 << 27 } else { 0 },
+                )
+            });
+        // the slot block's +0x3C, which no register map names
+        let at = 0x6003_3000u32 + 0x11C8 + 0x4C * slot as u32 + 0x3C;
+        // SAFETY: a register of this slot's block, which this queue owns
+        // while it transmits
+        unsafe { core::ptr::write_volatile(at as *mut u32, u32::from(ssn & 0x0fff)) };
     }
     #[inline]
     /// Configure the HT related register for a TX queue.

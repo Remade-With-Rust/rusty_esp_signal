@@ -15,6 +15,13 @@ options:
     constraints:
       - type:
           validator: positive_integer
+  - name: tx_buffer_size
+    description: Size of a TX buffer in bytes (Janus E8; 3885 holds an A-MSDU of two full-size packets)
+    default:
+      - value: 1600
+    constraints:
+      - type:
+          validator: positive_integer
   - name: tx_buffer_count
     description: Amount of TX buffers
     default: 

@@ -36,7 +36,11 @@ impl<'a> TryFromCtx<'a> for AMSDUSubframe<&'a [u8]> {
 
         let destination_address = from.gread(&mut offset)?;
         let source_address = from.gread(&mut offset)?;
-        let length = from.gread_with::<u16>(&mut offset, Endian::Little)?;
+        // Janus (the family's fix): the Length field sits where Ethernet's
+        // length/type does and is big-endian like it (Linux reads it with
+        // ntohs, Wireshark with tvb_get_ntohs); upstream read it
+        // little-endian, so every real A-MSDU subframe failed to parse
+        let length = from.gread_with::<u16>(&mut offset, Endian::Big)?;
         let payload = from.gread_with(&mut offset, length as usize)?;
         // Round to the nearest multiple of four. Janus E2 (the family's
         // change): only over padding that is there; the last subframe of
@@ -67,7 +71,7 @@ impl<Payload: TryIntoCtx<Error = scroll::Error> + MeasureWith<()>> TryIntoCtx
         buf.gwrite_with(
             self.payload.measure_with(&()) as u16,
             &mut offset,
-            Endian::Little,
+            Endian::Big,
         )?;
         buf.gwrite(self.payload, &mut offset)?;
         // Round to the nearest multiple of four.

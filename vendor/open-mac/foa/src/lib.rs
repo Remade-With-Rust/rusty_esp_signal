@@ -78,8 +78,11 @@ pub const RX_QUEUE_LEN: usize = esp_config_int!(usize, "FOA_CONFIG_RX_QUEUE_LEN"
 pub const TX_BUFFER_COUNT: usize = esp_config_int!(usize, "FOA_CONFIG_TX_BUFFER_COUNT");
 /// The size of a [TxBuffer].
 ///
-/// This is fixed, so that interfaces can rely on the size of a TX buffer.
-pub const TX_BUFFER_SIZE: usize = 1600;
+/// Fixed per build, so that interfaces can rely on the size of a TX buffer.
+/// Upstream's 1,600 bytes is the default; Janus E8 makes it a setting, so
+/// a station that sends A-MSDUs (two packets in one frame, up to 3,885
+/// bytes with CCMP) can have buffers that hold one.
+pub const TX_BUFFER_SIZE: usize = esp_config_int!(usize, "FOA_CONFIG_TX_BUFFER_SIZE");
 
 /// A frame received from the driver.
 #[cfg(feature = "arc_buffers")]
