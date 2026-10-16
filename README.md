@@ -99,6 +99,23 @@ if provisioner.boot(now).action == Action::Connect {
 | **A** | `std` on ESP-IDF — Wi-Fi, Bluetooth provisioning, the radar's serial port | `rusty_esp_signal-esp --features esp-idf` |
 | **B** | `no_std` on `esp-hal` — the protocols, the detector, the framing | `rusty_esp_signal-core`, default |
 
+## 0.3.1
+
+Additions only; nothing 0.3.0 offered has changed.
+
+- `rusty_esp_signal-esp`: a station and an access point at once on esp-radio
+  (`hal::netstack::access_point_station_config`, one radio, both halves built
+  where WPA2 is decided), and a DHCP server that hands its clients the
+  upstream lease's DNS servers (`dhcp_server_with_dns_task`), for a board
+  relaying for its clients.
+- `rusty_esp_signal-esp`: BLE setup fixes found on a C6 -- `ble::setup_address`
+  (a fresh random address per boot, so a central's stale per-address state
+  cannot hide services) and `ble::ANSWER_GRACE`.
+- `rusty_esp_signal-core`: `setup::page`, the setup session over a device's
+  own open network with no Bluetooth (feature `setup-page`, ~76 KB of flash).
+- The family siblings are taken by published version (core 0.1.2, dsp 0.1.1,
+  mid-core 0.1.2), not by git.
+
 ## 0.3.0 is a breaking release
 
 The provisioning service carries the setup session (`setup` and `discover`);

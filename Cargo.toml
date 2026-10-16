@@ -10,7 +10,7 @@ members = ["crates/*"]
 exclude = ["firmware/*", "vendor/open-mac"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Remade-With-Rust/rusty_esp_signal"
@@ -28,15 +28,17 @@ undocumented_unsafe_blocks = "deny"
 [workspace.dependencies]
 # Internal crates carry BOTH path and version so the set publishes to crates.io
 # in lockstep (the rusty_time pattern).
-rusty_esp_signal-core = { path = "crates/rusty_esp_signal-core", version = "0.3.0", default-features = false }
-rusty_esp_signal-esp = { path = "crates/rusty_esp_signal-esp", version = "0.3.0", default-features = false }
+rusty_esp_signal-core = { path = "crates/rusty_esp_signal-core", version = "0.3.1", default-features = false }
+rusty_esp_signal-esp = { path = "crates/rusty_esp_signal-esp", version = "0.3.1", default-features = false }
 
-# Siblings in the Janus family are consumed BY GIT URL so this repo deploys on
-# its own. Inside the Janus umbrella folder, `.cargo/config.toml` patches the
-# URL to the sibling checkout, so local edits are visible without a push.
-rusty_esp_core = { git = "https://github.com/Remade-With-Rust/rusty_esp_core", version = "0.1", default-features = false }
-rusty_esp_dsp = { version = "0.1", git = "https://github.com/Remade-With-Rust/rusty_esp_dsp", default-features = false }
-rusty_esp_mid-core = { git = "https://github.com/Remade-With-Rust/rusty_esp_mid", version = "0.1.1", default-features = false }
+# Siblings in the Janus family are consumed BY PUBLISHED VERSION. They were
+# git URLs on a default branch until 0.3.1: once rusty_esp_mid's main named
+# crates.io rusty_esp_core while this repo took core from git, a fresh resolve
+# held two `rusty_esp_core`s (rusty_esp_iroh's firmware build broke on exactly
+# that, 2026-10-15). A published version cannot move under us.
+rusty_esp_core = { version = "0.1.2", default-features = false }
+rusty_esp_dsp = { version = "0.1.1", default-features = false }
+rusty_esp_mid-core = { version = "0.1.2", default-features = false }
 
 # Crypto — RustCrypto only, the same majors as rusty_esp_mid so one P-256 and
 # one SHA-2 exist in a firmware graph. All no_std.
